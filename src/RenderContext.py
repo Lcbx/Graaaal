@@ -304,7 +304,7 @@ class GC_Manager:
 		for gen in range(max_gen, -1, -1):
 			if counts[gen] >= thresholds[gen]:
 				gc.collect(gen)
-				#print("collected gen", gen)
+				print("collected gen", gen)
 				break
 
 	@classmethod

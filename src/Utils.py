@@ -309,8 +309,7 @@ class WatchTimer:
 			print(WatchTimer.capture())
 	
 	def get_message(self) -> str:
-		#return ('  ' * self._nesting + f'{self.region} : { self.elapsed_ms() :.1f}ms')	
-		return ('  ' * self._nesting + f'{self.region} : { self.elapsed_percent() :.0f}%')	
+		return ('  ' * self._nesting + f'{self.region} : { self.elapsed_ms() :.1f}ms ({ self.elapsed_percent() :.0f}%)')	
 	
 	def elapsed_ms(self) -> float:
 		return (get_time() - self.start_time) * 1000.0

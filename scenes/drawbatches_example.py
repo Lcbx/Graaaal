@@ -19,9 +19,9 @@ class Velocity:
 
 @component
 class MeshRef:
-	id: np.uint32 # LoD group ID
-	tint: np.uint32
 	shader_id: np.uint32
+	lod_id: np.uint32
+	tint: np.uint32
 
 world = ECS()
 transforms, velocities, mesh_refs = world.register(
@@ -31,58 +31,6 @@ transforms, velocities, mesh_refs = world.register(
 CUBE_COUNT = 1000
 SPACE_SIZE = 180
 CUBE_MAX_SIDE = 7
-
-ground = world.create()
-world.add(
-	ground,
-	Transform(
-		Vec3(0, -0.51, 0),
-		Vec3(2 * SPACE_SIZE, 1, 2 * SPACE_SIZE),
-		Quaternion(),
-	),
-	MeshRef(1, pack_rgba8_srgb([0.5, 0.5, 0.5, 1.0]), 0),
-)
-
-cube_entities = world.create(CUBE_COUNT)
-cube_count = cube_entities.size
-
-cube_positions = np.column_stack((
-	np.random.randint(-SPACE_SIZE, SPACE_SIZE, cube_count),
-	np.random.randint(0, 20, cube_count),
-	np.random.randint(-SPACE_SIZE, SPACE_SIZE, cube_count),
-))
-cube_velocities = np.column_stack((
-	np.random.randint(-4, 4, cube_count),
-	np.zeros(cube_count),
-	np.random.randint(-4, 4, cube_count),
-))
-cube_rotations = np.asarray([
-	Quaternion.from_axis_rotation((0.0, 1.0, 0.0), rd.random() * 3.143)
-	for _ in range(cube_count)
-], dtype=np.float32)
-
-cube_scales = np.column_stack((
-	np.random.randint(1, CUBE_MAX_SIDE, cube_count),
-	np.random.randint(1, CUBE_MAX_SIDE, cube_count),
-	np.random.randint(1, CUBE_MAX_SIDE, cube_count),
-))
-
-cube_meshrefs = np.column_stack((
-	np.full(cube_count, 1, dtype=np.uint32),
-	np.asarray([
-		pack_rgba8_srgb([rd.random(), rd.random(), rd.random(), 1.0])
-		for _ in range(cube_count)
-	], dtype=np.uint32),
-	np.zeros(cube_count, dtype=np.uint32),
-))
-
-world.add(
-	cube_entities,
-	Transform, (cube_positions, cube_scales, cube_rotations),
-	Velocity, cube_velocities,
-	MeshRef, cube_meshrefs,
-)
-
 WINDOW_W, WINDOW_H = 1200, 1200
 TITLE = "glfw + wgpu - Split Compute Hi-Z Pipeline"
 
@@ -140,15 +88,8 @@ instance_version = None
 vertices, indices = load_gltf_first_mesh_interleaved(
 	"scenes/resources/rooftop_utility_pole.glb"
 )
+
 model_mesh = Mesh(vertices, indices)
-
-model_entity = world.create()
-world.add(
-	model_entity,
-	Transform(Vec3(15.0, 0.0, 15.0), Vec3(10.0, 10.0, 10.0), Quaternion()),
-	MeshRef(0, pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0]), 0),
-)
-
 cube_mesh = make_cube_mesh()
 
 render_data.register_mesh(0, model_mesh)
@@ -157,6 +98,76 @@ render_data.register_mesh(1, cube_mesh)
 # to test LoD system, pole disappears after some distance
 render_data.register_lod_group(0, (0, None), (100.0,))
 render_data.register_lod_group(1, (1,))
+
+
+ground = world.create()
+world.add(
+	ground,
+	Transform(
+		Vec3(0, -0.51, 0),
+		Vec3(2 * SPACE_SIZE, 1, 2 * SPACE_SIZE),
+		Quaternion(),
+	),
+	MeshRef(0, 1, pack_rgba8_srgb([0.5, 0.5, 0.5, 1.0])),
+)
+
+model_entity = world.create()
+world.add(
+	model_entity,
+	Transform(Vec3(15.0, 0.0, 15.0), Vec3(10.0, 10.0, 10.0), Quaternion()),
+	MeshRef(0, 0, pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])),
+)
+
+
+def create_cubes(count):
+	cube_entities = world.create(count)
+	cube_count = cube_entities.size
+
+	cube_positions = np.column_stack((
+		np.random.randint(-SPACE_SIZE, SPACE_SIZE, cube_count),
+		np.random.randint(0, 20, cube_count),
+		np.random.randint(-SPACE_SIZE, SPACE_SIZE, cube_count),
+	))
+	cube_velocities = np.column_stack((
+		np.random.randint(-4, 4, cube_count),
+		np.zeros(cube_count),
+		np.random.randint(-4, 4, cube_count),
+	))
+	cube_rotations = np.asarray([
+		Quaternion.from_axis_rotation((0.0, 1.0, 0.0), rd.random() * 3.143)
+		for _ in range(cube_count)
+	], dtype=np.float32)
+
+	cube_scales = np.column_stack((
+		np.random.randint(1, CUBE_MAX_SIDE, cube_count),
+		np.random.randint(1, CUBE_MAX_SIDE, cube_count),
+		np.random.randint(1, CUBE_MAX_SIDE, cube_count),
+	))
+
+	cube_meshrefs = np.column_stack((
+		np.zeros(cube_count, dtype=np.uint32),
+		np.full(cube_count, 1, dtype=np.uint32),
+		np.asarray([
+			pack_rgba8_srgb([rd.random(), rd.random(), rd.random(), 1.0])
+			for _ in range(cube_count)
+		], dtype=np.uint32),
+	))
+
+	world.add(
+		cube_entities,
+		Transform, (cube_positions, cube_scales, cube_rotations),
+		Velocity, cube_velocities,
+		MeshRef, cube_meshrefs,
+	)
+
+deleted_count = 2 # start after ground and pole mesh
+def delete_cubes(count):
+	global deleted_count
+	world.delete(range(deleted_count, deleted_count+count))
+	deleted_count += count
+
+
+create_cubes(CUBE_COUNT)
 
 
 def camera_system(camera, elapsed, camera_dist):
@@ -183,9 +194,13 @@ def movement_system(world, dt):
 
 def update_instances(world, data):
 	global instance_version
-	data.sync_batches(world, Transform, MeshRef)
+
+	entities = world.where(Transform, MeshRef)
+	data.sync_batches(entities, transforms, mesh_refs)
+	
 	version = (world, data.instance_order_version, transforms.version("position"), mesh_refs.version("tint"), transforms.version("rotation"), transforms.version("scale"))
 	if instance_version == version: return
+	
 	previous = instance_version or (None,) * 6
 	order_changed = previous[:2] != version[:2]
 	changed = tuple(order_changed or old != new for old, new in zip(previous[2:], version[2:]))
@@ -279,12 +294,21 @@ while RenderContext.window_loop():
 	now = RenderContext.frame_start
 
 	fps_frames += 1
-	if now - fps_print_timestamp >= 1.0:
-		print(f"fps {fps_frames}")
-		fps_frames = 0
-		fps_print_timestamp = now
+	if (big_frame := now - fps_print_timestamp >= 1.0):
+		create_cubes(10)
+		delete_cubes(3)
 
 	elapsed = now - start_t
 	camera_system(main_camera, elapsed, camera_dist)
 	movement_system(world, RenderContext.frame_time)
-	render_system(world, main_camera, active_camera)
+	with WatchTimer("render system"):
+		render_system(world, main_camera, active_camera)
+
+	if big_frame:
+		print(f"fps {fps_frames}")
+		print("cube count", render_data.entities.size)
+		print(WatchTimer.capture())
+
+		# reset counter
+		fps_frames = 0
+		fps_print_timestamp = now

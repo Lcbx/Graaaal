@@ -33,7 +33,7 @@ class SourceBatch:
 
 @dataclass(frozen=True)
 class LodGroup:
-	mesh_ids: tuple[MeshId, ...]
+	lod_ids: tuple[MeshId, ...]
 	distances: tuple[float, ...]
 
 @dataclass
@@ -88,8 +88,8 @@ def standard_RenderShader(shader: Shader, uniform_buffer: GpuBuffer | None = Non
 @dataclass
 class MeshInfo:
 	mesh: Mesh
-	box_center: np.ndarray
-	box_extents: np.ndarray
+	box_center: NDArray
+	box_extents: NDArray
 
 
 class DrawBatches:
@@ -107,7 +107,7 @@ class DrawBatches:
 		self.shaders: dict[int, RenderShader] = {}
 		self.buffers: dict[str, GpuBuffer] = {}
 		self.draw_batches: list[DrawBatch] = []
-		self.entities: np.ndarray = np.empty(0, dtype=np.uint64)
+		self.entities: NDArray = np.empty(0, dtype=np.uint64)
 		self._batch_version: tuple[Any, ...] | None = None
 		self._destinations_dirty: bool = True
 		self._dirty_lod_distances: set[int] = set()
@@ -127,8 +127,8 @@ class DrawBatches:
 		self.camera_params_buffer = self._cull_shader.UniformBuffer("camera_params")
 		self._camera_params_dirty = False
 
-	def register_lod_group(self, group_id: int, mesh_ids: Sequence[MeshId], distances: Sequence[float] = ()) -> None:
-		"""MeshRef.id names a group. Distances are increasing world-space switch distances.
+	def register_lod_group(self, group_id: int, lod_ids: Sequence[MeshId], distances: Sequence[float] = ()) -> None:
+		"""MeshRef.lod_ids names a group. Distances are increasing world-space switch distances.
 
 		Supply one fewer distance than meshes; equality selects the coarser LoD.
 		None meshId renders nothing in that LoD range; at least one mesh must be non-None.
@@ -136,23 +136,23 @@ class DrawBatches:
 		All variants must use the same local coordinate system and compatible shaders.
 		Example: register_lod_group(10, (100, 101, None), (30.0, 100.0)).
 		"""
-		mesh_ids = tuple(mesh_ids)
+		lod_ids = tuple(lod_ids)
 		distances = tuple(float(value) for value in distances)
-		if not mesh_ids or len(distances) != len(mesh_ids) - 1:
+		if not lod_ids or len(distances) != len(lod_ids) - 1:
 			raise ValueError("Expected at least one mesh and one fewer LoD distance")
 		values = np.asarray(distances, dtype=np.float32)
 		if not np.all(np.isfinite(values)) or np.any(values <= 0) or np.any(np.diff(values) <= 0):
 			raise ValueError("LoD distances must be finite, positive and strictly increasing in float32")
-		if all(mesh_id is None for mesh_id in mesh_ids):
+		if all(mesh_id is None for mesh_id in lod_ids):
 			raise ValueError("Expected at least one non-None mesh for group bounds")
-		for mesh_id in mesh_ids:
+		for mesh_id in lod_ids:
 			if mesh_id is None: continue
 			if mesh_id not in self.meshes: raise KeyError(f"Unregistered mesh_id {mesh_id}")
-		group = LodGroup(mesh_ids, distances)
+		group = LodGroup(lod_ids, distances)
 		previous = self.lod_groups.get(group_id)
 		if previous != group:
 			self.lod_groups[group_id] = group
-			if previous is None or previous.mesh_ids != mesh_ids:
+			if previous is None or previous.lod_ids != lod_ids:
 				self._destinations_dirty = True
 			else:
 				self._dirty_lod_distances.add(group_id)
@@ -162,7 +162,7 @@ class DrawBatches:
 			pipeline = self._cull_pipelines[pipeline_name] = ComputePipeline(self._cull_shader, entry=pipeline_name, label=pipeline_name)
 		return pipeline
 
-	def _reserve_buffer(self, name, count) -> np.ndarray:
+	def _reserve_buffer(self, name, count) -> NDArray:
 		"""Keep CPU capacity stable between growths; GpuBuffer owns GPU growth.
 
 		Callers replace active inputs after growth. GPU outputs are regenerated.
@@ -174,7 +174,7 @@ class DrawBatches:
 			buffer.resize(capacity)
 		return buffer.content[:count]
 
-	def _upload_array(self, name: str, values: np.ndarray | Sequence[Any]) -> None:
+	def _upload_array(self, name: str, values: NDArray | Sequence[Any]) -> None:
 		self._reserve_buffer(name, len(values))[:] = values
 		if len(values): self.buffers[name].upload_range(0, len(values))
 
@@ -218,8 +218,8 @@ class DrawBatches:
 			self.bindings[shader_id, name] = spec.pipeline.shader.bind_group(1, instances=self.buffers["instances"], visible_instances=self.buffers[visible])
 
 
-	def _group_bounds(self, group_id: int) -> tuple[np.ndarray, np.ndarray]:
-		infos = [self.meshes[mesh_id] for mesh_id in self.lod_groups[group_id].mesh_ids if mesh_id is not None]
+	def _group_bounds(self, group_id: int) -> tuple[NDArray, NDArray]:
+		infos = [self.meshes[mesh_id] for mesh_id in self.lod_groups[group_id].lod_ids if mesh_id is not None]
 		box_min = np.min([info.box_center - info.box_extents for info in infos], axis=0)
 		box_max = np.max([info.box_center + info.box_extents for info in infos], axis=0)
 		return (box_min + box_max) * 0.5, (box_max - box_min) * 0.5
@@ -228,7 +228,7 @@ class DrawBatches:
 		"""Refresh group bounds and every destination using changed geometry."""
 		if not self._dirty_meshes: return
 		for group_id, row in self.group_rows.items():
-			if self._dirty_meshes.isdisjoint(self.lod_groups[group_id].mesh_ids): continue
+			if self._dirty_meshes.isdisjoint(self.lod_groups[group_id].lod_ids): continue
 			center, extents = self._group_bounds(group_id)
 			buffer = self.buffers["mesh_metadata"]
 			metadata = buffer.content[row]
@@ -248,29 +248,25 @@ class DrawBatches:
 					buffer.upload_range(command_index, 1)
 		self._dirty_meshes.clear()
 
-	def sync_batches(self, world: Any, transform_type: Any, mesh_ref_type: Any) -> bool:
+	def sync_batches(self, entities:EntityArray, transforms: ComponentAccessor, mesh_refs: ComponentAccessor) -> bool:
 		"""Group by LoD group/shader; reserve one source-count region per draw destination.
 
-		MeshRef.id references lod group id, not mesh id.
 		GPU LoD changes never reorder entities. Custom attributes follow entities
 		when instance_order_version changes. Render components are single-instance.
 		"""
-		transforms, mesh_refs = world.get(transform_type), world.get(mesh_ref_type)
-		version = (world, transform_type, mesh_ref_type, transforms.membership_version, mesh_refs.version("id", "shader_id"))
+		version = (transforms.membership_version, mesh_refs.version("lod_id", "shader_id"))
 		regroup = self._batch_version != version
 		if regroup:
-			entities = world.where(transform_type, mesh_ref_type)
 			refs = mesh_refs[entities]
-			ordered_entities, batches = build_batches(entities, refs.id, refs.shader_id)
+			ordered_entities, batches = build_batches(entities, refs["lod_id"], refs["shader_id"])
 		else:
 			ordered_entities, batches = self.entities, self.source_batches
 		order_changed = False
 		if regroup or self._destinations_dirty:
 			order_changed = self._rebuild_destinations(ordered_entities, batches)
 			self._batch_version = version
-		else:
-			self._sync_lod_distances()
-			self._sync_meshes()
+		self._sync_lod_distances()
+		self._sync_meshes()
 		return order_changed
 
 	def _sync_lod_distances(self) -> None:
@@ -286,7 +282,7 @@ class DrawBatches:
 				buffer.upload_range(offset, len(distances))
 		self._dirty_lod_distances.clear()
 
-	def _rebuild_destinations(self, ordered_entities: np.ndarray, batches: list[SourceBatch]) -> bool:
+	def _rebuild_destinations(self, ordered_entities: NDArray, batches: list[SourceBatch]) -> bool:
 		used_groups = sorted({batch.lod_group_id for batch in batches})
 		group_rows = {group_id: i for i, group_id in enumerate(used_groups)}
 		for batch in batches:
@@ -299,7 +295,7 @@ class DrawBatches:
 			center, extents = self._group_bounds(group_id)
 			metadata[row]["box_center"][:3], metadata[row]["box_extents"][:3] = center, extents
 			metadata[row]["lod_offset"] = len(distances)
-			metadata[row]["lod_count"] = len(group.mesh_ids)
+			metadata[row]["lod_count"] = len(group.lod_ids)
 			distances.extend((0.0, *group.distances))
 		params = np.zeros(len(batches), dtype=batch_dtype)
 		group_counts = np.array([(batch.count + 63) // 64 for batch in batches], dtype=np.int64)
@@ -316,7 +312,7 @@ class DrawBatches:
 		for batch_id, batch in enumerate(batches):
 			prepass = self.shaders[batch.shader_id].prepass is not None
 			params[batch_id] = (group_rows[batch.lod_group_id], batch.offset, batch.count, len(commands), prepass, 0)
-			for mesh_id in self.lod_groups[batch.lod_group_id].mesh_ids:
+			for mesh_id in self.lod_groups[batch.lod_group_id].lod_ids:
 				command_index = len(commands)
 				draw_batches.append(DrawBatch(mesh_id, batch.shader_id, main_count, batch.count, command_index))
 				if mesh_id is None:
@@ -433,7 +429,7 @@ class DrawBatches:
 		"""Force grouping/command rebuilding on the next sync_batches call."""
 		self._batch_version = None
 
-	def update_cull_camera(self, cameraPosition: Sequence[float], viewProjectionMatrix: Sequence[Sequence[float]] | np.ndarray) -> None:
+	def update_cull_camera(self, cameraPosition: Sequence[float], viewProjectionMatrix: Sequence[Sequence[float]] | NDArray) -> None:
 		"""Update when the camera changes; upload before the next reset/culling operation."""
 		vp = np.asarray(viewProjectionMatrix)
 		buffer = self.camera_params_buffer
@@ -494,14 +490,14 @@ class HZB:
 				cp.dispatch((width + 15) // 16, (height + 15) // 16)
 
 
-def build_batches(entities: np.ndarray, mesh_ids: np.ndarray, shader_ids: np.ndarray) -> tuple[np.ndarray, list[SourceBatch]]:
-	"""Pure CPU grouping; mesh_ids are LoD group IDs. Preserve order inside each pair."""
-	if not (entities.ndim == mesh_ids.ndim == shader_ids.ndim == 1 and len(entities) == len(mesh_ids) == len(shader_ids)):
+def build_batches(entities: NDArray, lod_ids: NDArray, shader_ids: NDArray) -> tuple[NDArray, list[SourceBatch]]:
+	"""Pure CPU grouping; lod_ids are LoD group IDs. Preserve order inside each pair."""
+	if not (entities.ndim == lod_ids.ndim == shader_ids.ndim == 1 and len(entities) == len(lod_ids) == len(shader_ids)):
 		raise ValueError("Expected equally sized 1D entity, mesh ID, and shader ID arrays")
-	order = np.lexsort((mesh_ids, shader_ids))
-	mesh_ids, shader_ids = mesh_ids[order], shader_ids[order]
-	changes = (mesh_ids[1:] != mesh_ids[:-1]) | (shader_ids[1:] != shader_ids[:-1])
+	order = np.lexsort((lod_ids, shader_ids))
+	lod_ids, shader_ids = lod_ids[order], shader_ids[order]
+	changes = (lod_ids[1:] != lod_ids[:-1]) | (shader_ids[1:] != shader_ids[:-1])
 	starts = np.r_[0, np.flatnonzero(changes) + 1] if len(order) else np.empty(0, dtype=int)
 	ends = np.r_[starts[1:], len(order)] if len(order) else starts
-	batches = [SourceBatch(int(mesh_ids[start]), int(shader_ids[start]), int(start), int(end - start)) for start, end in zip(starts, ends)]
+	batches = [SourceBatch(int(lod_ids[start]), int(shader_ids[start]), int(start), int(end - start)) for start, end in zip(starts, ends)]
 	return entities[order].copy(), batches

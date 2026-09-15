@@ -1,7 +1,9 @@
+* when syncing draw batches
+   any change triggers a full rebuild / reupload
+   -> should upload only differing ranges
 * add proper monitoring and logging
 * add bindless materials
 * implement Forward+ / tiled shading
-* add depth pre-pass
 * add compute light binning
 * implement ramp / toon shading
 * implement shadow maps (perspective warping, cascaded shadow maps (3–4 splits)
