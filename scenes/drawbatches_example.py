@@ -17,7 +17,7 @@ class Transform:
 class Velocity:
 	x: float; y: float; z: float
 
-@component
+@component(multiples=True)
 class MeshRef:
 	shader_id: np.uint32
 	lod_id: np.uint32
@@ -79,7 +79,7 @@ prepass_uniform_buffer = shader.UniformBuffer()
 render_shader.prepass.bindings = ((0, shader.bind_group(0, uniforms=prepass_uniform_buffer)),)
 
 # --- Draw registries & HZB ---
-render_data = DrawBatches()
+render_data = DrawBatches(mesh_instance_dtype)
 render_data.register_shader(0, render_shader)
 
 hzb = HZB()
@@ -100,7 +100,7 @@ render_data.register_lod_group(0, (0, None), (100.0,))
 render_data.register_lod_group(1, (1,))
 
 
-ground = world.create()
+[ground] = world.create()
 world.add(
 	ground,
 	Transform(
@@ -111,13 +111,18 @@ world.add(
 	MeshRef(0, 1, pack_rgba8_srgb([0.5, 0.5, 0.5, 1.0])),
 )
 
-model_entity = world.create()
+[model_entity] = world.create()
 world.add(
 	model_entity,
 	Transform(Vec3(15.0, 0.0, 15.0), Vec3(10.0, 10.0, 10.0), Quaternion()),
-	MeshRef(0, 0, pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])),
 )
-
+world.add([model_entity, model_entity],
+	MeshRef,
+	[ 
+	 (0, 0, pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])), 
+	 (0, 1, pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])),
+	]
+)
 
 def create_cubes(count):
 	cube_entities = world.create(count)
@@ -194,26 +199,22 @@ def movement_system(world, dt):
 
 def update_instances(world, data):
 	global instance_version
-
+	
 	entities = world.where(Transform, MeshRef)
 	data.sync_batches(entities, transforms, mesh_refs)
-	
-	version = (world, data.instance_order_version, transforms.version("position"), mesh_refs.version("tint"), transforms.version("rotation"), transforms.version("scale"))
+	version = (data.instance_order_version, transforms.version("position"), transforms.version("rotation"), transforms.version("scale"), mesh_refs.version("tint"))
 	if instance_version == version: return
-	
-	previous = instance_version or (None,) * 6
-	order_changed = previous[:2] != version[:2]
-	changed = tuple(order_changed or old != new for old, new in zip(previous[2:], version[2:]))
-	count = data.entities.size
-	if count:
-		buffer = data.buffers["instances"]
-		instances = buffer.content[:count]
-		if changed[0] or changed[2] or changed[3]: p = transforms[data.entities]
-		if changed[0]: instances["iPosition"] = p.position
-		if changed[1]: instances["iTint"] = np.asarray(mesh_refs[data.entities].tint).reshape(instances["iTint"].shape)
-		if changed[2]: instances["iRotation"] = pack_quaternion(p.rotation)
-		if changed[3]: instances["iScale"] = pack_scale(p.scale)
-		buffer.upload_range(0, count)
+	previous = instance_version or (None,) * 5
+	order_changed = previous[0] != version[0]
+	changed = tuple(order_changed or old != new for old, new in zip(previous[1:], version[1:]))
+	if len(data.entities):
+		p = transforms[data.entities] if any(changed[:3]) else None
+		fields = {}
+		if changed[0]: fields["iPosition"] = p.position
+		if changed[1]: fields["iRotation"] = pack_quaternion(p.rotation)
+		if changed[2]: fields["iScale"] = pack_scale(p.scale)
+		if changed[3]: fields["iTint"] = data.mesh_field("tint").reshape(-1, 1)
+		data.write_instance_fields(**fields)
 	instance_version = version
 
 
@@ -306,7 +307,7 @@ while RenderContext.window_loop():
 
 	if big_frame:
 		print(f"fps {fps_frames}")
-		print("cube count", render_data.entities.size)
+		print("render instance count", render_data.entities.size)
 		print(WatchTimer.capture())
 
 		# reset counter

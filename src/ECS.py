@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
 from enum import IntFlag
-from typing import cast, Any, Callable, ClassVar, Iterable, Iterator, Mapping, Sequence, TypeAlias, TypeVar, get_origin, get_type_hints
+from typing import cast, Any, Callable, ClassVar, Iterable, Iterator, Mapping, Sequence, TypeAlias, get_origin, get_type_hints
 
 import numpy as np
 from numpy.typing import NDArray
 
-T = TypeVar("T")
-def component(cls: T | None = None, *, multiples: bool = False) -> T | Callable[[T], T]:
-	def decorator(target: T) -> T:
+def component(cls: type | None = None, *, multiples: bool = False) -> Any | Callable:
+	def decorator(target: Any) -> Any:
 		setattr(target, "_multicomponent", multiples)
 		return dataclass(target)
 	if cls is None:

@@ -1,11 +1,12 @@
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Protocol, Sequence
+from numpy.typing import ArrayLike, NDArray
 
 import numpy as np
 
-from ECS import ComponentAccessor, Entity, EntityArray, FieldArray
-from RenderContext import GpuBuffer, Texture, Shader, Mesh, ComputePipeline, RenderPipeline, BufferUsage, TextureUsage
-from Utils import mesh_instance_dtype as instance_dtype, Camera, extract_frustum_planes
+from ECS import ComponentAccessor, Entity, EntityArray, EntityLike, FieldArray, as_entities
+from RenderContext import GpuBuffer, Texture, Shader, Mesh, ComputePipeline, RenderPipeline, BufferUsage, TextureUsage, higher_pow2
+from Utils import extract_frustum_planes
 
 
 mesh_metadata_dtype = np.dtype([
@@ -49,12 +50,13 @@ class DrawBatch:
 
 @dataclass
 class ShaderPass:
-	"""Group 1 follows draw_common.shaderlib and is owned by DrawBatches.
+	"""Group 1 binds instances and visible_instances and is owned by DrawBatches.
 	Supply rendering uniforms and extra resources through bindings in other groups.
 
 	Prepass and main must agree on positions, coverage, and rasterization.
 	Additional instance attributes can use storage in an extra group, indexed
 	by visible_instances[instance_idx] in the current DrawBatches.entities order.
+	Owners may repeat; use mesh_field() for per-component attributes.
 	"""
 	pipeline: RenderPipeline | ComputePipeline
 	bindings: tuple[tuple[int, Any], ...] = ()
@@ -92,11 +94,21 @@ class MeshInfo:
 	box_center: FieldArray
 	box_extents: FieldArray
 
+class _MeshSelection(Protocol):
+	def __getitem__(self, name: str) -> FieldArray: ...
 
 class DrawBatches:
 	"""Persistent draw resources; record passes explicitly using the caller's commands."""
 
-	def __init__(self, cull_shader: Shader | None = None) -> None:
+	def __init__(self, instance_dtype: np.dtype[Any], cull_shader: Shader | None = None) -> None:
+		"""The caller supplies the instance layout; cull and draw shaders must match it.
+
+		The default cull shader uses Utils.mesh_instance_dtype. Supply a compatible
+		cull_shader when using another ABI; dtype selection does not generate WGSL.
+		"""
+		self.instance_dtype: np.dtype[Any] = np.dtype(instance_dtype)
+		if self.instance_dtype.hasobject or self.instance_dtype.subdtype is not None or not self.instance_dtype.itemsize or self.instance_dtype.itemsize % 4:
+			raise ValueError("Expected fixed-size instance records with a stride divisible by four")
 		self._cull_shader: Shader = cull_shader or Shader(filepath='scenes/shaders/cull.shader', label="cull")
 		self._cull_pipelines: dict[str, ComputePipeline] = {}
 		self.meshes: dict[MeshId, MeshInfo] = {}
@@ -110,6 +122,11 @@ class DrawBatches:
 		self.draw_batches: list[DrawBatch] = []
 		self.entities: EntityArray = np.empty(0, dtype=Entity)
 		self._batch_version: tuple[Any, ...] | None = None
+		self._selection: EntityArray = np.empty(0, dtype=Entity)
+		self._mesh_selection: _MeshSelection | None = None
+		self._mesh_order: FieldArray = np.empty(0, dtype=np.intp)
+		self.component_rows: FieldArray = np.empty(0, dtype=np.uint32)
+		self._workgroup_signature: tuple[int, ...] = ()
 		self._destinations_dirty: bool = True
 		self._dirty_lod_distances: set[int] = set()
 		self.instance_order_version: int = 0
@@ -117,16 +134,16 @@ class DrawBatches:
 		self.workgroup_count: int = 0
 		storage = BufferUsage.STORAGE | BufferUsage.COPY_DST
 		for name, dtype in (
-			("instances", instance_dtype), ("frustum_candidates", frustum_candidate_dtype),
+			("instances", self.instance_dtype), ("frustum_candidates", frustum_candidate_dtype),
 			("prepass_visible_instances", np.dtype("<u4")), ("lod_distances", np.dtype("<f4")),
 			("main_visible_instances", np.dtype("<u4")), ("mesh_metadata", mesh_metadata_dtype),
 			("batches", batch_dtype), ("workgroups", workgroup_dtype),
 			("prepass_draw_cmd", indirect_dtype), ("main_draw_cmd", indirect_dtype),
 		):
-			usage = storage | (BufferUsage.INDIRECT if dtype == indirect_dtype else 0)
+			usage = storage | (BufferUsage.INDIRECT if name in ("prepass_draw_cmd", "main_draw_cmd") else 0)
 			self.buffers[name] = GpuBuffer(np.zeros(1, dtype=dtype), usage, upload=False, label=name)
-		self.camera_params_buffer = self._cull_shader.UniformBuffer("camera_params")
-		self._camera_params_dirty = False
+		self.camera_params_buffer: GpuBuffer = self._cull_shader.UniformBuffer("camera_params")
+		self._camera_params_dirty: bool = False
 
 	def register_lod_group(self, group_id: int, lod_ids: Sequence[MeshId], distances: Sequence[float] = ()) -> None:
 		"""MeshRef.lod_ids names a group. Distances are increasing world-space switch distances.
@@ -163,14 +180,14 @@ class DrawBatches:
 			pipeline = self._cull_pipelines[pipeline_name] = ComputePipeline(self._cull_shader, entry=pipeline_name, label=pipeline_name)
 		return pipeline
 
-	def _reserve_buffer(self, name, count) -> FieldArray:
+	def _reserve_buffer(self, name: str, count: int) -> FieldArray:
 		"""Keep CPU capacity stable between growths; GpuBuffer owns GPU growth.
 
 		Callers replace active inputs after growth. GPU outputs are regenerated.
 		"""
 		buffer = self.buffers[name]
 		if count > buffer.content.size:
-			capacity = 1 << (count - 1).bit_length()
+			capacity = higher_pow2(count - 1)
 			buffer.content = np.zeros(capacity, dtype=buffer.content.dtype)
 			buffer.resize(capacity)
 		return buffer.content[:count]
@@ -179,7 +196,7 @@ class DrawBatches:
 		self._reserve_buffer(name, len(values))[:] = values
 		if len(values): self.buffers[name].upload_range(0, len(values))
 
-	def register_mesh(self, mesh_id: int, mesh: Any, bounds: tuple[Any, Any] | None = None) -> None:
+	def register_mesh(self, mesh_id: int, mesh: Mesh, bounds: tuple[ArrayLike, ArrayLike] | None = None) -> None:
 		"""Use explicit conservative local bounds for displaced geometry.
 
 		Re-register after changing mesh geometry, bounds, or pooled draw ranges.
@@ -249,26 +266,79 @@ class DrawBatches:
 					buffer.upload_range(command_index, 1)
 		self._dirty_meshes.clear()
 
-	def sync_batches(self, entities:EntityArray, transforms: ComponentAccessor, mesh_refs: ComponentAccessor) -> bool:
-		"""Group by LoD group/shader; reserve one source-count region per draw destination.
+	def sync_batches(self, entities: EntityLike, transforms: ComponentAccessor, mesh_refs: ComponentAccessor) -> bool:
+		"""Group mesh components into contiguous LoD group/shader ranges.
 
-		GPU LoD changes never reorder entities. Custom attributes follow entities
-		when instance_order_version changes. Render components are single-instance.
+		Owners may repeat. Selection, membership or grouping-key changes invalidate
+		instance inputs; no component identity is retained across regrouping.
+		When this returns True (or instance_order_version changes), rewrite all
+		instance fields and custom attributes in the current entities/mesh_field order.
+		Synchronize before recording any reset/culling/draw passes for the frame.
 		"""
-		version = (transforms.membership_version, mesh_refs.version("lod_id", "shader_id"))
-		regroup = self._batch_version != version
+		ents = as_entities(entities)
+		if ents.ndim != 1: raise ValueError("Expected a 1D entity selection")
+		version = (transforms, mesh_refs, transforms.membership_version, mesh_refs.version("lod_id", "shader_id"))
+		regroup = version != self._batch_version or not np.array_equal(ents, self._selection)
 		if regroup:
-			refs = mesh_refs[entities]
-			ordered_entities, batches = build_batches(entities, refs["lod_id"], refs["shader_id"])
-		else:
-			ordered_entities, batches = self.entities, self.source_batches
-		order_changed = False
-		if regroup or self._destinations_dirty:
-			order_changed = self._rebuild_destinations(ordered_entities, batches)
+			refs = mesh_refs[ents]
+			rows = refs.get_rows()
+			order, batches = build_batches(np.arange(len(rows), dtype=Entity), refs["lod_id"], refs["shader_id"])
+			component_rows = rows[order]
+			owners = mesh_refs.owner_ids(component_rows)
+			if batches != self.source_batches or self._destinations_dirty:
+				self._rebuild_destinations(owners, batches)
+			self._mesh_selection, self._mesh_order = refs, order
+			self.component_rows, self.entities = component_rows, owners
+			self.instance_order_version += 1
+			self._selection = ents
 			self._batch_version = version
+		self.sync_resources()
+		return regroup
+
+	def mesh_field(self, name: str) -> FieldArray:
+		"""Read a MeshRef field in the current compact instance order.
+
+		Do not index mesh_refs with the repeated owners in entities: that would
+		expand components again. Synchronize after ECS membership edits first.
+		"""
+		if self._mesh_selection is None: raise RuntimeError("Call sync_batches before mesh_field")
+		return self._mesh_selection[name][self._mesh_order]
+
+	def sync_resources(self) -> None:
+		"""Apply registry changes without rereading or reordering mesh components."""
+		if self._destinations_dirty:
+			self._rebuild_destinations(self.entities, self.source_batches)
 		self._sync_lod_distances()
 		self._sync_meshes()
-		return order_changed
+
+	def write_instances(self, values: FieldArray) -> None:
+		"""Upload packed records in the current entities/mesh_field order."""
+		count = len(self.entities)
+		if values.ndim != 1 or len(values) != count:
+			raise ValueError("Expected one packed record per current mesh component")
+		buffer = self.buffers["instances"]
+		values = values.copy() if np.shares_memory(values, buffer.content) else values
+		buffer.content[:len(values)] = values
+		if count: buffer.upload_range(0, count)
+
+	def write_instance_fields(self, **fields: Any) -> None:
+		"""Write packed dtype fields; omitted fields retain their current values.
+
+		Values broadcast to (live count, *field shape). No field names or packing
+		conventions are assumed. The caller tracks changes; supplied fields cause
+		one upload of the live records. Initialize all fields after regrouping.
+		"""
+		if not fields: return
+		buffer = self.buffers["instances"]
+		count = len(self.entities)
+		# Validate before modifying storage; preserve aliased inputs across writes.
+		values: dict[str, NDArray[Any]] = {}
+		for name, value in fields.items():
+			target = buffer.content[name][:count]
+			array = np.broadcast_to(np.asarray(value, dtype=target.dtype), target.shape)
+			values[name] = array.copy() if np.shares_memory(array, buffer.content) else array
+		for name, array in values.items(): buffer.content[name][:count] = array
+		if count: buffer.upload_range(0, count)
 
 	def _sync_lod_distances(self) -> None:
 		buffer = self.buffers["lod_distances"]
@@ -283,14 +353,14 @@ class DrawBatches:
 				buffer.upload_range(offset, len(distances))
 		self._dirty_lod_distances.clear()
 
-	def _rebuild_destinations(self, ordered_entities: EntityArray, batches: list[SourceBatch]) -> bool:
+	def _rebuild_destinations(self, ordered_entities: EntityArray, batches: list[SourceBatch]) -> None:
 		used_groups = sorted({batch.lod_group_id for batch in batches})
 		group_rows = {group_id: i for i, group_id in enumerate(used_groups)}
 		for batch in batches:
 			if batch.lod_group_id not in self.lod_groups: raise KeyError(f"Unregistered LoD group {batch.lod_group_id}")
 			if batch.shader_id not in self.shaders: raise KeyError(f"Unregistered shader_id {batch.shader_id}")
 		metadata = np.zeros(len(used_groups), dtype=mesh_metadata_dtype)
-		distances : list[Any] = []
+		distances : list[float] = []
 		for group_id, row in group_rows.items():
 			group = self.lod_groups[group_id]
 			center, extents = self._group_bounds(group_id)
@@ -299,12 +369,6 @@ class DrawBatches:
 			metadata[row]["lod_count"] = len(group.lod_ids)
 			distances.extend((0.0, *group.distances))
 		params = np.zeros(len(batches), dtype=batch_dtype)
-		group_counts = np.array([(batch.count + 63) // 64 for batch in batches], dtype=np.int64)
-		workgroups = np.zeros(int(group_counts.sum()), dtype=workgroup_dtype)
-		if len(batches):
-			workgroups["batch_id"] = np.repeat(np.arange(len(batches)), group_counts)
-			starts = np.cumsum(group_counts) - group_counts
-			workgroups["instance_offset"] = (np.arange(len(workgroups)) - np.repeat(starts, group_counts)) * 64
 		draw_batches     : list[DrawBatch]      = []
 		commands         : list[tuple[int,...]] = []
 		prepass_commands : list[tuple[int,...]] = []
@@ -340,26 +404,37 @@ class DrawBatches:
 		self._reserve_buffer("prepass_visible_instances", prepass_count)
 		for name, values in (
 			("mesh_metadata", metadata), ("lod_distances", np.asarray(distances, dtype="<f4")),
-			("batches", params), ("workgroups", workgroups),
+			("batches", params),
 			("prepass_draw_cmd", np.asarray(prepass_commands, dtype=indirect_dtype)),
 			("main_draw_cmd", np.asarray(commands, dtype=indirect_dtype)),
 		):
 			self._upload_array(name, values)
-		order_changed = not np.array_equal(self.entities, ordered_entities)
-		if order_changed: self.instance_order_version += 1
-		self.entities, self.source_batches, self.draw_batches = ordered_entities, batches, draw_batches
+		self.source_batches, self.draw_batches = batches, draw_batches
 		self._mesh_commands = mesh_commands
 		self.group_rows = group_rows
 		self._dirty_meshes.clear()
-		self.workgroup_count = len(workgroups)
-		buffer = self.camera_params_buffer
-		buffer.content["workgroup_count"] = self.workgroup_count
-		buffer.content["batch_count"] = len(self.source_batches)
-		buffer.content["command_count"] = len(self.draw_batches)
-		self._camera_params_dirty = True
+		self._sync_workgroups()
+		counts = (self.workgroup_count, len(self.source_batches), len(self.draw_batches))
+		for field, value in zip(("workgroup_count", "batch_count", "command_count"), counts):
+			if np.any(self.camera_params_buffer.content[field] != value):
+				self.camera_params_buffer.content[field] = value
+				self._camera_params_dirty = True
 		self._destinations_dirty = False
 		self._dirty_lod_distances.clear()
-		return order_changed
+
+	def _sync_workgroups(self) -> None:
+		# Source offsets are read from batches; only per-batch dispatch counts matter.
+		signature = tuple((batch.count + 63) // 64 for batch in self.source_batches)
+		if signature == self._workgroup_signature: return
+		group_counts = np.asarray(signature, dtype=np.int64)
+		workgroups = np.zeros(int(group_counts.sum()), dtype=workgroup_dtype)
+		if len(group_counts):
+			workgroups["batch_id"] = np.repeat(np.arange(len(group_counts)), group_counts)
+			starts = np.cumsum(group_counts) - group_counts
+			workgroups["instance_offset"] = (np.arange(len(workgroups)) - np.repeat(starts, group_counts)) * 64
+		self._upload_array("workgroups", workgroups)
+		self.workgroup_count = len(workgroups)
+		self._workgroup_signature = signature
 
 	def refresh_bindings(self, hzb_view: Any) -> None:
 		cull_shader = self._cull_shader
@@ -415,7 +490,7 @@ class DrawBatches:
 		commands = self.buffers[f"{stage}_draw_cmd"]
 		for batch in self.draw_batches:
 			if batch.mesh_id is None: continue
-			spec = getattr(self.shaders[batch.shader_id], stage)
+			spec: ShaderPass | None = getattr(self.shaders[batch.shader_id], stage)
 			if spec is None: continue
 			rp.set_pipeline(spec.pipeline)
 			rp.set_bind_group(1, self.bindings[batch.shader_id, stage])
@@ -427,7 +502,7 @@ class DrawBatches:
 			rp.draw_indexed_indirect(commands, batch.command_index * indirect_dtype.itemsize)
 
 	def invalidate_batches(self) -> None:
-		"""Force grouping/command rebuilding on the next sync_batches call."""
+		"""Force regrouping and instance input invalidation on the next sync_batches call."""
 		self._batch_version = None
 
 	def update_cull_camera(self, cameraPosition: Sequence[float], viewProjectionMatrix: Sequence[Sequence[float]] | FieldArray) -> None:
@@ -491,9 +566,10 @@ class HZB:
 				cp.dispatch((width + 15) // 16, (height + 15) // 16)
 
 
-def build_batches(entities: EntityArray, lod_ids: FieldArray, shader_ids: FieldArray) -> tuple[EntityArray, list[SourceBatch]]:
+def build_batches(entities: EntityLike, lod_ids: FieldArray, shader_ids: FieldArray) -> tuple[EntityArray, list[SourceBatch]]:
 	"""Pure CPU grouping; lod_ids are LoD group IDs. Preserve order inside each pair."""
-	if not (entities.ndim == lod_ids.ndim == shader_ids.ndim == 1 and len(entities) == len(lod_ids) == len(shader_ids)):
+	ents = as_entities(entities)
+	if not (ents.ndim == lod_ids.ndim == shader_ids.ndim == 1 and len(ents) == len(lod_ids) == len(shader_ids)):
 		raise ValueError("Expected equally sized 1D entity, mesh ID, and shader ID arrays")
 	order = np.lexsort((lod_ids, shader_ids))
 	lod_ids, shader_ids = lod_ids[order], shader_ids[order]
@@ -501,4 +577,4 @@ def build_batches(entities: EntityArray, lod_ids: FieldArray, shader_ids: FieldA
 	starts = np.r_[0, np.flatnonzero(changes) + 1] if len(order) else np.empty(0, dtype=int)
 	ends = np.r_[starts[1:], len(order)] if len(order) else starts
 	batches = [SourceBatch(int(lod_ids[start]), int(shader_ids[start]), int(start), int(end - start)) for start, end in zip(starts, ends)]
-	return entities[order].copy(), batches
+	return ents[order].copy(), batches
