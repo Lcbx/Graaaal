@@ -157,7 +157,7 @@ class AxisAlignedBoundingBox:
 	z_max: float
 
 
-@component
+@component(multiples=True)
 class MultiComp:
 	val: float
 

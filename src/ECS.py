@@ -7,7 +7,15 @@ from typing import cast, Any, Callable, ClassVar, Iterable, Iterator, Mapping, S
 import numpy as np
 from numpy.typing import NDArray
 
-component = dataclass
+T = TypeVar("T")
+def component(cls: T | None = None, *, multiples: bool = False) -> T | Callable[[T], T]:
+	def decorator(target: T) -> T:
+		setattr(target, "_multicomponent", multiples)
+		return dataclass(target)
+	if cls is None:
+		return decorator
+	return decorator(cls)
+
 
 Entity                  = np.uint64
 Index                   = np.uint32
@@ -874,25 +882,25 @@ class ECS:
 		allow_same_type_components_per_entity: bool = False,
 		capacity: int = INITIAL_CAPACITY,
 	) -> tuple[ComponentAccessor, ...]:
-		storage_cls: type[ComponentStorage] = (
-			MultiComponentStorage
-			if allow_same_type_components_per_entity
-			else ComponentStorage
-		)
 		res : list[ComponentAccessor] = []
 
-		for component_cls in component_types:
-			if component_cls in self._stores:
-				raise ValueError(f"{component_cls.__name__} is already registered")
+		for cls in component_types:
+			if cls in self._stores:
+				raise ValueError(f"{cls.__name__} is already registered")
 			
 			bit_index = len(self._comp_bits)
 			if bit_index >= 64: raise ValueError("ECS supports at most 64 component types")
-			
-			store = storage_cls(component_cls, capacity)
-			self._stores[component_cls] = store
-			self._comp_bits[component_cls] = Mask(1 << bit_index)
 
-			res.append( ComponentAccessor(self, component_cls, store) )
+			storage_cls: type[ComponentStorage] = (
+				MultiComponentStorage if cls._multicomponent or allow_same_type_components_per_entity
+				else ComponentStorage
+			)
+			
+			store = storage_cls(cls, capacity)
+			self._stores[cls] = store
+			self._comp_bits[cls] = Mask(1 << bit_index)
+
+			res.append( ComponentAccessor(self, cls, store) )
 
 		return tuple(res)
 
