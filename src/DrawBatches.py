@@ -3,6 +3,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from ECS import ComponentAccessor, Entity, EntityArray, FieldArray
 from RenderContext import GpuBuffer, Texture, Shader, Mesh, ComputePipeline, RenderPipeline, BufferUsage, TextureUsage
 from Utils import mesh_instance_dtype as instance_dtype, Camera, extract_frustum_planes
 
@@ -88,8 +89,8 @@ def standard_RenderShader(shader: Shader, uniform_buffer: GpuBuffer | None = Non
 @dataclass
 class MeshInfo:
 	mesh: Mesh
-	box_center: NDArray
-	box_extents: NDArray
+	box_center: FieldArray
+	box_extents: FieldArray
 
 
 class DrawBatches:
@@ -107,7 +108,7 @@ class DrawBatches:
 		self.shaders: dict[int, RenderShader] = {}
 		self.buffers: dict[str, GpuBuffer] = {}
 		self.draw_batches: list[DrawBatch] = []
-		self.entities: NDArray = np.empty(0, dtype=np.uint64)
+		self.entities: EntityArray = np.empty(0, dtype=Entity)
 		self._batch_version: tuple[Any, ...] | None = None
 		self._destinations_dirty: bool = True
 		self._dirty_lod_distances: set[int] = set()
@@ -162,7 +163,7 @@ class DrawBatches:
 			pipeline = self._cull_pipelines[pipeline_name] = ComputePipeline(self._cull_shader, entry=pipeline_name, label=pipeline_name)
 		return pipeline
 
-	def _reserve_buffer(self, name, count) -> NDArray:
+	def _reserve_buffer(self, name, count) -> FieldArray:
 		"""Keep CPU capacity stable between growths; GpuBuffer owns GPU growth.
 
 		Callers replace active inputs after growth. GPU outputs are regenerated.
@@ -174,7 +175,7 @@ class DrawBatches:
 			buffer.resize(capacity)
 		return buffer.content[:count]
 
-	def _upload_array(self, name: str, values: NDArray | Sequence[Any]) -> None:
+	def _upload_array(self, name: str, values: FieldArray | Sequence[Any]) -> None:
 		self._reserve_buffer(name, len(values))[:] = values
 		if len(values): self.buffers[name].upload_range(0, len(values))
 
@@ -218,7 +219,7 @@ class DrawBatches:
 			self.bindings[shader_id, name] = spec.pipeline.shader.bind_group(1, instances=self.buffers["instances"], visible_instances=self.buffers[visible])
 
 
-	def _group_bounds(self, group_id: int) -> tuple[NDArray, NDArray]:
+	def _group_bounds(self, group_id: int) -> tuple[FieldArray, FieldArray]:
 		infos = [self.meshes[mesh_id] for mesh_id in self.lod_groups[group_id].lod_ids if mesh_id is not None]
 		box_min = np.min([info.box_center - info.box_extents for info in infos], axis=0)
 		box_max = np.max([info.box_center + info.box_extents for info in infos], axis=0)
@@ -282,7 +283,7 @@ class DrawBatches:
 				buffer.upload_range(offset, len(distances))
 		self._dirty_lod_distances.clear()
 
-	def _rebuild_destinations(self, ordered_entities: NDArray, batches: list[SourceBatch]) -> bool:
+	def _rebuild_destinations(self, ordered_entities: EntityArray, batches: list[SourceBatch]) -> bool:
 		used_groups = sorted({batch.lod_group_id for batch in batches})
 		group_rows = {group_id: i for i, group_id in enumerate(used_groups)}
 		for batch in batches:
@@ -429,7 +430,7 @@ class DrawBatches:
 		"""Force grouping/command rebuilding on the next sync_batches call."""
 		self._batch_version = None
 
-	def update_cull_camera(self, cameraPosition: Sequence[float], viewProjectionMatrix: Sequence[Sequence[float]] | NDArray) -> None:
+	def update_cull_camera(self, cameraPosition: Sequence[float], viewProjectionMatrix: Sequence[Sequence[float]] | FieldArray) -> None:
 		"""Update when the camera changes; upload before the next reset/culling operation."""
 		vp = np.asarray(viewProjectionMatrix)
 		buffer = self.camera_params_buffer
@@ -490,7 +491,7 @@ class HZB:
 				cp.dispatch((width + 15) // 16, (height + 15) // 16)
 
 
-def build_batches(entities: NDArray, lod_ids: NDArray, shader_ids: NDArray) -> tuple[NDArray, list[SourceBatch]]:
+def build_batches(entities: EntityArray, lod_ids: FieldArray, shader_ids: FieldArray) -> tuple[EntityArray, list[SourceBatch]]:
 	"""Pure CPU grouping; lod_ids are LoD group IDs. Preserve order inside each pair."""
 	if not (entities.ndim == lod_ids.ndim == shader_ids.ndim == 1 and len(entities) == len(lod_ids) == len(shader_ids)):
 		raise ValueError("Expected equally sized 1D entity, mesh ID, and shader ID arrays")

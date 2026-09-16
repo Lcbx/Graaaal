@@ -58,7 +58,7 @@ if __name__ == "__main__":
 			run( f'py -m mypyc -m ECS', cwd=cwd)
 			run( f'py -m mypyc -m RenderContext', cwd=cwd)
 			run( f'py -m mypyc -m Utils', cwd=cwd)
-			run( f'py -m mypyc -m RenderBatches', cwd=cwd)
+			run( f'py -m mypyc -m DrawBatches', cwd=cwd)
 			if scene: run( f'py -m nuitka --output-dir=build --standalone {scene}'.split(' ') )
 		else:
 			import_module( to_module(scene) )

@@ -308,17 +308,17 @@ class GC_Manager:
 				break
 
 	@classmethod
-	def full_sweep() -> None:
+	def full_sweep(cls) -> None:
 		gc.unfreeze()
 		gc.collect(2)
 		gc.freeze()
 
 	@classmethod
-	def scene_transition(new_scene_load: Callable) -> None:
+	def scene_transition(cls, new_scene_load: Callable) -> None:
 		""" collects old scene, mark new scene for keeping """
 		gc.unfreeze()
 		gc.collect(2)  # Sweeps old scene
-		load()
+		new_scene_load()
 		gc.collect(0)  # Sweeps temporary load junk
 		gc.collect(0)  # called twice since some stuff survives single sweeps
 		gc.freeze()    # exclude new scene from sweeps
