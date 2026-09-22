@@ -13,7 +13,7 @@ import pytest
 
 
 from ECS import Entity, EntityArray, EntityLike, FieldArray, as_entities
-from RenderContext import higher_pow2
+from RenderContext import higher_pow2, BindGroup
 
 
 class Buffer:
@@ -103,7 +103,8 @@ def m(monkeypatch):
 	rc.GpuBuffer, rc.Shader = Buffer, Shader
 	rc.BufferUsage = NS(STORAGE=1, COPY_DST=2, INDIRECT=4)
 	rc.TextureUsage = NS()
-	rc.higher_pow2 = lambda n: 1 << int(n).bit_length()
+	rc.higher_pow2 = higher_pow2
+	rc.BindGroup = BindGroup
 	utils = types.ModuleType("Utils")
 	utils.extract_frustum_planes = lambda x: x
 	for name, module in (("ECS", ecs), ("RenderContext", rc), ("Utils", utils)):

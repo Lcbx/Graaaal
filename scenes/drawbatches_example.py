@@ -76,7 +76,7 @@ render_shader = standard_RenderShader(shader, uniform_buffer)
 
 # used to split between observer camera and observer camera uniforms
 prepass_uniform_buffer = shader.UniformBuffer()
-render_shader.prepass.bindings = ((0, shader.bind_group(0, uniforms=prepass_uniform_buffer)),)
+render_shader.prepass.bindings = ((shader.bind_group(0, uniforms=prepass_uniform_buffer)),)
 
 # --- Draw registries & HZB ---
 render_data = DrawBatches(mesh_instance_dtype)

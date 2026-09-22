@@ -246,7 +246,7 @@ while RenderContext.window_loop():
 		label="shadow",
 	) as rp:
 		rp.set_pipeline(shadow_pipeline)
-		rp.set_bind_group(0, uniform_bindings)
+		rp.set_bind_group(uniform_bindings)
 
 		rp.draw_mesh(model_mesh, instances=model_instance_buffer)
 		rp.draw_mesh(cube_mesh, instances=cube_instance_buffer)
@@ -257,8 +257,8 @@ while RenderContext.window_loop():
 		label="main",
 	) as rp:
 		rp.set_pipeline(main_pipeline)
-		rp.set_bind_group(0, uniform_bindings)
-		rp.set_bind_group(1, shadow_bindings)
+		rp.set_bind_group(uniform_bindings)
+		rp.set_bind_group(shadow_bindings)
 
 		rp.draw_mesh(model_mesh, instances=model_instance_buffer)
 		rp.draw_mesh(cube_mesh, instances=cube_instance_buffer)

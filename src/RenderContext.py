@@ -399,7 +399,7 @@ class RenderPass:
 		self.handle: wgpu.GPURenderPassEncoder | None = None
 		self.pipeline: RenderPipeline | None = None
 
-		self.bind_groups: dict[int, BindGroup | wgpu.GPUBindGroup] = {}
+		self.bind_groups: dict[int, BindGroup] = {}
 		self.vertex_buffers: dict[int, tuple[np.dtype, str]] = {}
 
 		self._variant: _PipelineVariant | None = None
@@ -443,14 +443,8 @@ class RenderPass:
 			self.pipeline = pipeline
 			self._variant_dirty = True
 
-	def set_bind_group(self, index: int, bindings: BindGroup | wgpu.GPUBindGroup) -> None:
-		if isinstance(bindings, BindGroup) and bindings.group != index:
-			raise ValueError(f"BindGroup belongs to group {bindings.group}, not group {index}")
-		
-		if self.bind_groups.get(index) is bindings:
-			return
-
-		self.bind_groups[index] = bindings
+	def set_bind_group(self, bindings: BindGroup) -> None:
+		self.bind_groups[bindings.group] = bindings
 
 	def set_vertex_buffer(
 		self,
@@ -594,11 +588,9 @@ class RenderPass:
 		assert self._variant is not None
 		# A retained BindGroup may refer to a resized buffer or replaced resource.
 		for index, bindings in self.bind_groups.items():
-			key = bindings.cache_key() if isinstance(bindings, BindGroup) else (bindings,)
+			key = bindings.cache_key()
 			if self._bound_bind_groups.get(index) == key: continue
-			if isinstance(bindings, BindGroup):
-				bindings = self._variant.bind_group(bindings)
-			handle.set_bind_group(index, bindings)
+			handle.set_bind_group(index, self._variant.bind_group(bindings))
 			self._bound_bind_groups[index] = key
 		return handle
 
@@ -630,14 +622,10 @@ class ComputePass:
 		self.pipeline = pipeline
 		self._require_handle().set_pipeline(pipeline.handle)
 
-	def set_bind_group(self, index: int, bindings: BindGroup | wgpu.GPUBindGroup ) -> None:
+	def set_bind_group(self, bindings: BindGroup) -> None:
 		if self.pipeline is None:
 			raise RuntimeError("Set the ComputePipeline before its bind groups")
-		if isinstance(bindings, BindGroup) and bindings.group != index:
-			raise ValueError( f"BindGroup belongs to group {bindings.group}, not {index}" )
-		if isinstance(bindings, BindGroup):
-			bindings = self.pipeline._variant.bind_group(bindings)
-		self._require_handle().set_bind_group(index, bindings)
+		self._require_handle().set_bind_group(bindings.group, self.pipeline._variant.bind_group(bindings))
 
 	def dispatch(self, x: int, y: int = 1, z: int = 1) -> None:
 		self._require_handle().dispatch_workgroups(x, y, z)
@@ -1708,25 +1696,23 @@ class BindGroup:
 					f"Binding {name!r} belongs to group {binding.group}, not {group}"
 				)
 
+		self._bindings = tuple(sorted(
+			(shader.info.bindings[name].binding, name) for name in resources
+		))
+
 	def cache_key(self) -> tuple:
-		return (
-			self.group,
-			tuple(
-				(
-					self.shader.info.bindings[name].binding,
-					self._resource_key(resource),
-				)
-				for name, resource in sorted(self.resources.items(), key=lambda item: self.shader.info.bindings[item[0]].binding)
+ 		return (
+ 			self.group,
+ 			tuple(
+				(binding, self._resource_key(self.resources[name]))
+				for binding, name in self._bindings
 			),
 		)
-
+ 
 	def entries(self) -> list[wgpu.BindGroupEntry]:
 		return [
-			wgpu.BindGroupEntry(
-				binding=self.shader.info.bindings[name].binding,
-				resource=self._resource(resource),
-			)
-			for name, resource in self.resources.items()
+			wgpu.BindGroupEntry(binding=binding, resource=self._resource(self.resources[name]))
+			for binding, name in self._bindings
 		]
 
 	def _resource_key(self, resource: Any) -> Any:

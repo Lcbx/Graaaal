@@ -5,7 +5,7 @@ from numpy.typing import ArrayLike, NDArray
 import numpy as np
 
 from ECS import ComponentAccessor, Entity, EntityArray, EntityLike, FieldArray, as_entities
-from RenderContext import GpuBuffer, Texture, Shader, Mesh, ComputePipeline, RenderPipeline, BufferUsage, TextureUsage, higher_pow2
+from RenderContext import BindGroup, GpuBuffer, Texture, Shader, Mesh, ComputePipeline, RenderPipeline, BufferUsage, TextureUsage, higher_pow2
 from Utils import extract_frustum_planes
 
 
@@ -59,7 +59,7 @@ class ShaderPass:
 	Owners may repeat; use mesh_field() for per-component attributes.
 	"""
 	pipeline: RenderPipeline | ComputePipeline
-	bindings: tuple[tuple[int, Any], ...] = ()
+	bindings: tuple[BindGroup, ...] = ()
 
 @dataclass
 class RenderShader:
@@ -81,7 +81,7 @@ def standard_RenderShader(shader: Shader, uniform_buffer: GpuBuffer | None = Non
 		label="main",
 	)
 	uniforms_bg = shader.bind_group(0, uniforms= uniform_buffer or shader.UniformBuffer())
-	bindings_tup = ((0, uniforms_bg),)
+	bindings_tup = (uniforms_bg,)
 	return RenderShader(
 		ShaderPass(main_pipeline, bindings_tup),
 		ShaderPass(prepass_pipeline, bindings_tup)
@@ -130,7 +130,7 @@ class DrawBatches:
 		self._destinations_dirty: bool = True
 		self._dirty_lod_distances: set[int] = set()
 		self.instance_order_version: int = 0
-		self.bindings: dict[str | tuple[int, str], Any] = {}
+		self.bindings: dict[str | tuple[int, str], BindGroup] = {}
 		self.workgroup_count: int = 0
 		storage = BufferUsage.STORAGE | BufferUsage.COPY_DST
 		for name, dtype in (
@@ -218,7 +218,7 @@ class DrawBatches:
 		"""Replace bindings; rebuild destinations only when prepass participation changes."""
 
 		for spec in (shader.prepass, shader.main):
-			if spec is not None and any(group == 1 for group, _ in spec.bindings):
+			if spec is not None and any(bindings.group == 1 for bindings in spec.bindings):
 				raise ValueError("Group 1 is reserved for instance data")
 
 		had_prepass = (shader_id, "prepass") in self.bindings
@@ -465,8 +465,8 @@ class DrawBatches:
 		self._upload_camera_params()
 		with cmd.compute_pass(label=pipeline_name) as cp:
 			cp.set_pipeline(pipeline)
-			cp.set_bind_group(0, self.bindings["reset_prepass"])
-			cp.set_bind_group(1, self.bindings["reset_main"])
+			cp.set_bind_group(self.bindings["reset_prepass"])
+			cp.set_bind_group(self.bindings["reset_main"])
 			cp.dispatch(x, y)
 
 	def cull_instances(self, cmd: Any, stage: str = "frustum") -> None:
@@ -482,8 +482,8 @@ class DrawBatches:
 		self._upload_camera_params()
 		with cmd.compute_pass(label=pipeline_name) as cp:
 			cp.set_pipeline(pipeline)
-			cp.set_bind_group(0, self.bindings[f"cull_{stage}"])
-			cp.set_bind_group(1, self.bindings[stage])
+			cp.set_bind_group(self.bindings[f"cull_{stage}"])
+			cp.set_bind_group(self.bindings[stage])
 			cp.dispatch(x, y)
 
 	def draw(self, rp: Any, stage: str) -> None:
@@ -493,9 +493,9 @@ class DrawBatches:
 			spec: ShaderPass | None = getattr(self.shaders[batch.shader_id], stage)
 			if spec is None: continue
 			rp.set_pipeline(spec.pipeline)
-			rp.set_bind_group(1, self.bindings[batch.shader_id, stage])
-			for index, bindings in spec.bindings:
-				rp.set_bind_group(index, bindings)
+			rp.set_bind_group(self.bindings[batch.shader_id, stage])
+			for bindings in spec.bindings:
+				rp.set_bind_group(bindings)
 			mesh = self.meshes[batch.mesh_id].mesh
 			rp.set_vertex_buffer(0, mesh.vertex_buffer)
 			rp.set_index_buffer(mesh.index_buffer, format=mesh.index_format)
@@ -535,7 +535,7 @@ class HZB:
 		self.depth_texture: Texture | None = None
 		self.texture: Texture | None = None
 		self.view: Any = None
-		self.passes: list[tuple[ComputePipeline, Any, int, int]] = []
+		self.passes: list[tuple[ComputePipeline, BindGroup, int, int]] = []
 
 	def resize(self, size: tuple[int, int]) -> bool:
 		shader, pipelines = self._shader, self._pipelines
@@ -562,7 +562,7 @@ class HZB:
 		for mip, (pipeline, bindings, width, height) in enumerate(self.passes):
 			with cmd.compute_pass(label=f"hzb_mip_{mip}") as cp:
 				cp.set_pipeline(pipeline)
-				cp.set_bind_group(0, bindings)
+				cp.set_bind_group(bindings)
 				cp.dispatch((width + 15) // 16, (height + 15) // 16)
 
 

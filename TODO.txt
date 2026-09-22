@@ -1,7 +1,5 @@
-* when syncing draw batches
-   any change triggers a full rebuild / reupload
-   -> should upload only differing ranges
 * add proper monitoring and logging
+* support vegetation / transparency
 * add bindless materials
 * implement Forward+ / tiled shading
 * add compute light binning
