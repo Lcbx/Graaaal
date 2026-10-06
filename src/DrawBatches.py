@@ -98,7 +98,9 @@ class _MeshSelection(Protocol):
 	def __getitem__(self, name: str) -> FieldArray: ...
 
 class DrawBatches:
-	"""Persistent draw resources; record passes explicitly using the caller's commands."""
+	"""Persistent draw resources; record passes explicitly using the caller's commands.
+	requires gpu feature 'indirect-first-instance' ; call ```RenderContext.init_window(..., required_gpu_features=["indirect-first-instance"])```
+	"""
 
 	def __init__(self, instance_dtype: np.dtype[Any], cull_shader: Shader | None = None) -> None:
 		"""The caller supplies the instance layout; cull and draw shaders must match it.

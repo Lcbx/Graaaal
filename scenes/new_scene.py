@@ -1,5 +1,11 @@
-from Utils import *
+#from Utils import *
+
 from pprint import pp
+import io
+import base64
+from pathlib import Path
+from pygltflib import GLTF2, BufferView, Accessor
+from PIL import Image, ImageTk
 
 
 PATH = 'scenes/resources/small_scene.glb'
@@ -9,12 +15,6 @@ PATH = 'scenes/resources/small_scene.glb'
 # properly setup scene based on gltf data
 # support transparency
 
-
-import io
-import base64
-import tkinter as tk
-from pathlib import Path
-from PIL import Image, ImageTk
 
 def get_image_bytes(gltf, image, base_dir = None):
 	if image.uri:
@@ -39,7 +39,36 @@ def get_image_bytes(gltf, image, base_dir = None):
 			
 	return None
 
-def display_textures(gltfm, base_dir = None):
+def uses_alpha_transparency(gltf, mat, base_dir):
+	if mat.alphaMode in ('MASK', 'BLEND'):
+		return True
+	if mat.pbrMetallicRoughness:
+		pbr = mat.pbrMetallicRoughness
+		if pbr.baseColorFactor and pbr.baseColorFactor[3] < 1.0:
+			return True
+		#print("hit", mat.name)
+		if pbr.baseColorTexture is not None:
+			img_obj = gltf.images[gltf.textures[pbr.baseColorTexture.index].source]
+			img_data = get_image_bytes(gltf, img_obj, base_dir)
+			if img_data and Image.open(io.BytesIO(img_data)).convert('RGBA').getchannel('A').getextrema()[0] < 255:
+				return True
+	return False
+
+gltf = GLTF2().load(PATH)
+base_dir = Path(PATH).parent
+print("node name, node mesh id")
+pp([ (node.name, node.mesh) for node in gltf.nodes ])
+print("mesh name, primitive count")
+pp([ (mesh.name, len(mesh.primitives)) for mesh in gltf.meshes ])
+print("node name, mesh id, primitive id, material id")
+pp([ (node.name, node.mesh, prim_id, prim.material) for node in gltf.nodes if node.mesh is not None for prim_id, prim in enumerate(gltf.meshes[node.mesh].primitives) ])
+#pp([ mat.to_dict() for mat in enumerate(gltf.materials) ])
+print("material id, name, uses alpha")
+pp([(i, mat.name, uses_alpha_transparency(gltf, mat, base_dir)) for i, mat in enumerate(gltf.materials)])
+
+
+def display_textures(gltf, base_dir = None):
+	import tkinter as tk
 	
 	root = tk.Tk()
 	root.title("glTF Textures Viewer")
@@ -74,14 +103,4 @@ def display_textures(gltfm, base_dir = None):
 		
 	root.mainloop()
 
-gltf = GLTF2().load(PATH)
-base_dir = Path(PATH).parent
-print("node name, node mesh id")
-pp([ (node.name, node.mesh) for node in gltf.nodes ])
-print("mesh name, prinitive count")
-pp([ (mesh.name, len(mesh.primitives)) for mesh in gltf.meshes ])
-#print("material id, material data")
-#pp([ (prim.material, gltf.materials[prim.material].to_dict()) for mesh in gltf.meshes for prim in mesh.primitives ])
-#pp([ mat.to_dict() for mat in enumerate(gltf.materials) ])
-
-display_textures(gltf) #, base_dir)
+#display_textures(gltf) #, base_dir)
