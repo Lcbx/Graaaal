@@ -50,7 +50,7 @@ using `RenderContext.window_loop()`; legacy Raylib benchmark loops do not use it
 The option requires a positive integer and cannot be combined with testing or
 compilation modes.
 
-All three commands above completed successfully during verification. The
+At the earlier scene-integration checkpoint, all three commands above completed successfully. The
 draw-batch check also logged a growing instance count after a deferred update.
 These checks exercised graphics initialization, shader/pipeline creation, frame
 submission, and clean shutdown. A Windows policy blocked the separate window
@@ -72,21 +72,16 @@ python -m pytest tests/test_scenes.py -q -p no:cacheprovider
 python -m pytest tests/test_scene_caches.py -q -p no:cacheprovider
 ```
 
-The files under `scenes/benchmarks/benchmark_loop.py`, `benchmark_python_only.py`,
-and `benchmark_optimized.py` are legacy Raylib benchmarks and require their optional
-`pyray` backend. The current CPU ECS benchmark is independent of that backend:
+## Benchmarks and ECS documentation
 
-```powershell
-python scenes/benchmarks/benchmark_ecs.py --output result.json
-```
+See the [benchmark guide](benchmarks/README.md) for current CPU, query comparison,
+and bounded upload measurements, plus the optional legacy Raylib scripts.
 
-The Raylib ECS benchmark (`benchmark_optimized.py`) now reuses movement/render
-queries and refreshes them after spawns/deletions. `benchmark_python_only.py`
-retains the non-ECS comparison. The callback regression uses a small Raylib stub
-to check ECS updates and draw counts without opening that optional GUI backend.
+- [ECS usage and API reference](../src/ECS_API.md)
+- [ECS implementation status and backlog](../src/ECS_TODO.md)
+- [ECS measurements and optimization decisions](../src/ECS_BENCHMARKS.md)
 
-After these cache changes, direct drawing completed another 180-frame GPU check
-and the prototype another 120 frames. All 210 selected ECS/scene/draw-batch
-regressions passed, including checks that unchanged fields are not repacked,
-display-only versions control panel rebuilds, and membership/ID reuse refreshes
-the caches. No new screenshot verification was performed.
+The current implementation checkpoint passed 266 ECS/follow-up/scene/draw-batch
+cases; the measured direct-draw check completed 120 frames. Earlier 120/180/1,500
+frame observations above describe separate historical smoke checks. No screenshot
+verification is claimed.

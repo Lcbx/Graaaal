@@ -1,4 +1,7 @@
-# ECS CPU measurements and optimization decisions
+# ECS benchmark results and optimization decisions
+
+Script usage and result layout: [benchmark guide](../scenes/benchmarks/README.md).
+API usage: [ECS_API.md](ECS_API.md).
 
 ## Review follow-up: 2026-11-04
 
@@ -40,10 +43,10 @@ paths preserve correctness without pool-sized extra temporary buffers.
 
 Artifacts:
 
-- [Baseline CPU run](../scenes/benchmarks/ecs_followup_baseline.json)
-- [Current CPU run](../scenes/benchmarks/ecs_followup_current.json)
-- [Alternating query comparison](../scenes/benchmarks/ecs_followup_query_pairs.json)
-- [Bounded rendering run](../scenes/benchmarks/ecs_followup_uploads.json)
+- [Baseline CPU run](../scenes/benchmarks/results/review_2026-11-04/baseline.json)
+- [Current CPU run](../scenes/benchmarks/results/review_2026-11-04/current.json)
+- [Alternating query comparison](../scenes/benchmarks/results/review_2026-11-04/query_pairs.json)
+- [Bounded rendering run](../scenes/benchmarks/results/review_2026-11-04/uploads.json)
 
 The current CPU source hash identifies the measured source. A subsequent annotation
 adjustment to the optional compiler-decorator fallback fixes mypyc validation and
@@ -52,9 +55,9 @@ does not execute in the measured runtime path.
 Reproduce the current CPU run from the repository root:
 
 ```powershell
-python scenes/benchmarks/benchmark_ecs.py --entities 100000 --repeat 11 --loops 50 --output scenes/benchmarks/ecs_followup_current.json
-python scenes/benchmarks/benchmark_ecs_query_pairs.py --implementation path/to/exported/ECS.py --output scenes/benchmarks/ecs_followup_query_pairs.json
-python scenes/benchmarks/benchmark_ecs_uploads.py --frames 120 --output scenes/benchmarks/ecs_followup_uploads.json
+python scenes/benchmarks/benchmark_ecs.py --entities 100000 --repeat 11 --loops 50 --output ecs_cpu_run.json
+python scenes/benchmarks/benchmark_ecs_query_pairs.py --implementation path/to/exported/ECS.py --output ecs_query_pairs_run.json
+python scenes/benchmarks/benchmark_ecs_uploads.py --frames 120 --output ecs_uploads_run.json
 ```
 
 The rendering run used the direct-draw scene's 1,000 moving cubes plus ground.
@@ -82,14 +85,14 @@ Decisions after measurement:
 Phase 6 measurements on Windows 11, AMD64 Family 25 Model 97, Python 3.14.6,
 NumPy 2.4.4. These installed versions differ from `requirements.txt`; results are
 local observations rather than guarantees for the pinned environment or CI.
-All 198 ECS/query/tag/scheduler/optimization/draw-batch regression tests pass.
+At that historical checkpoint, 198 ECS/query/tag/scheduler/optimization/draw-batch tests passed.
 
-## Reproduction and method
+### Phase 6 reproduction and method
 
 Run the standalone CPU benchmark without the rendering engine:
 
 ```powershell
-python scenes/benchmarks/benchmark_ecs.py --entities 100000 --repeat 11 --loops 50 --output scenes/benchmarks/ecs_optimized.json
+python scenes/benchmarks/benchmark_ecs.py --entities 100000 --repeat 11 --loops 50 --output ecs_cpu_run.json
 ```
 
 For comparisons, `--implementation path/to/saved/ECS.py` loads a compatible saved
@@ -98,8 +101,8 @@ to a temporary file before making changes. JSON records include implementation
 SHA-256, interpreter/NumPy/platform, entity counts, repeat count, and loops per sample.
 
 - [Benchmark script](../scenes/benchmarks/benchmark_ecs.py)
-- [Baseline observations](../scenes/benchmarks/ecs_baseline.json)
-- [Optimized observations](../scenes/benchmarks/ecs_optimized.json)
+- [Baseline observations](../scenes/benchmarks/results/phase6/baseline.json)
+- [Optimized observations](../scenes/benchmarks/results/phase6/optimized.json)
 
 Each action has an untimed warmup, then 11 timing samples; medians are shown below.
 Repeated read/update actions run 50 times per sample. Mutating removal and append
@@ -114,7 +117,7 @@ exclude already allocated world storage, and are **not process peak RSS**. Persi
 storage measurements use array `nbytes`. Python allocator state, CPU frequency, and
 other host activity affect elapsed time; small changes are not treated as wins.
 
-## Measurements
+### Phase 6 measurements
 
 All workloads use an entity index space of 100,000 unless noted. Times are ms;
 memory columns are action-only traced peak bytes.
@@ -147,7 +150,7 @@ also retained. Cached query fetch alone stays around 0.0006 ms in these runs, bu
 movement still needs field gathers, arithmetic, and scatter writes. Measuring only
 query lookup substantially understates a system's allocation and execution costs.
 
-## Changes adopted
+### Phase 6 changes adopted
 
 1. **Adaptive required-component candidates.** `where()` and reusable query refresh
    share the same matching helper. When the smallest required store's row span is
@@ -174,7 +177,7 @@ query lookup substantially understates a system's allocation and execution costs
    again after compaction. Non-tail owners and multi-owner batches retain block
    rebuilding. Count limits and layout invalidation remain in force.
 
-## Decisions deferred after measurement
+### Phase 6 decisions deferred after measurement
 
 - **General multicomponent block allocation:** alternating owner updates still
   rebuild blocks. Spare capacity/chunks would change grouping, offsets, and memory
