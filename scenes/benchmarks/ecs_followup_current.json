@@ -1,0 +1,284 @@
+{
+  "environment": {
+    "python": "3.14.6 (tags/v3.14.6:c63aec6, Jun 10 2026, 10:26:10) [MSC v.1944 64 bit (AMD64)]",
+    "numpy": "2.4.4",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+    "entities": 100000,
+    "repeat": 11,
+    "loops": 50,
+    "implementation": "ECS.py",
+    "source_sha256": "9fc1499c205108b36f9e747925bea61d355829d79d814c45ccc5cd68347a362c",
+    "dependency_sha256": {
+      "ecs_commands.py": "0f807a0d2f595cebc53ae8835e121ad4fa0bd6e5f2815a8107e2a37c599df89c",
+      "ecs_diagnostics.py": "cda4473cad93ad165f736c0a8cf36f7f46e8438f376777493087238fedac8e92",
+      "ecs_schedule.py": "e2a64c2dae61454c8d2af5d44d771447a77fac608e4cc928f7ecb443fa49f0ee",
+      "ecs_schema.py": "f3c360fe4e8f9a42de9fb3e751c216a07d3d983f2f4257d8a2181a08474acaaf",
+      "ecs_types.py": "4df6ac46616ab8e4d1cefd38e2456ab96816fcb2eb65b795521353023811d38b"
+    },
+    "memory_metric": "Peak action-only tracemalloc allocation, separate from timing; excludes preexisting storage and is not RSS."
+  },
+  "benchmarks": {
+    "query_100000_of_100000_scan": {
+      "median_ms": 0.079764,
+      "min_ms": 0.079192,
+      "peak_traced_bytes": 1000736,
+      "loops_per_sample": 50
+    },
+    "query_100000_of_100000_candidates": {
+      "median_ms": 0.943492,
+      "min_ms": 0.909808,
+      "peak_traced_bytes": 2468968,
+      "loops_per_sample": 50
+    },
+    "query_100000_of_100000_production": {
+      "median_ms": 0.092272,
+      "min_ms": 0.089266,
+      "peak_traced_bytes": 1000784,
+      "loops_per_sample": 50
+    },
+    "query_100000_of_100000_cached": {
+      "median_ms": 0.000632,
+      "min_ms": 0.00061,
+      "peak_traced_bytes": 640,
+      "loops_per_sample": 50
+    },
+    "query_10000_of_100000_scan": {
+      "median_ms": 0.089898,
+      "min_ms": 0.089126,
+      "peak_traced_bytes": 1000736,
+      "loops_per_sample": 50
+    },
+    "query_10000_of_100000_candidates": {
+      "median_ms": 0.064546,
+      "min_ms": 0.062916,
+      "peak_traced_bytes": 308968,
+      "loops_per_sample": 50
+    },
+    "query_10000_of_100000_production": {
+      "median_ms": 0.10231,
+      "min_ms": 0.098262,
+      "peak_traced_bytes": 1000784,
+      "loops_per_sample": 50
+    },
+    "query_10000_of_100000_cached": {
+      "median_ms": 0.00062,
+      "min_ms": 0.000584,
+      "peak_traced_bytes": 640,
+      "loops_per_sample": 50
+    },
+    "query_1000_of_100000_scan": {
+      "median_ms": 0.057322,
+      "min_ms": 0.056984,
+      "peak_traced_bytes": 1000736,
+      "loops_per_sample": 50
+    },
+    "query_1000_of_100000_candidates": {
+      "median_ms": 0.011364,
+      "min_ms": 0.010982,
+      "peak_traced_bytes": 35432,
+      "loops_per_sample": 50
+    },
+    "query_1000_of_100000_production": {
+      "median_ms": 0.01928,
+      "min_ms": 0.011442,
+      "peak_traced_bytes": 31384,
+      "loops_per_sample": 50
+    },
+    "query_1000_of_100000_cached": {
+      "median_ms": 0.00063,
+      "min_ms": 0.000598,
+      "peak_traced_bytes": 640,
+      "loops_per_sample": 50
+    },
+    "query_100_of_100000_scan": {
+      "median_ms": 0.052248,
+      "min_ms": 0.051856,
+      "peak_traced_bytes": 1000736,
+      "loops_per_sample": 50
+    },
+    "query_100_of_100000_candidates": {
+      "median_ms": 0.005332,
+      "min_ms": 0.005298,
+      "peak_traced_bytes": 6600,
+      "loops_per_sample": 50
+    },
+    "query_100_of_100000_production": {
+      "median_ms": 0.005802,
+      "min_ms": 0.0057,
+      "peak_traced_bytes": 6184,
+      "loops_per_sample": 50
+    },
+    "query_100_of_100000_cached": {
+      "median_ms": 0.000618,
+      "min_ms": 0.00061,
+      "peak_traced_bytes": 640,
+      "loops_per_sample": 50
+    },
+    "movement_gather_scatter_uncached": {
+      "median_ms": 4.562382,
+      "min_ms": 4.454138,
+      "peak_traced_bytes": 4001826,
+      "loops_per_sample": 50
+    },
+    "movement_gather_scatter_cached": {
+      "median_ms": 1.418788,
+      "min_ms": 1.39711,
+      "peak_traced_bytes": 2401168,
+      "loops_per_sample": 50
+    },
+    "query_heavily_deleted_world": {
+      "median_ms": 0.006324,
+      "min_ms": 0.006092,
+      "peak_traced_bytes": 6184,
+      "loops_per_sample": 50
+    },
+    "remove_1_from_100000": {
+      "median_ms": 0.0355,
+      "min_ms": 0.0326,
+      "peak_traced_bytes": 4312,
+      "loops_per_sample": 1
+    },
+    "remove_1_sources_full_mask": {
+      "median_ms": 0.003212,
+      "min_ms": 0.00318,
+      "peak_traced_bytes": 103553,
+      "loops_per_sample": 50
+    },
+    "remove_1_sources_tail_mask": {
+      "median_ms": 0.002422,
+      "min_ms": 0.002414,
+      "peak_traced_bytes": 1675,
+      "loops_per_sample": 50
+    },
+    "remove_4_from_100000": {
+      "median_ms": 0.0513,
+      "min_ms": 0.0459,
+      "peak_traced_bytes": 4952,
+      "loops_per_sample": 1
+    },
+    "remove_4_sources_full_mask": {
+      "median_ms": 0.003284,
+      "min_ms": 0.003256,
+      "peak_traced_bytes": 103577,
+      "loops_per_sample": 50
+    },
+    "remove_4_sources_tail_mask": {
+      "median_ms": 0.002976,
+      "min_ms": 0.002956,
+      "peak_traced_bytes": 1693,
+      "loops_per_sample": 50
+    },
+    "remove_8_from_100000": {
+      "median_ms": 0.0511,
+      "min_ms": 0.0481,
+      "peak_traced_bytes": 5112,
+      "loops_per_sample": 1
+    },
+    "remove_8_sources_full_mask": {
+      "median_ms": 0.003316,
+      "min_ms": 0.003274,
+      "peak_traced_bytes": 103609,
+      "loops_per_sample": 50
+    },
+    "remove_8_sources_tail_mask": {
+      "median_ms": 0.003146,
+      "min_ms": 0.00314,
+      "peak_traced_bytes": 2032,
+      "loops_per_sample": 50
+    },
+    "remove_16_from_100000": {
+      "median_ms": 0.0613,
+      "min_ms": 0.0428,
+      "peak_traced_bytes": 105008,
+      "loops_per_sample": 1
+    },
+    "remove_16_sources_full_mask": {
+      "median_ms": 0.003324,
+      "min_ms": 0.00331,
+      "peak_traced_bytes": 103673,
+      "loops_per_sample": 50
+    },
+    "remove_16_sources_tail_mask": {
+      "median_ms": 0.00326,
+      "min_ms": 0.00322,
+      "peak_traced_bytes": 3760,
+      "loops_per_sample": 50
+    },
+    "remove_64_from_100000": {
+      "median_ms": 0.0738,
+      "min_ms": 0.0495,
+      "peak_traced_bytes": 107088,
+      "loops_per_sample": 1
+    },
+    "remove_64_sources_full_mask": {
+      "median_ms": 0.003482,
+      "min_ms": 0.003466,
+      "peak_traced_bytes": 104057,
+      "loops_per_sample": 50
+    },
+    "remove_64_sources_tail_mask": {
+      "median_ms": 0.004798,
+      "min_ms": 0.004752,
+      "peak_traced_bytes": 38320,
+      "loops_per_sample": 50
+    },
+    "membership_churn_100_owners_two_queries": {
+      "median_ms": 1.744312,
+      "min_ms": 1.629546,
+      "peak_traced_bytes": 7126347,
+      "loops_per_sample": 50
+    },
+    "append_256_tail_owner": {
+      "median_ms": 17.5335,
+      "min_ms": 17.4197,
+      "peak_traced_bytes": 25511,
+      "loops_per_sample": 1
+    },
+    "append_256_alternating_owners": {
+      "median_ms": 31.0391,
+      "min_ms": 30.2599,
+      "peak_traced_bytes": 36416,
+      "loops_per_sample": 1
+    },
+    "append_256_one_batch": {
+      "median_ms": 0.1244,
+      "min_ms": 0.1211,
+      "peak_traced_bytes": 33882,
+      "loops_per_sample": 1
+    },
+    "append_1024_tail_owner": {
+      "median_ms": 69.2012,
+      "min_ms": 69.0072,
+      "peak_traced_bytes": 49751,
+      "loops_per_sample": 1
+    },
+    "append_1024_alternating_owners": {
+      "median_ms": 130.5569,
+      "min_ms": 128.4704,
+      "peak_traced_bytes": 56916,
+      "loops_per_sample": 1
+    },
+    "append_1024_one_batch": {
+      "median_ms": 0.143,
+      "min_ms": 0.1379,
+      "peak_traced_bytes": 108631,
+      "loops_per_sample": 1
+    }
+  },
+  "rare_high_index_memory": {
+    "high_index": 99999,
+    "owners": 1,
+    "sparse_bytes": 524288,
+    "dense_bytes": 1024,
+    "world_state_bytes": 2097152,
+    "hypothetical_one_page_bytes": 1024
+  },
+  "dirty_tracking_estimate": {
+    "entities": 100000,
+    "changed_entities": 100,
+    "position_field_bytes": 2400000,
+    "changed_position_bytes": 2400,
+    "note": "Byte estimates only; no dirty-tracking implementation or upload benchmark."
+  }
+}

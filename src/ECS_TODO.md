@@ -4,12 +4,243 @@ Scope: strengthen `src/ECS.py`, then extend its query and update APIs while
 preserving its NumPy column storage and batched operations. This document plans
 the work and tracks implementation progress.
 
-Review baseline: all 40 tests in `tests/ecs_tests.py` passed. Additional review
+Historical review baseline: all 40 tests in `tests/ecs_tests.py` passed. Additional review
 probes reproduced duplicate single-component rows, stale selection writes,
 multicomponent count overflow, partially applied additions, and metadata field
 collisions. Convert those probes into permanent regression tests first.
 
-## Implementation status
+## Active follow-up plan (2026-11-04 review)
+
+Phases 1-10 are complete. The follow-up checklist below records implementation
+and validation of the 2026-11-04 review. Keep the
+NumPy column storage, batched operations, generational IDs, and the separate
+membership/layout/field version contracts.
+
+Implementation validation: 266 tests passed across the nine ECS/follow-up/scene/
+draw-batch suites, including 56 new follow-up cases and a 160-step seeded reference
+model. The mypyc entry builds; 240 cases also pass against its temporary extension
+(the query suite's monkeypatch instrumentation is exercised in the source run).
+The migrated direct-draw scene completed 120 frames with measured CPU packing and
+upload submission. Historical 198/210-test results below describe earlier runs.
+
+API contracts and examples: [ECS_API.md](ECS_API.md). Performance observations,
+artifact links, and deferred optimization decisions: [ECS_BENCHMARKS.md](ECS_BENCHMARKS.md).
+
+| Phase | Priority | Deliverable | Dependencies |
+| --- | --- | --- | --- |
+| 7 | Correctness first | Repair six reproduced boundary failures | Existing implementation |
+| 8 | API usability | Checked row editing and explicit batch payloads | Relevant Phase 7 fixes |
+| 9 | Maintainability | Shared schema/write paths and smaller modules | Phase 7; Phase 8 contracts settled |
+| 10 | Observability | Diagnostics, allocation controls, workload measurements | Stable schema/storage boundaries |
+
+Deliver Phase 7 as focused fixes. Introduce only the small shared helpers needed
+for each fix; the broader Phase 9 refactor must not delay correctness work.
+
+### Phase 7: close reproduced correctness gaps
+
+#### 7.1 Shaped vector round trips (P1)
+
+`set_vector()` currently consumes one column per field, while `vector()` expands
+a vector field across several columns. For one entity, a shaped field containing
+`[1, 2, 3]` becomes `[1, 1, 1]` after `s.set_vector(s.vector())`.
+
+- [x] Derive each field's flattened column width from its storage shape; scalar
+      fields occupy one column, shaped fields occupy the product of their dimensions.
+- [x] Make `vector()` flatten trailing field dimensions in a documented order;
+      make `set_vector()` split and reshape those same column spans.
+- [x] Preserve the `(row_count, 0)` tag contract and explicitly requested field order.
+- [x] Document dtype promotion and which field dtypes support vector conversion;
+      unsupported combinations must fail before writes.
+- [x] Cover scalar fields, Vec3/Vec4-compatible shapes, mixed scalar/shaped fields,
+      higher-rank shapes, explicit subsets/order, empty selections, and tags.
+
+Acceptance: a supported vector round trip preserves every field value and shape,
+including the single-entity case that currently corrupts data.
+
+#### 7.2 Creation quantity validation (P2)
+
+`ECS.create(1.5)` currently returns two IDs and stores fractional entity counters.
+
+- [x] Normalize quantities through `operator.index` before comparisons, free-list
+      consumption, allocation, or counter changes; share this rule with deferred creation.
+- [x] Accept Python/NumPy integer quantities; reject floats (including `1.0`) and
+      strings. State the boolean policy consistently in both creation APIs.
+- [x] Test invalid quantities in fresh worlds and worlds with recycled IDs, plus
+      zero, negative, valid NumPy integer, and exhausted-index cases.
+
+Acceptance: invalid creation leaves the free list, live handles, masks, counts,
+next index, and lifecycle version unchanged; `len(world)` remains usable.
+
+#### 7.3 Lossless entity and row input conversion (P2)
+
+`delete(0.9)` currently deletes entity zero. A raw `uint64` row containing `2**32`
+narrows to row zero and can remove another entity's component.
+
+- [x] Validate integer input types, dimensionality, and target dtype bounds before
+      casting in the shared entity/row conversion helpers.
+- [x] Specify consistent errors for non-integer, negative, and overflowing inputs;
+      retain scalar-to-one-element and empty-input behavior.
+- [x] Keep representable stale/out-of-world entity handles subject to the existing
+      liveness policy; distinguish invalid numeric representation from stale identity.
+- [x] Exercise scalar and sequence inputs, signed/unsigned arrays, large Python
+      integers, floats, and narrowing boundaries through read and mutation APIs.
+- [x] Verify command enqueueing uses the same validation and rejects invalid targets
+      before adding a command. Preserve full generational uint64 handles.
+
+Acceptance: invalid input cannot alias a different entity or row; rejected mutation
+and enqueue requests leave world state, versions, and command queues unchanged.
+
+#### 7.4 Preflight vector and field assignments (P2)
+
+For an `(x, y)` component, `set_vector([[99]])` currently changes `x` before raising
+on the missing `y` column. Field setters also advance versions before assignment
+validation succeeds.
+
+- [x] Validate every requested field, exact matrix shape, and dtype conversion
+      before committing a vector write; use the column spans from 7.1.
+- [x] Prepare field assignments before writing, then advance affected field
+      versions only after successful commit. Share the primitive across bracket
+      and attribute setters, preserving documented broadcasting behavior.
+- [x] Cover missing/extra columns, invalid later fields, failed later conversions,
+      stale selections, empty selections, and successful writes.
+
+Acceptance: expected validation failures preserve all values and all version
+counters. Successful field writes keep membership/layout unchanged and advance
+only the affected field counters. Allocation failures and arbitrary exceptions in
+user code remain outside the transaction guarantee.
+
+#### 7.5 Object references inside structured dtypes (P2)
+
+Deletion currently clears only plain object arrays. A structured dtype such as
+`np.dtype([('payload', object)])` retains its deleted payload in inactive storage.
+
+- [x] Use `dtype.hasobject` to identify all fields containing Python references.
+- [x] Define recursive reference clearing for structured and shaped object fields;
+      apply it consistently during initialization, growth, removal, and compaction.
+- [x] Retain support for currently accepted structured schemas. If a layout cannot
+      be supported safely, reject it during registration with an explicit error.
+- [x] Add weak-reference regressions for single and multicomponent deletion,
+      partial removal, block rebuilding, growth, and compaction; drop test-owned
+      references before asserting collection.
+
+Acceptance: inactive storage retains no removed payload references; live payloads
+and metadata remain intact after moves and compaction.
+
+#### 7.6 Synchronous scheduler callbacks (P2)
+
+Registering an async system currently succeeds, but its body never runs and Python
+reports an unawaited coroutine. Generator callbacks also do not execute their body.
+
+- [x] Extract a shared synchronous-callable check from predicate validation;
+      retain separate signature rules for predicates and system callbacks.
+- [x] Reject coroutine, async-generator, and generator systems at registration,
+      including partials, bound methods, and callable objects where inspectable.
+- [x] Cover valid ordinary callbacks and rejected callback forms; failed registration
+      must preserve the schedule and its compiled order.
+
+Acceptance: unsupported systems raise a clear `TypeError` before execution;
+supported systems retain dependency ordering, flush boundaries, and failure behavior.
+
+### Phase 8: complete and clarify the public API
+
+#### 8.1 Edit exact checked row subsets
+
+- [x] Add `accessor.select_rows(rows)` accepting `ComponentRows` or a checked
+      `ComponentSelection`; validate storage identity and layout before selection.
+- [x] Add `selection.take(key)` for positional slicing, integer selection, and
+      boolean filtering; keep `selection['field']` exclusively for field access.
+- [x] Preserve row order and duplicates; document NumPy assignment semantics for
+      repeated rows, including that augmented writes do not accumulate per occurrence.
+- [x] Demonstrate predicate-row editing of one multicomponent instance without
+      expanding all instances belonging to its owner.
+- [x] Cover foreign/stale rows, empty subsets, slicing, filtering, duplicate rows,
+      version changes, and use with reusable query selections.
+
+Acceptance: callers can edit exactly the matching instances using public methods,
+with existing lifetime checks and no access to `_store` or raw dense arrays.
+
+#### 8.2 Explicit named column payloads and writes
+
+- [x] Introduce an explicit batch payload, provisionally `columns(Component,
+      x=xs, y=ys)`, accepted by `add()`, `set()`, and deferred commands.
+- [x] Require the complete field set for insertion/replacement; validate missing,
+      unknown, and reserved names. Keep component instances as broadcast payloads.
+- [x] Normalize named payloads through the existing whole-request preflight;
+      support shaped/object fields, tags, stale-handle filtering, and repeated
+      multicomponent payloads without losing batch atomicity.
+- [x] Add an explicit `selection.assign(**fields)` operation for partial field
+      updates, using the shared validation/commit primitive from 7.4. Retain bracket
+      assignment for names that cannot be passed conveniently as keywords.
+- [x] Preserve existing positional payload forms during migration; use named
+      payloads in new examples and migrate representative scene/benchmark callers.
+- [x] Document entity addressing versus row addressing, copy-on-read behavior,
+      `touch()` for object edits, and the different empty-term behavior of legacy
+      `where()` and reusable `query()`. Prefer checked rows in retained results.
+
+Acceptance: named payloads are unambiguous and behave identically across immediate
+and deferred APIs. Multi-type validation errors leave the whole request unapplied.
+Examples show one canonical batch form and explicit field write-back.
+
+### Phase 9: consolidate internals without changing storage contracts
+
+- [x] Extract a component schema containing field order, dtypes, shapes, vector
+      column spans, object-reference metadata, and normalization rules.
+- [x] Replace positional preparation tuples with a named prepared-mutation record;
+      keep preflight and commit visibly separate.
+- [x] Route attribute/bracket writes, vector writes, `assign()`, and `ECS.set()`
+      through shared preparation and commit code with consistent version semantics.
+- [x] Make entity masks private; audit callers and offer a defensive inspection
+      snapshot if needed so external writes cannot invalidate query-cache assumptions.
+- [x] Extract scheduling and command buffering into focused modules, then separate
+      schema/storage/query code where this reduces coupling. Preserve `from ECS
+      import ...` through a facade and verify the repository's mypyc build entry.
+- [x] Expand the seeded reference model only for the new mutation/input contracts;
+      run existing storage, query, command, rendering, and scene integration checks.
+
+Acceptance: imports and supported call forms continue working; cached joins,
+selection expiry, masks, ownership, object cleanup, and version tokens retain their
+specified behavior. Compare affected hot paths with the existing CPU benchmark;
+investigate material regressions before adopting the refactor.
+
+### Phase 10: diagnostics and measured follow-up features
+
+- [x] Add storage/world inspection for live entity and owner counts, active rows,
+      capacity, fragmentation, sparse/dense array bytes, and registered schemas.
+      Describe byte counts as array storage, excluding referenced object graphs.
+- [x] Extract a callable debug invariant checker from the existing reference-test
+      assertions; check generations, masks, sparse mappings, block counts, and
+      inactive reference cleanup. Keep it explicitly invoked outside update hot paths.
+- [x] Expose public reserve/compact controls with documented scope and lifetime
+      effects: dense reallocation or relocation expires selections; capacity-only
+      changes do not change membership or field values.
+- [x] Measure gather/scatter allocations, alternating-owner multicomponent appends,
+      rare high-index sparse maps, and rendering uploads under realistic workloads.
+      Record environment, counts, timings, and memory using the existing methodology.
+- [x] Use those results to decide whether dirty-row/chunk tracking, paged sparse
+      maps, or owner-block spare capacity justify implementation; record each decision
+      and its evidence in `ECS_BENCHMARKS.md`.
+
+Acceptance: diagnostics agree with storage invariants and array sizes; allocation
+controls preserve values and invalidate selections as documented. Storage algorithm
+changes require measured benefits and the existing correctness checks.
+
+### Follow-up validation and delivery
+
+- [x] Add focused regressions for each Phase 7 failure before its fix; deliver
+      each independently reviewable correctness change before broader refactoring.
+- [x] After storage/input changes, run `test_ecs_main.py`; include query, tag,
+      scheduler, optimization, and draw-batch suites for the affected contracts.
+- [x] After Phase 8 caller migration and Phase 9 extraction, run all eight suites
+      listed in the historical validation section, including both scene suites.
+- [x] Run commands from the repository root with `$env:PYTHONPATH='src'` and
+      `python -m pytest <affected test paths> -q -p no:cacheprovider`.
+- [x] Document intentional compatibility changes: rejecting lossy numeric inputs,
+      synchronous system enforcement, vector validation, and version behavior on
+      rejected writes. Mark each phase complete only after its acceptance checks pass.
+- [x] Refresh baseline counts/results with the exact suites and environment used;
+      keep historical CPU/GPU checks distinct from new validation.
+
+## Completed implementation status (Phases 1-6)
 
 Phases 1-6 are complete. Phase 6 added reproducible CPU measurements and three
 targeted optimizations; larger storage and dirty-tracking changes remain deferred
@@ -534,6 +765,9 @@ implemented and measured. Other paths retain their existing algorithms.
 
 ## Deferred until a caller needs them
 
+- Optional strict/debug handling of representable stale entity handles; ordinary
+  APIs continue ignoring them unless a caller establishes a stricter contract.
+- Stable multicomponent instance handles and replacement/remapping semantics.
 - General relationship traversal, parent-child hierarchies, and deletion policies.
 - Prefabs, serialization, schema migration, and entity-reference remapping.
 - Resource injection, lifecycle observers, and event routing.

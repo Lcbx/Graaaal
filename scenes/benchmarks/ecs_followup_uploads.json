@@ -1,0 +1,26 @@
+{
+  "environment": {
+    "python": "3.14.6 (tags/v3.14.6:c63aec6, Jun 10 2026, 10:26:10) [MSC v.1944 64 bit (AMD64)]",
+    "numpy": "2.4.4",
+    "platform": "Windows-11-10.0.26200-SP0"
+  },
+  "frames": 120,
+  "cpu_instance_packing": {
+    "calls": 121,
+    "changed": 121,
+    "cpu_ms": 4.2585999999999995
+  },
+  "uploads": {
+    "None | [('iPosition', '<f4', (3,)), ('iTint', '<u4', (1,)), ('iRotation', '<u4', (2,)), ('iScale', '<u4', (2,))]": {
+      "calls": 120,
+      "array_bytes_submitted": 3843840,
+      "cpu_ms": 2.7091000000000007
+    },
+    "uniforms | [('view', '<f4', (4, 4)), ('proj', '<f4', (4, 4)), ('light_dir', '<f4', (4,)), ('light_view_proj', '<f4', (4, 4))]": {
+      "calls": 120,
+      "array_bytes_submitted": 24960,
+      "cpu_ms": 1.2962000000000002
+    }
+  },
+  "metric": "CPU submission time, not GPU completion; byte counts use full CPU arrays."
+}

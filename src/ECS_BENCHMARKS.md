@@ -1,5 +1,84 @@
 # ECS CPU measurements and optimization decisions
 
+## Review follow-up: 2026-11-04
+
+Phases 7-10 retain the storage algorithms while repairing validation, completing
+row editing, and extracting schema/command/scheduler modules. The CPU benchmark
+now uses named payloads for current implementations and keeps compatibility with
+older standalone snapshots. It deliberately reads internal mask buffers when
+measuring scans: the public mask property now returns a defensive copy. Current
+records include hashes for the extracted dependency modules.
+
+Environment: Windows 11, AMD64 Family 25 Model 97, Python 3.14.6, NumPy 2.4.4.
+CPU runs used 100,000 entities, 11 samples, and 50 iterations for repeated reads/
+updates; mutations used fresh worlds with one action per sample. Setup remained
+outside timing. Memory is separate action-only tracemalloc peak, as described below.
+The baseline is `src/ECS.py` from revision
+`72b28d57baa79e7ee9c294570d562aa2429bb38d`, exported before these changes.
+
+| Operation | Baseline ms | Current ms | Baseline peak bytes | Current peak bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Required query, 100,000 matches | 0.0947 | 0.0923 | 1,000,784 | 1,000,784 |
+| Required query, 1,000 matches | 0.0115 | 0.0193 | 31,384 | 31,384 |
+| Required query, 100 matches | 0.0057 | 0.0058 | 6,184 | 6,184 |
+| Movement, uncached join plus gather/scatter | 4.3518 | 4.5624 | 4,001,482 | 4,001,826 |
+| Movement, cached join plus gather/scatter | 2.0056 | 1.4188 | 2,400,760 | 2,401,168 |
+| 1,024 tail-owner appends | 68.2918 | 69.2012 | 49,676 | 49,751 |
+| 1,024 alternating-owner appends | 125.0547 | 130.5569 | 59,155 | 56,916 |
+| 1,024 rows in one append batch | 0.1481 | 0.1430 | 108,658 | 108,631 |
+
+The 1,000-match outlier prompted an alternating comparison in the same process:
+25 samples per implementation, 200 scans per sample, reversing implementation
+order on successive samples. Baseline/current medians were 0.07771/0.07753 ms at
+100,000 matches, 0.01126/0.01128 ms at 1,000, and 0.00581/0.00581 ms at 100.
+The scan algorithm is unchanged; the isolated comparison does not reproduce the
+sparse-query slowdown. Small cross-run timing differences are not optimization
+claims. Validation avoids redundant range scans for arrays already in the exact
+unsigned target dtype; the cached movement result shows why those scans matter.
+Gather/scatter allocations remain essentially unchanged, and the new validation
+paths preserve correctness without pool-sized extra temporary buffers.
+
+Artifacts:
+
+- [Baseline CPU run](../scenes/benchmarks/ecs_followup_baseline.json)
+- [Current CPU run](../scenes/benchmarks/ecs_followup_current.json)
+- [Alternating query comparison](../scenes/benchmarks/ecs_followup_query_pairs.json)
+- [Bounded rendering run](../scenes/benchmarks/ecs_followup_uploads.json)
+
+The current CPU source hash identifies the measured source. A subsequent annotation
+adjustment to the optional compiler-decorator fallback fixes mypyc validation and
+does not execute in the measured runtime path.
+
+Reproduce the current CPU run from the repository root:
+
+```powershell
+python scenes/benchmarks/benchmark_ecs.py --entities 100000 --repeat 11 --loops 50 --output scenes/benchmarks/ecs_followup_current.json
+python scenes/benchmarks/benchmark_ecs_query_pairs.py --implementation path/to/exported/ECS.py --output scenes/benchmarks/ecs_followup_query_pairs.json
+python scenes/benchmarks/benchmark_ecs_uploads.py --frames 120 --output scenes/benchmarks/ecs_followup_uploads.json
+```
+
+The rendering run used the direct-draw scene's 1,000 moving cubes plus ground.
+Across 121 cache calls (initialization plus frames), packing took 4.259 ms total.
+The instance buffer submitted 3,843,840 bytes across 120 uploads, taking 2.709 ms
+of CPU time; uniform uploads submitted 24,960 bytes and took 1.296 ms. These are
+CPU durations around cache packing and `GpuBuffer.upload()`, not GPU completion
+times or frame-time guarantees. Buffer initialization paths outside `upload()`
+are excluded from upload counts. Scene data and host/GPU activity vary between runs.
+
+Decisions after measurement:
+
+- Retain field-wide versions: this scene changes all moving positions each frame,
+  and total measured submission cost is small. Dirty-row/chunk tracking still needs
+  a sparsely changing rendering workload to justify bookkeeping and range uploads.
+- Retain flat sparse maps: a single tag on owner 99,999 still uses 524,288 sparse
+  bytes and 1,024 dense bytes. The memory opportunity is real; paging needs lookup
+  measurements before adoption.
+- Retain owner-block rebuilding: alternating 1,024 appends cost about 131 ms versus
+  0.143 ms for a batch. Prefer batching; spare-capacity/chunk designs remain a
+  separate change requiring instance-order and fragmentation tradeoff measurements.
+
+## Historical Phase 6 measurements
+
 Phase 6 measurements on Windows 11, AMD64 Family 25 Model 97, Python 3.14.6,
 NumPy 2.4.4. These installed versions differ from `requirements.txt`; results are
 local observations rather than guarantees for the pinned environment or CI.

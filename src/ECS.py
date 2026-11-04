@@ -1,130 +1,30 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
-from enum import IntFlag
-from collections import deque
-import inspect
-from operator import index as integer_index
-from typing import cast, Any, Callable, ClassVar, Iterable, Iterator, Mapping, Sequence, TypeAlias, get_origin, get_type_hints
-
+from dataclasses import dataclass
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence, TypeAlias
 import numpy as np
+import inspect
+try:
+	from mypy_extensions import mypyc_attr
+except ImportError:
+	# Compilation support is optional for the NumPy-only runtime.
+	def mypyc_attr(*attrs: str, **options: object) -> Any:  # type: ignore[misc]
+		return lambda cls: cls
 from numpy.typing import NDArray
 
-def component(cls: type | None = None, *, multiples: bool = False) -> Any | Callable:
-	def decorator(target: Any) -> Any:
-		setattr(target, "_multicomponent", multiples)
-		return dataclass(target)
-	if cls is None:
-		return decorator
-	return decorator(cls)
+from ecs_types import (
+	Entity, Index, Generation, Mask, ComponentPerEntityCount,
+	EntityArray, IndexArray, GenerationArray, MaskArray, CountArray, BoolArray, FieldArray,
+	EntityLike, IndexLike, INDEX_MAX, INDEX_BITS, INDEX_MASK, GENERATION_INCREMENT,
+	NONE, NO_ENTITY, INITIAL_CAPACITY, OBJECT_DTYPE,
+	component, higher_pow2, entity_index, entity_generation, as_entities, as_rows, arg_names,
+)
+from ecs_types import _quantity, _entity_indices, _clear_object_references, _predicate_parameters, _dtype_for, _ENTITY_STR, _COUNT_STR
+from ecs_schema import ComponentColumns, ComponentSchema, columns
+from ecs_commands import CommandBuffer, CommandError, DeferredEntities
+from ecs_schedule import Scheduler
+from ecs_diagnostics import storage_info, world_info, check_world
 
-
-Entity                  = np.uint64
-Index                   = np.uint32
-Generation              = np.uint32
-Mask                    = np.uint64
-ComponentPerEntityCount = np.uint16
-
-EntityArray     : TypeAlias = NDArray[Entity]
-IndexArray      : TypeAlias = NDArray[Index]
-GenerationArray : TypeAlias = NDArray[Generation]
-MaskArray       : TypeAlias = NDArray[Mask]
-CountArray      : TypeAlias = NDArray[ComponentPerEntityCount]
-BoolArray       : TypeAlias = NDArray[np.bool_]
-FieldArray      : TypeAlias = NDArray[Any]
-
-EntityLike: TypeAlias = Entity | int | EntityArray | Sequence[int]
-IndexLike:  TypeAlias = Index  | int | IndexArray  | Sequence[int]
-
-
-INDEX_MAX            = int(np.iinfo(Index).max)
-INDEX_BITS           = np.dtype(Index).itemsize * 8
-INDEX_MASK           = Entity(INDEX_MAX)
-GENERATION_INCREMENT = Entity(1 << INDEX_BITS)
-NONE                 = Index(INDEX_MAX)
-NO_ENTITY            = Entity(np.iinfo(Entity).max)
-INITIAL_CAPACITY     = 128
-OBJECT_DTYPE         = np.dtype(object)
-_ENTITY_STR          = "_entity"
-_COUNT_STR           = "_count"
-
-
-# useful for buffer resizing
-# 0->1, 1->2, 2->4, 3->4, 4->8, 5->8
-def higher_pow2(n: int|np.uint32|np.uint64) -> int:
-	return 1 << int(n).bit_length()
-
-def entity_index(entity: Entity | EntityArray) -> Index | IndexArray:
-	result = np.asarray(entity, dtype=Entity)
-	if result.ndim == 0: return Index(result & INDEX_MASK)
-	return _entity_indices(result)
-
-def entity_generation(entity: Entity | EntityArray) -> Generation | GenerationArray:
-	result = np.asarray(entity, dtype=Entity) >> Entity(INDEX_BITS)
-	if result.ndim == 0: return Generation(result)
-	return result.astype(Generation, copy=False)
-
-def _entity_indices(entities: EntityArray) -> IndexArray:
-	return (entities & INDEX_MASK).astype(Index, copy=False)
-
-def as_entities(entities: EntityLike) -> EntityArray:
-	return cast(EntityArray, _as_1D_dtype(entities, Entity))
-
-def as_rows(rows: IndexLike) -> IndexArray:
-	return cast(IndexArray, _as_1D_dtype(rows, Index))
-
-def _as_1D_dtype(array:Any, ndtype:type) -> FieldArray:
-	array = np.asarray(array, dtype=ndtype)
-	if array.ndim == 0: return array.reshape(1)
-	if array.ndim != 1: raise ValueError("parameter must be a scalar or a 1-D array")
-	return array
-
-def arg_names(func:Callable)->Sequence[str]:
-	return tuple(param.name for param in _predicate_parameters(func))
-
-def _predicate_parameters(func: Callable[..., Any]) -> tuple[inspect.Parameter, ...]:
-	"""Validate a synchronous predicate that can receive component fields by name."""
-	if not callable(func):
-		raise TypeError("query predicate must be callable")
-	for target in (func, getattr(func, "__call__", None)):
-		if inspect.iscoroutinefunction(target) or inspect.isasyncgenfunction(target) or inspect.isgeneratorfunction(target):
-			raise TypeError("query predicate must return booleans synchronously")
-	try:
-		params = tuple(inspect.signature(func).parameters.values())
-	except (TypeError, ValueError) as error:
-		raise TypeError("query predicate requires an inspectable signature; wrap it in a named-field function") from error
-	if any(param.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY) for param in params):
-		raise TypeError("query predicate requires named parameters; positional-only and variadic parameters are unsupported")
-	return params
-
-def _component_fields(component_cls: type[Any]) -> tuple[tuple[str, Any], ...]:
-	hints = get_type_hints(component_cls)
-	if is_dataclass(component_cls):
-		return tuple(
-			(field.name, hints.get(field.name, field.type))
-			for field in dataclass_fields(component_cls)
-			if get_origin(hints.get(field.name, field.type)) is not ClassVar
-		)
-	return tuple(
-		(name, annotation)
-		for name, annotation in hints.items()
-		if get_origin(annotation) is not ClassVar
-	)
-
-
-def _dtype_for(annotation: Any) -> np.dtype[Any]:
-	if isinstance(annotation, type):
-		if issubclass(annotation, IntFlag):
-			return np.dtype(np.int64)
-		if hasattr(annotation, "storage_dtype"):
-			return annotation.storage_dtype()
-		if issubclass(annotation, (str, bytes)):
-			return OBJECT_DTYPE
-	try:
-		return np.dtype(annotation)
-	except TypeError:
-		...
-	return OBJECT_DTYPE
 
 class _RowSelection:
 	"""Common storage identity, row ownership, and lifetime checks."""
@@ -182,20 +82,41 @@ class ComponentSelection(_RowSelection):
 		self._validate()
 		return ComponentRows(self._store, self._rows)
 
+	def take(self, key: Any) -> ComponentSelection:
+		"""Slice/filter positions, preserving duplicates and lifetime checks."""
+		self._validate()
+		return ComponentSelection(self._store, as_rows(self._rows[key]))
+
+	def assign(self, **fields: Any) -> None:
+		"""Assign fields atomically; repeated rows use NumPy last-write semantics."""
+		self._validate()
+		self._store._write_fields(self._rows, fields)
+
 	def vector(self, *field_names: str) -> FieldArray:
+		"""Pack numeric fields in C order, using NumPy dtype promotion."""
 		self._validate()
 		field_names = field_names or self._store.fields
 		if not field_names:
 			return np.empty((len(self), 0))
-		return np.column_stack( tuple(self[field] for field in field_names) )
+		widths = self._store.schema.vector_widths(field_names)
+		return np.concatenate([self[field].reshape(len(self), width) for field, width in zip(field_names, widths)], axis=1)
 
 	def set_vector(self, value : FieldArray, *field_names: str) -> None:
 		self._validate()
 		field_names = field_names or self._store.fields
-		if not field_names and np.shape(value) != (len(self), 0):
+		widths = self._store.schema.vector_widths(field_names)
+		value = np.asarray(value)
+		if not field_names and value.shape != (len(self), 0):
 			raise ValueError("tag vectors must have shape (number of rows, 0)")
-		for i, field in enumerate(field_names):
-			self[field] = value[:, i]
+		if value.shape != (len(self), sum(widths)):
+			raise ValueError(f"vector expects shape {(len(self), sum(widths))}, got {value.shape}")
+		values = {}
+		start = 0
+		for field, width in zip(field_names, widths):
+			shape = self._store._dense[field].shape[1:]
+			values[field] = value[:, start:start + width].reshape((len(self),) + shape)
+			start += width
+		self._store._write_fields(self._rows, values)
 
 	def __getitem__(self, field: str) -> FieldArray:
 		self._validate()
@@ -203,9 +124,7 @@ class ComponentSelection(_RowSelection):
 
 	def __setitem__(self, field: str, value: Any) -> None:
 		self._validate()
-		array = self._store._dense[field]
-		if self._rows.size: self._store.touch(field)
-		array[self._rows] = value
+		self._store._write_fields(self._rows, {field: value})
 
 	def __getattr__(self, name: str) -> FieldArray:
 		self._validate()
@@ -221,13 +140,8 @@ class ComponentSelection(_RowSelection):
 			return
 
 		self._validate()
-		try:
-			array = self._store._dense[name]
-		except KeyError:
-			raise AttributeError(name) from None
-
-		if self._rows.size: self._store.touch(name)
-		array[self._rows] = value
+		if name not in self._store.fields: raise AttributeError(name)
+		self._store._write_fields(self._rows, {name: value})
 
 
 RowLike: TypeAlias = IndexLike | ComponentRows | ComponentSelection
@@ -281,6 +195,24 @@ class ComponentAccessor:
 		"""
 		self._store.touch(*field_names)
 
+	def inspect(self) -> dict[str, Any]:
+		"""Array storage bytes exclude referenced object graphs and Python overhead."""
+		return storage_info(self._store)
+
+	def reserve(self, capacity: object, *, sparse_capacity: object = None) -> None:
+		"""Reserve dense rows/owner indices. Dense reallocation expires selections."""
+		capacity = _quantity(capacity)
+		sparse = None if sparse_capacity is None else _quantity(sparse_capacity)
+		if capacity > INDEX_MAX or (sparse is not None and sparse > INDEX_MAX):
+			raise OverflowError("component capacity exceeds index space")
+		self._store._grow_dense(capacity)
+		if sparse is not None: self._store._grow_sparse(sparse)
+
+	def compact(self) -> None:
+		"""Pack multicomponent holes, retaining capacity; relocation expires selections."""
+		if isinstance(self._store, MultiComponentStorage):
+			self._store._defragment(self._store._live_count)
+
 	def get_rows(self) -> IndexArray:
 		"""Return ephemeral raw row indices; rows() retains lifetime checks."""
 		return self._store._active_rows()
@@ -288,6 +220,12 @@ class ComponentAccessor:
 	def rows(self) -> ComponentRows:
 		"""Select all active rows with storage identity and layout checks."""
 		return ComponentRows(self._store, self._store._active_rows())
+
+	def select_rows(self, rows: ComponentRows | ComponentSelection) -> ComponentSelection:
+		"""Select exact checked instances without expanding owner membership."""
+		if not isinstance(rows, _RowSelection): raise TypeError("select_rows requires checked component rows")
+		rows._validate(self._store)
+		return ComponentSelection(self._store, rows._rows)
 
 	def _resolve_rows(self, rows: RowLike) -> IndexArray:
 		if isinstance(rows, _RowSelection):
@@ -356,19 +294,12 @@ class ComponentStorage:
 	) -> None:
 		self.component_cls = component_cls
 
-		field_defs = _component_fields(component_cls)
-
-		self.fields = tuple(name for name, _ in field_defs)
-		reserved = {_ENTITY_STR, _COUNT_STR}.intersection(self.fields)
-		if reserved:
-			raise ValueError(f"reserved component fields: {', '.join(sorted(reserved))}")
+		self.schema = ComponentSchema(component_cls)
+		self.fields = self.schema.fields
 		self.membership_version = 0
 		self.layout_version = 0
 		self.field_versions = {name: 0 for name in self.fields}
-		self._field_dtypes = {
-			name: _dtype_for(annotation)
-			for name, annotation in field_defs
-		}
+		self._field_dtypes = self.schema._field_dtypes.copy()
 
 		self._capacity = max(1, int(capacity))
 		self._size = 0
@@ -381,14 +312,37 @@ class ComponentStorage:
 			array = np.empty(self._capacity, dtype=dtype)
 			if name == _ENTITY_STR:
 				array.fill(NO_ENTITY)
-			elif dtype == OBJECT_DTYPE:
-				array.fill(None)
+			elif dtype.hasobject:
+				_clear_object_references(array, slice(None))
 			self._dense[name] = array
 
 	def touch(self, *field_names: str) -> None:
 		fields = field_names or self.fields
 		for name in fields:
+			if name not in self.field_versions: raise KeyError(name)
+		for name in fields:
 			self.field_versions[name] += 1
+
+	def _write_fields(self, rows: IndexArray, values: Mapping[str, Any]) -> None:
+		prepared: dict[str, FieldArray] = {}
+		for field, value in values.items():
+			if field not in self.fields: raise KeyError(field)
+			array = self._dense[field]
+			shape = (rows.size,) + array.shape[1:]
+			if array.dtype.hasobject or array.dtype.names:
+				ready = np.empty(shape, dtype=array.dtype)
+				ready[...] = value
+			else:
+				ready = np.asarray(value, dtype=array.dtype)
+				if ready.shape != shape: ready = np.broadcast_to(ready, shape)
+			prepared[field] = ready
+		self._commit_fields(rows, prepared)
+
+	def _commit_fields(self, rows: IndexArray, values: Mapping[str, FieldArray]) -> None:
+		for field, value in values.items():
+			self._dense[field][rows] = value
+		if rows.size:
+			for field in values: self.field_versions[field] += 1
 
 	@property
 	def _dense_entities(self) -> EntityArray:
@@ -436,17 +390,15 @@ class ComponentStorage:
 				new[self._capacity :] = NO_ENTITY
 			if name == _COUNT_STR:
 				new[self._capacity :] = 0
-			elif old.dtype == OBJECT_DTYPE:
-				new[self._capacity :] = None
+			elif old.dtype.hasobject:
+				_clear_object_references(new, slice(self._capacity, None))
 			self._dense[name] = new
 		self._capacity = new_capacity
 
 	def _clear_rows(self, rows: IndexArray) -> None:
 		self._dense_entities[rows] = NO_ENTITY
-		for field in self.fields:
-			array = self._dense[field]
-			if array.dtype == OBJECT_DTYPE:
-				array[rows] = None
+		for field in self.schema.object_fields:
+			_clear_object_references(self._dense[field], rows)
 
 	def _active_rows(self) -> IndexArray:
 		return np.arange(self._size, dtype=Index)
@@ -457,83 +409,8 @@ class ComponentStorage:
 
 	# ---------- values ----------
 
-	def _broadcast_field(
-		self,
-		field: str,
-		value: Any,
-		quantity: int,
-		*,
-		single: bool = False,
-	) -> FieldArray:
-		dtype = self._field_dtypes[field]
-
-		if dtype == OBJECT_DTYPE:
-
-			if not single and isinstance(value, (np.ndarray, list, tuple)):
-				n = len(value) if isinstance(value, (list, tuple)) else value.size
-				if n == quantity:
-					array = np.asarray(value, dtype=object)
-					if array.shape != (quantity,):
-						raise ValueError(f"field {field!r} expects a 1-D object array")
-					return array
-				if n == 1:
-					value = value[0]
-				else:
-					raise ValueError(f"field {field!r} has {n} values for {quantity} entities")
-			obj_array = np.empty(quantity, dtype=object)
-			obj_array.fill(value)
-			return obj_array
-
-		base_dtype, subshape = dtype.subdtype or (dtype, ())
-
-		target_shape = (quantity,) + subshape
-		array = np.asarray(value, dtype=base_dtype)
-		arr_shape = array.shape
-
-		if single:
-			if arr_shape != subshape and arr_shape != (1,) + subshape:
-				raise ValueError(f"field {field!r} expects shape {subshape}, got {arr_shape}")
-			return np.broadcast_to(array, target_shape)
-
-		if arr_shape == target_shape:
-			return array
-
-		if arr_shape == subshape or arr_shape == (1,) + subshape:
-			return np.broadcast_to(array, target_shape)
-
-		raise ValueError(f"field {field!r} expects shape {subshape} or {target_shape}, got {arr_shape}")
-
 	def _normalise_values(self, entities: EntityArray, values: object) -> dict[str, FieldArray]:
-		if not self.fields:
-			if values is self.component_cls or isinstance(values, self.component_cls):
-				return {}
-			raise TypeError("tags have no field payload; supply the component type or an instance")
-		quantity = entities.size
-		n_fields = len(self.fields)
-		field_values: tuple[Any, ...]
-
-		if isinstance(values, self.component_cls):
-			return {field: self._broadcast_field(field, getattr(values, field), quantity, single=True) for field in self.fields}
-
-		if n_fields == 1 and not (isinstance(values, tuple) and len(values) == 1):
-			field_values = (values,)
-		elif isinstance(values, tuple):
-			field_values = values
-		else:
-			if any(dtype.subdtype is not None for dtype in self._field_dtypes.values()):
-				raise ValueError(f"{self.component_cls.__name__} has shaped fields; values must be supplied as a tuple of fields")
-			packed = np.asarray(values)
-			if packed.shape == (n_fields,):
-				field_values = tuple(packed)
-			elif packed.shape == (quantity, n_fields):
-				field_values = tuple(packed.T)
-			else:
-				raise ValueError(f"cannot map values with shape {packed.shape} to {self.component_cls.__name__}{self.fields}")
-
-		if len(field_values) != n_fields:
-			raise ValueError(f"{self.component_cls.__name__} expects {n_fields} fields, got {len(field_values)}")
-
-		return {field: self._broadcast_field(field, value, quantity) for field, value in zip(self.fields, field_values)}
+		return self.schema._normalise_values(entities, values)
 
 	# ---------- mutation ----------
 
@@ -741,8 +618,8 @@ class MultiComponentStorage(ComponentStorage):
 				new[live:] = NO_ENTITY
 			elif name == _COUNT_STR:
 				new[live:] = 0
-			elif old.dtype == OBJECT_DTYPE:
-				new[live:] = None
+			elif old.dtype.hasobject:
+				_clear_object_references(new, slice(live, None))
 
 			self._dense[name] = new
 
@@ -1099,233 +976,21 @@ class Query:
 		return self._result
 
 
-class DeferredEntities:
-	"""A creation result owned by one command buffer; resolve after its create runs.
-
-	Pass the token directly as a command target before flushing. It cannot be mixed
-	with other handles or sliced. Payload fields are not resolved automatically;
-	resolve explicitly before supplying entity handles as component field values.
-	"""
-	__slots__ = ("_buffer", "_entities", "_failed")
-
-	def __init__(self, buffer: CommandBuffer) -> None:
-		self._buffer = buffer
-		self._entities: EntityArray | None = None
-		self._failed = False
-
-	def resolve(self) -> EntityArray:
-		if self._failed:
-			raise RuntimeError("deferred creation failed or was cancelled")
-		if self._entities is None:
-			raise RuntimeError("deferred entities are unresolved; flush their creation first")
-		return self._entities.copy()
-
-
 @dataclass(frozen=True)
-class _Command:
-	index: int
-	operation: str
-	target: EntityArray | DeferredEntities
-	args: tuple[object, ...]
+class _PreparedMutation:
+	store: ComponentStorage
+	bit: Mask
+	owners: EntityArray
+	values: dict[str, FieldArray]
 
 
-class CommandError(RuntimeError):
-	"""A consumed command failed; earlier commands applied and the tail is pending."""
-	def __init__(self, command: _Command) -> None:
-		self.command_index = command.index
-		self.operation = command.operation
-		super().__init__(f"command {command.index} ({command.operation}) failed")
-
-
-class CommandBuffer:
-	"""FIFO edits applied at flush(), each preflighted by the ordinary ECS APIs.
-
-	Handle arrays are copied on enqueue. Component payloads are retained by reference;
-	copy mutable payloads yourself if they must not change before execution. A flush
-	processes the commands present at entry. Failure consumes the failed command,
-	keeps the tail, and raises CommandError with the original exception as its cause.
-	"""
-	def __init__(self, ecs: ECS) -> None:
-		self._ecs = ecs
-		self._commands: deque[_Command] = deque()
-		self._next_index = 0
-		self._flushing = False
-
-	def __len__(self) -> int:
-		return len(self._commands)
-
-	def _enqueue(self, operation: str, entities: EntityLike | DeferredEntities, args: tuple[object, ...]) -> None:
-		if isinstance(entities, DeferredEntities):
-			if entities._buffer is not self:
-				raise ValueError("deferred entities belong to another command buffer; resolve them explicitly")
-			target = entities
-		else:
-			target = as_entities(entities).copy()
-		self._commands.append(_Command(self._next_index, operation, target, args))
-		self._next_index += 1
-
-	def create(self, quantity: int = 1) -> DeferredEntities:
-		quantity = integer_index(quantity)
-		if quantity < 0:
-			raise ValueError("quantity must be >= 0")
-		result = DeferredEntities(self)
-		self._enqueue("create", result, (quantity,))
-		return result
-
-	def add(self, entities: EntityLike | DeferredEntities, *components: object) -> None:
-		self._enqueue("add", entities, components)
-
-	def set(self, entities: EntityLike | DeferredEntities, *components: object) -> None:
-		self._enqueue("set", entities, components)
-
-	def remove(self, entities: EntityLike | DeferredEntities, *types: type[Any]) -> None:
-		self._enqueue("remove", entities, types)
-
-	def delete(self, entities: EntityLike | DeferredEntities) -> None:
-		self._enqueue("delete", entities, ())
-
-	def clear(self) -> None:
-		"""Discard pending commands; pending creation tokens become cancelled."""
-		if self._flushing:
-			raise RuntimeError("cannot clear a flushing command buffer")
-		for command in self._commands:
-			if command.operation == "create":
-				cast(DeferredEntities, command.target)._failed = True
-		self._commands.clear()
-
-	def flush(self) -> int:
-		if self._flushing:
-			raise RuntimeError("command buffer flush is not reentrant")
-		self._flushing = True
-		completed = 0
-		try:
-			for _ in range(len(self._commands)):
-				command = self._commands.popleft()
-				try:
-					if command.operation == "create":
-						cast(DeferredEntities, command.target)._entities = self._ecs.create(cast(int, command.args[0]))
-					else:
-						target = command.target.resolve() if isinstance(command.target, DeferredEntities) else command.target
-						getattr(self._ecs, command.operation)(target, *command.args)
-				except Exception as error:
-					if command.operation == "create":
-						cast(DeferredEntities, command.target)._failed = True
-					raise CommandError(command) from error
-				completed += 1
-		finally:
-			self._flushing = False
-		return completed
-
-
-@dataclass(frozen=True)
-class _System:
-	name: str
-	callback: Callable[[ECS, CommandBuffer, float], None]
-	phase: str
-	before: tuple[str, ...]
-	after: tuple[str, ...]
-	flush_after: bool
-
-
-class Scheduler:
-	"""Sequential fixed_update, update, render_prep phases with explicit visibility.
-
-	Callbacks receive (world, commands, dt). Flush before a run and after each phase
-	(or fixed tick); flush_after=True also flushes after that system. Dependencies
-	order execution but do not themselves flush. Fixed tick counts are caller-owned.
-	"""
-	PHASES = ("fixed_update", "update", "render_prep")
-
-	def __init__(self, ecs: ECS) -> None:
-		self._ecs = ecs
-		self.commands = CommandBuffer(ecs)
-		self._systems: dict[str, _System] = {}
-		self._order: tuple[_System, ...] | None = None
-		self._running = False
-
-	def add(
-		self, name: str, callback: Callable[[ECS, CommandBuffer, float], None], *,
-		phase: str = "update", before: str | Sequence[str] = (),
-		after: str | Sequence[str] = (), flush_after: bool = False,
-	) -> None:
-		if self._running:
-			raise RuntimeError("cannot change a running schedule")
-		if not isinstance(name, str) or not name or name in self._systems:
-			raise ValueError("system names must be nonempty and unique")
-		if phase not in self.PHASES:
-			raise ValueError(f"unknown phase: {phase}")
-		if not callable(callback):
-			raise TypeError("system callback must be callable")
-		def names(value: str | Sequence[str]) -> tuple[str, ...]:
-			result = (value,) if isinstance(value, str) else tuple(value)
-			if any(not isinstance(item, str) or not item for item in result):
-				raise ValueError("dependencies must be nonempty system names")
-			return result
-		self._systems[name] = _System(name, callback, phase, names(before), names(after), flush_after)
-		self._order = None
-
-	def compile(self) -> tuple[str, ...]:
-		"""Validate all dependencies before execution; ties keep registration order."""
-		if self._order is None:
-			edges: dict[str, set[str]] = {name: set() for name in self._systems}
-			for system in self._systems.values():
-				dependencies = [(system.name, name) for name in system.before]
-				dependencies.extend((name, system.name) for name in system.after)
-				for source, dest in dependencies:
-					if source not in edges or dest not in edges:
-						raise ValueError(f"unknown system dependency: {source} -> {dest}")
-					if self.PHASES.index(self._systems[source].phase) > self.PHASES.index(self._systems[dest].phase):
-						raise ValueError(f"dependency contradicts phase order: {source} -> {dest}")
-					edges[source].add(dest)
-			incoming = {name: 0 for name in edges}
-			for destinations in edges.values():
-				for dest in destinations:
-					incoming[dest] += 1
-			order = []
-			while incoming:
-				ready = [name for name, count in incoming.items() if count == 0]
-				if not ready:
-					raise ValueError("system dependency cycle")
-				name = min(ready, key=lambda n: self.PHASES.index(self._systems[n].phase))
-				order.append(self._systems[name])
-				del incoming[name]
-				for dest in edges[name]:
-					incoming[dest] -= 1
-			self._order = tuple(order)
-		return tuple(system.name for system in self._order)
-
-	def _phase(self, phase: str, dt: float) -> None:
-		for system in self._order or ():
-			if system.phase == phase:
-				system.callback(self._ecs, self.commands, dt)
-				if system.flush_after:
-					self.commands.flush()
-		self.commands.flush()
-
-	def run(self, dt: float, *, fixed_steps: int = 0, fixed_dt: float = 1 / 60) -> None:
-		fixed_steps = integer_index(fixed_steps)
-		if fixed_steps < 0 or not np.isfinite(dt) or dt < 0 or not np.isfinite(fixed_dt) or fixed_dt <= 0:
-			raise ValueError("dt must be finite and nonnegative, fixed_dt positive, and fixed_steps nonnegative")
-		if self._running:
-			raise RuntimeError("schedule execution is not reentrant")
-		self.compile()
-		self._running = True
-		try:
-			self.commands.flush()
-			for _ in range(fixed_steps):
-				self._phase("fixed_update", fixed_dt)
-			self._phase("update", dt)
-			self._phase("render_prep", dt)
-		finally:
-			self._running = False
-
-
+@mypyc_attr(allow_interpreted_subclasses=True)
 class ECS:
 	def __init__(self) -> None:
 		self._stores: dict[type[Any], ComponentStorage] = {}
 		self._comp_bits: dict[type[Any], Mask] = {}
 
-		self.entity_masks = np.zeros(0, dtype=Mask)
+		self._entity_masks = np.zeros(0, dtype=Mask)
 		self._current_entities = np.full(0, NO_ENTITY, dtype=Entity)
 		self._free_entities: list[Entity] = []
 		self._next_entity_index = 0
@@ -1334,6 +999,25 @@ class ECS:
 
 	def __len__(self) -> int:
 		return self._entity_count
+
+	@property
+	def entity_masks(self) -> MaskArray:
+		"""Defensive inspection snapshot; membership edits must use world APIs."""
+		return self._entity_masks.copy()
+
+	def inspect(self) -> dict[str, Any]:
+		"""Snapshot counts, schemas, fragmentation, and array bytes (excluding objects)."""
+		return world_info(self)
+
+	def check_invariants(self) -> None:
+		"""Explicit debug audit; raises AssertionError on inconsistent world storage."""
+		check_world(self)
+
+	def reserve(self, capacity: object) -> None:
+		"""Reserve entity slots without creating entities or changing lifecycle tokens."""
+		capacity = _quantity(capacity)
+		if capacity > INDEX_MAX: raise OverflowError("entity capacity exceeds index space")
+		self._grow_entity_state(capacity)
 
 	def commands(self) -> CommandBuffer:
 		"""Create an independent command buffer bound to this world."""
@@ -1354,7 +1038,7 @@ class ECS:
 		entities_ = as_entities(entities)
 		present = self._alive_mask(entities_)
 		indices = _entity_indices(entities_)
-		present[present] &= (self.entity_masks[indices[present]] & bit) != 0
+		present[present] &= (self._entity_masks[indices[present]] & bit) != 0
 		return present
 
 	def entities(self) -> EntityArray:
@@ -1374,14 +1058,14 @@ class ECS:
 	# ---------- entity state ----------
 
 	def _grow_entity_state(self, minimum_size: int) -> None:
-		if minimum_size <= self.entity_masks.size:
+		if minimum_size <= self._entity_masks.size:
 			return
-		old_size = self.entity_masks.size
+		old_size = self._entity_masks.size
 		new_size = max(higher_pow2(minimum_size), max(1, old_size * 2))
 
 		masks = np.zeros(new_size, dtype=Mask)
-		masks[:old_size] = self.entity_masks
-		self.entity_masks = masks
+		masks[:old_size] = self._entity_masks
+		self._entity_masks = masks
 
 		current = np.full(new_size, NO_ENTITY, dtype=Entity)
 		current[:old_size] = self._current_entities
@@ -1424,7 +1108,7 @@ class ECS:
 		indices: IndexArray,
 		component_cls: type[Any],
 	) -> None:
-		self.entity_masks[indices] &= ~self._component_info(component_cls)[1]
+		self._entity_masks[indices] &= ~self._component_info(component_cls)[1]
 
 	def _parse_add_components(
 		self,
@@ -1434,6 +1118,11 @@ class ECS:
 
 		while i < len(params):
 			item = params[i]
+			if isinstance(item, ComponentColumns):
+				store, bit = self._component_info(item.component_cls)
+				yield store, bit, item
+				i += 1
+				continue
 
 			if not isinstance(item, type):
 				store, bit = self._component_info(type(item))
@@ -1494,9 +1183,8 @@ class ECS:
 
 	# ---------- entities ----------
 
-	def create(self, quantity: int = 1) -> EntityArray:
-		if quantity < 0:
-			raise ValueError("quantity must be >= 0")
+	def create(self, quantity: object = 1) -> EntityArray:
+		quantity = _quantity(quantity)
 		if quantity == 0:
 			return np.empty(0, dtype=Entity)
 
@@ -1513,7 +1201,7 @@ class ECS:
 			reused = old + GENERATION_INCREMENT
 			indices = _entity_indices(reused)
 			self._current_entities[indices] = reused
-			self.entity_masks[indices] = Mask(0)
+			self._entity_masks[indices] = Mask(0)
 
 		if new_count == 0:
 			self._entity_count += quantity
@@ -1524,7 +1212,7 @@ class ECS:
 		indices = np.arange(self._next_entity_index, stop, dtype=Index)
 		fresh = indices.astype(Entity)
 		self._current_entities[indices] = fresh
-		self.entity_masks[indices] = Mask(0)
+		self._entity_masks[indices] = Mask(0)
 		self._next_entity_index = stop
 		self._entity_count += quantity
 		self._entity_version += 1
@@ -1541,14 +1229,14 @@ class ECS:
 		# Duplicate live IDs must not be recycled twice.
 		entity_array = np.unique(entity_array)
 		indices = _entity_indices(entity_array)
-		masks = self.entity_masks[indices].copy()
+		masks = self._entity_masks[indices].copy()
 
 		for component_cls, bit in self._comp_bits.items():
 			selected = (masks & bit) != 0
 			if np.any(selected):
 				self._stores[component_cls]._remove_entities(indices[selected])
 
-		self.entity_masks[indices] = Mask(0)
+		self._entity_masks[indices] = Mask(0)
 		self._current_entities[indices] = NO_ENTITY
 		self._free_entities.extend(entity_array.tolist())
 		self._entity_count -= int(entity_array.size)
@@ -1558,7 +1246,7 @@ class ECS:
 
 	def _prepare_components(
 		self, entities: EntityLike, components: tuple[object, ...], *, replace: bool = False,
-	) -> list[tuple[ComponentStorage, Mask, EntityArray, dict[str, FieldArray]]]:
+	) -> list[_PreparedMutation]:
 		"""Normalize and validate the complete request without changing world state."""
 		entity_array = as_entities(entities)
 		if entity_array.size == 0 or not components:
@@ -1599,7 +1287,7 @@ class ECS:
 					raise ValueError(f"{store.component_cls.__name__} is missing; use add() to insert it")
 			else:
 				store._validate_add(owners)
-			result.append((store, bit, owners, values))
+			result.append(_PreparedMutation(store, bit, owners, values))
 		return result
 
 	def add(self, entities: EntityLike, *components: object) -> None:
@@ -1609,9 +1297,9 @@ class ECS:
 		Multicomponents append; stale handles and matching payload entries are ignored.
 		Expected validation errors leave the whole request unapplied.
 		"""
-		for store, bit, owners, values in self._prepare_components(entities, components):
-			store._add_normalised(owners, values)
-			self.entity_masks[_entity_indices(owners)] |= bit
+		for mutation in self._prepare_components(entities, components):
+			mutation.store._add_normalised(mutation.owners, mutation.values)
+			self._entity_masks[_entity_indices(mutation.owners)] |= mutation.bit
 
 	def set(self, entities: EntityLike, *components: object) -> None:
 		"""Replace existing single-component values using the same forms as add().
@@ -1619,11 +1307,9 @@ class ECS:
 		All live owners must have each component. Stale handles are ignored.
 		Rows and membership stay unchanged; writes advance the field versions.
 		"""
-		for store, _, owners, values in self._prepare_components(entities, components, replace=True):
-			rows = store._get_rows(_entity_indices(owners))
-			for field, value in values.items():
-				store._dense[field][rows] = value
-			store.touch()
+		for mutation in self._prepare_components(entities, components, replace=True):
+			rows = mutation.store._get_rows(_entity_indices(mutation.owners))
+			mutation.store._commit_fields(rows, mutation.values)
 
 	def remove(self, entities: EntityLike, *component_types: type[Any]) -> None:
 		entity_array = np.unique(self._filter_alive(as_entities(entities)))
@@ -1634,7 +1320,7 @@ class ECS:
 		stores = [self._component_info(cls) for cls in dict.fromkeys(component_types)]
 		for store, bit in stores:
 			store._remove_entities(indices)
-			self.entity_masks[indices] &= ~bit
+			self._entity_masks[indices] &= ~bit
 
 	def _get_store(self, component_cls: type) -> ComponentStorage:
 		return self._component_info(component_cls)[0]
@@ -1671,10 +1357,10 @@ class ECS:
 			else:
 				indices = np.sort(_entity_indices(store._dense_entities[:store._size]))
 			# Sorting by index preserves ordering after swap removal and generation reuse.
-			current, masks = self._current_entities[indices], self.entity_masks[indices]
+			current, masks = self._current_entities[indices], self._entity_masks[indices]
 		else:
 			current = self._current_entities[:self._next_entity_index]
-			masks = self.entity_masks[:current.size]
+			masks = self._entity_masks[:current.size]
 		selected = (current != NO_ENTITY) & ((masks & required) == required)
 		if excluded:
 			selected &= (masks & excluded) == 0

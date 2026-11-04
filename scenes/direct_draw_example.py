@@ -4,7 +4,7 @@ import random as rd
 
 import numpy as np
 
-from ECS import ECS, component
+from ECS import ECS, component, columns
 
 @component
 class Position:
@@ -133,11 +133,11 @@ def run_scene():
 
 	world.add(
 		cube_entities,
-		Position, cube_positions,
-		Velocity, cube_velocities,
-		Rotation, cube_rotations,
-		Scale, cube_scales,
-		Tint, cube_tints,
+		columns(Position, x=cube_positions[:, 0], y=cube_positions[:, 1], z=cube_positions[:, 2]),
+		columns(Velocity, x=cube_velocities[:, 0], y=cube_velocities[:, 1], z=cube_velocities[:, 2]),
+		columns(Rotation, x=cube_rotations[:, 0], y=cube_rotations[:, 1], z=cube_rotations[:, 2], w=cube_rotations[:, 3]),
+		columns(Scale, x=cube_scales[:, 0], y=cube_scales[:, 1], z=cube_scales[:, 2]),
+		columns(Tint, value=cube_tints),
 	)
 
 	WINDOW_W, WINDOW_H = 1200, 1200

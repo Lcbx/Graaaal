@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-from ECS import ECS, Entity, Index, NO_ENTITY, component, entity_index
+from ECS import ECS, Entity, Index, NO_ENTITY, component, entity_index, columns
 
 
 @component
@@ -70,17 +70,24 @@ def make_world(n, rare_count=None):
 	w = ECS()
 	p, v, r = w.register(Position, Velocity, Rare)
 	ids = w.create(n)
-	w.add(ids, Position(1, 2, 3), Velocity(0.1, 0.2, 0.3))
+	if hasattr(p, "select_rows"):
+		w.add(ids, columns(Position, x=1, y=2, z=3), columns(Velocity, x=0.1, y=0.2, z=0.3))
+	else:
+		w.add(ids, Position(1, 2, 3), Velocity(0.1, 0.2, 0.3))
 	if rare_count:
 		# Include the highest index and scatter owners through the index space.
 		w.add(ids[np.linspace(0, n - 1, rare_count, dtype=int)], Rare)
 	return w, p, v, r
 
 
+def mask_buffer(world):
+	return world._entity_masks if hasattr(world, "_entity_masks") else world.entity_masks
+
+
 def scan(query):
 	w = query._ecs
 	current = w._current_entities[:w._next_entity_index]
-	masks = w.entity_masks[:current.size]
+	masks = mask_buffer(w)[:current.size]
 	selected = (current != NO_ENTITY) & ((masks & query._required) == query._required)
 	if query._excluded:
 		selected &= (masks & query._excluded) == 0
@@ -93,7 +100,7 @@ def candidates(query):
 	w = query._ecs
 	store = w._get_store(Rare)
 	indices = np.sort(entity_index(store._dense_entities[:store._size]))
-	masks = w.entity_masks[indices]
+	masks = mask_buffer(w)[indices]
 	return w._current_entities[indices[(masks & query._required) == query._required]]
 
 
@@ -203,7 +210,7 @@ def main():
 	store = rare._store
 	memory = {"high_index": int(ids[-1]), "owners": 1, "sparse_bytes": store._sparse.nbytes,
 		"dense_bytes": sum(a.nbytes for a in store._dense.values()),
-		"world_state_bytes": world.entity_masks.nbytes + world._current_entities.nbytes,
+		"world_state_bytes": mask_buffer(world).nbytes + world._current_entities.nbytes,
 		"hypothetical_one_page_bytes": 256 * np.dtype(Index).itemsize}
 	dirty = {"entities": n, "changed_entities": 100, "position_field_bytes": n * 3 * 8,
 		"changed_position_bytes": 100 * 3 * 8,
@@ -211,6 +218,8 @@ def main():
 	result = {"environment": {"python": sys.version, "numpy": np.__version__, "platform": platform.platform(),
 		"processor": platform.processor(), "entities": n, "repeat": repeat, "loops": loops,
 		"implementation": source.name, "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+		"dependency_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+			for p in sorted(source.parent.glob("ecs_*.py"))} if not args.implementation else {},
 		"memory_metric": "Peak action-only tracemalloc allocation, separate from timing; excludes preexisting storage and is not RSS."},
 		"benchmarks": records, "rare_high_index_memory": memory, "dirty_tracking_estimate": dirty}
 	args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
