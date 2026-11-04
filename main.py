@@ -15,7 +15,10 @@ if __name__ == "__main__":
 	parser.add_argument('scene', nargs='?', help='set scene script (to run or compile)')
 	parser.add_argument('-t', '--test', nargs='?', const=True, default=False, help='launches unit tests or a single test if specified by name')
 	parser.add_argument('-c', '--compile', action='store_true', help='compile scene into standalone executable')
+	parser.add_argument('--frames', type=int, help='stop a RenderContext scene after this many frames (runtime smoke check)')
 	args = parser.parse_args()
+	if args.frames is not None and (args.frames <= 0 or not args.scene or args.test or args.compile):
+		parser.error('--frames requires a scene, a positive frame count, and normal run mode')
 
 	normalize_path = lambda p: Path(p).as_posix()
 	to_module = lambda p: normalize_path(p).replace('/', '.').replace('.py', '')
@@ -61,4 +64,25 @@ if __name__ == "__main__":
 			run( f'py -m mypyc -m DrawBatches', cwd=cwd)
 			if scene: run( f'py -m nuitka --output-dir=build --standalone {scene}'.split(' ') )
 		else:
-			import_module( to_module(scene) )
+			if args.frames is not None:
+				from RenderContext import RenderContext
+				window_loop = RenderContext.window_loop
+				frames = 0
+				def bounded_window_loop():
+					global frames
+					# Present the final submitted image before ending the scene.
+					if not window_loop() or frames >= args.frames:
+						return False
+					frames += 1
+					return True
+				RenderContext.window_loop = bounded_window_loop
+			try:
+				module = import_module(to_module(scene))
+				# New scenes can expose an entry point without opening a window on import.
+				if callable(getattr(module, "run_scene", None)):
+					module.run_scene()
+			finally:
+				if args.frames is not None:
+					RenderContext.window_loop = window_loop
+			if args.frames is not None:
+				print(f"Scene completed: {frames} frames")

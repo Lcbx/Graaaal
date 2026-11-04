@@ -18,7 +18,7 @@ Component selections reject access after structural changes to their store;
 reusable queries refresh their cached membership and row mappings as needed.
 Legacy raw row arrays remain available and require caller-managed lifetimes.
 
-Validation: 198 ECS, query, tag/predicate, scheduler, optimization, and draw-batch tests passed, including two seeded reference-model
+Validation: 210 ECS, query, tag/predicate, scheduler, optimization, scene, and draw-batch tests passed, including two seeded reference-model
 runs of 250 mixed mutations each. Regressions cover rejected duplicate insertions,
 whole-request preflight, replacement versions, object/shaped payload validation,
 metadata sentinels, registration rollback, and multicomponent count boundaries.
@@ -44,6 +44,20 @@ Optimization regressions cover sparse owner ordering/generation reuse, duplicate
 multicomponent candidates and holes, small/batch removals with object cleanup,
 and tail appends through capacity growth and compaction. Benchmark artifacts record
 the environment, implementation hashes, timing, and temporary/persistent memory.
+
+Scene follow-up: direct drawing now reuses movement/render queries. The combat
+prototype uses the current ECS and native renderer; its missing `shader_util`
+dependency and obsolete ECS methods were removed. The launcher supports explicit
+`run_scene()` entry points and bounded `--frames` checks. Prototype/direct drawing
+completed 120 frames each; draw batching completed 1,500 frames including a deferred
+membership update. These are GPU runtime checks; window screenshot capture was
+blocked by Windows policy. See [scene instructions](../scenes/README.md).
+
+Further scene adoption: the legacy Raylib ECS benchmark now reuses queries, direct
+drawing caches packed static instance fields and refreshes render membership, and
+the prototype rebuilds/uploads panels only when displayed fields change. Added
+CPU regressions for packing calls, membership/ID reuse, and benchmark callbacks;
+direct drawing then completed 180 GPU frames and the prototype 120 more.
 
 Compatibility: `add()` now rejects existing single components and duplicate live
 owners. Replace existing values explicitly:
@@ -504,15 +518,17 @@ implemented and measured. Other paths retain their existing algorithms.
       single-component insert/set/remove, multicomponent edits, and ID recycling.
 - [x] Check storage invariants after each modeled operation: owner/row consistency,
       sparse mappings, live counts, masks, and clearing of removed object references.
-- [x] Run `tests/ecs_tests.py` after each storage/API change, then
+- [x] Run `tests/test_ecs_main.py` after each storage/API change, then
       `tests/test_draw_batches.py` for selection/version/query integration changes.
       Include `tests/test_ecs_queries.py` for reusable-query changes.
       Include `tests/test_ecs_tags.py` for marker and predicate changes.
       Include `tests/test_ecs_schedule.py` for deferred-edit and scheduler changes.
       Include `tests/test_ecs_optimizations.py` for optimized storage/query paths.
+      Include `tests/test_scenes.py` for scene models and launcher behavior.
+      Include `tests/test_scene_caches.py` for instance/panel cache behavior.
 - [x] Extend the repository's existing test invocation conventions; for PowerShell,
       set `$env:PYTHONPATH='src'` and run
-      `python -m pytest tests/ecs_tests.py tests/test_ecs_queries.py tests/test_ecs_tags.py tests/test_ecs_schedule.py tests/test_ecs_optimizations.py tests/test_draw_batches.py -q -p no:cacheprovider`.
+      `python -m pytest tests/test_ecs_main.py tests/test_ecs_queries.py tests/test_ecs_tags.py tests/test_ecs_schedule.py tests/test_ecs_optimizations.py tests/test_scenes.py tests/test_scene_caches.py tests/test_draw_batches.py -q -p no:cacheprovider`.
 - [x] Update affected scene examples and describe intentional compatibility changes
       alongside each API change.
 

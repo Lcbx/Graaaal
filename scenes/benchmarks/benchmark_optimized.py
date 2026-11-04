@@ -38,6 +38,8 @@ class BoundingBox:
 
 world = ECS()
 world.register(Position, Velocity, Mesh, BoundingBox)
+movement_query = world.query(Position, Velocity)
+render_query = world.query(Position, Mesh, BoundingBox)
 
 ground = world.create()
 world.add(
@@ -49,12 +51,6 @@ world.add(
         25, 1, 25,
     ),
 )
-
-positions = world.get(Position)
-velocities = world.get(Velocity)
-meshes = world.get(Mesh)
-bboxes = world.get(BoundingBox)
-
 
 def random_values(low: int, high: int, count: int) -> np.ndarray:
     return np.fromiter(
@@ -102,11 +98,10 @@ def add_cubes() -> None:
 
 
 def draw() -> None:
-    ents = world.where(Position, Mesh, BoundingBox)
-
-    pos = positions[ents]
-    mesh = meshes[ents]
-    bbox = bboxes[ents]
+    matched = render_query.fetch()
+    pos = matched[Position].selection
+    mesh = matched[Mesh].selection
+    bbox = matched[BoundingBox].selection
 
     pos_vec = pos.vector()
     bmins = bbox.vector('x_min', 'y_min', 'z_min')
@@ -126,10 +121,9 @@ def draw() -> None:
 
 
 def update(frameTime: float) -> None:
-    ents = world.where(Position, Velocity)
-
-    pos = positions[ents]
-    vel = velocities[ents]
+    matched = movement_query.fetch()
+    pos = matched[Position].selection
+    vel = matched[Velocity].selection
 
     pos.set_vector(pos.vector() + vel.vector() * frameTime)
 
