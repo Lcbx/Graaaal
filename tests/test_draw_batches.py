@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 
-from ECS import Entity, EntityArray, EntityLike, FieldArray, as_entities
+from ECS import ECS, component, Entity, EntityArray, EntityLike, FieldArray, as_entities
 from RenderContext import higher_pow2, BindGroup
 
 
@@ -70,7 +70,12 @@ class Refs:
 		return Selection(self, np.concatenate([np.flatnonzero(self.owners == e) for e in entities]).astype(np.intp) if len(entities) else np.empty(0, dtype=np.intp))
 
 	def owner_ids(self, rows):
+		if isinstance(rows, Selection): rows = rows.get_rows()
 		return self.owners[rows].copy()
+
+	@property
+	def layout_version(self):
+		return self.v
 
 	def version(self, *args):
 		return self.v
@@ -238,6 +243,51 @@ def test_accessor_replacement_with_equal_versions_invalidates_inputs(synced):
 	assert d.sync_batches(np.array([1, 2, 3]), transforms, replacement)
 	assert replacement.reads == 1
 	assert len(d.entities) == 3
+	check(d)
+
+
+def test_real_component_selection_is_refreshed_after_layout_only_change(d):
+	@component
+	class Transform:
+		x: float
+
+	@component(multiples=True)
+	class MeshRef:
+		lod_id: int
+		shader_id: int
+		value: int
+
+	world = ECS()
+	transforms, refs = world.register(Transform, MeshRef, capacity=8)
+	ids = world.create(3)
+	world.add(ids, Transform(0))
+	world.add([ids[0], ids[0], ids[1], ids[2]], MeshRef,
+		(np.array([20, 10, 10, 20]), np.array([1, 0, 0, 1]), np.array([0, 1, 2, 3])))
+	world.remove(ids[1], MeshRef)  # Keep a hole that can be compacted later.
+	entities = world.where(Transform, MeshRef)
+	assert d.sync_batches(entities, transforms, refs)
+	check(d)
+	expected = d.mesh_field("value").copy()
+	owners = d.entities.copy()
+	version = d.instance_order_version
+	membership = refs.membership_version
+	fields = refs.version("lod_id", "shader_id")
+
+	refs._store._defragment(refs._store._capacity)
+	assert refs.membership_version == membership
+	assert refs.version("lod_id", "shader_id") == fields
+	with pytest.raises(RuntimeError, match="stale"):
+		d.mesh_field("value")
+	assert d.sync_batches(entities, transforms, refs)
+	assert d.instance_order_version == version + 1
+	np.testing.assert_array_equal(d.entities, owners)
+	np.testing.assert_array_equal(d.mesh_field("value"), expected)
+	check(d)
+
+	world.add(ids[0], MeshRef(10, 0, 9))
+	assert d.sync_batches(entities, transforms, refs)
+	assert sorted(d.mesh_field("value").tolist()) == [0, 1, 3, 9]
+	assert not d.sync_batches(entities, transforms, refs)
 	check(d)
 
 

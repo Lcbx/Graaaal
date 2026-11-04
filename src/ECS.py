@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
 from enum import IntFlag
+from collections import deque
+import inspect
+from operator import index as integer_index
 from typing import cast, Any, Callable, ClassVar, Iterable, Iterator, Mapping, Sequence, TypeAlias, get_origin, get_type_hints
 
 import numpy as np
@@ -77,9 +80,22 @@ def _as_1D_dtype(array:Any, ndtype:type) -> FieldArray:
 	return array
 
 def arg_names(func:Callable)->Sequence[str]:
-    code = func.__code__
-    n = code.co_argcount + code.co_kwonlyargcount
-    return code.co_varnames[:n]
+	return tuple(param.name for param in _predicate_parameters(func))
+
+def _predicate_parameters(func: Callable[..., Any]) -> tuple[inspect.Parameter, ...]:
+	"""Validate a synchronous predicate that can receive component fields by name."""
+	if not callable(func):
+		raise TypeError("query predicate must be callable")
+	for target in (func, getattr(func, "__call__", None)):
+		if inspect.iscoroutinefunction(target) or inspect.isasyncgenfunction(target) or inspect.isgeneratorfunction(target):
+			raise TypeError("query predicate must return booleans synchronously")
+	try:
+		params = tuple(inspect.signature(func).parameters.values())
+	except (TypeError, ValueError) as error:
+		raise TypeError("query predicate requires an inspectable signature; wrap it in a named-field function") from error
+	if any(param.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY) for param in params):
+		raise TypeError("query predicate requires named parameters; positional-only and variadic parameters are unsupported")
+	return params
 
 def _component_fields(component_cls: type[Any]) -> tuple[tuple[str, Any], ...]:
 	hints = get_type_hints(component_cls)
@@ -110,37 +126,89 @@ def _dtype_for(annotation: Any) -> np.dtype[Any]:
 		...
 	return OBJECT_DTYPE
 
-class ComponentSelection:
-	__slots__ = ("_store", "_rows")
+class _RowSelection:
+	"""Common storage identity, row ownership, and lifetime checks."""
+	__slots__ = ("_store", "_rows", "_layout_version")
 
 	def __init__(self, store: ComponentStorage, rows: IndexArray) -> None:
 		self._store = store
-		self._rows = rows
+		self._rows = as_rows(rows).copy()
+		self._rows.flags.writeable = False
+		self._layout_version = store.layout_version
+
+	def _validate(self, store: ComponentStorage | None = None) -> None:
+		if store is not None and self._store is not store:
+			raise ValueError("rows belong to a different component storage")
+		if self._layout_version != self._store.layout_version:
+			raise RuntimeError("stale component selection: acquire a new selection after structural changes")
 
 	def get_rows(self) -> IndexArray:
-		return self._rows
+		"""Export a copy of raw indices; use the wrapper to retain lifetime checks."""
+		self._validate()
+		return self._rows.copy()
+
+	def __len__(self) -> int:
+		self._validate()
+		return int(self._rows.size)
+
+
+class ComponentRows(_RowSelection):
+	"""Rows tied to one component store and its current layout.
+
+	Use accessor.rows() or accessor.query_rows() to acquire checked rows. Slicing
+	keeps the checks; get_rows() exports a copy of the raw indices, whose lifetime
+	the caller must manage. Field writes do not refresh a predicate result.
+	"""
+	__slots__ = ()
+
+	def __getitem__(self, key: Any) -> ComponentRows:
+		self._validate()
+		return ComponentRows(self._store, as_rows(self._rows[key]))
+
+
+class ComponentSelection(_RowSelection):
+	"""Field arrays copy on read; assign them back to write changes.
+
+	Use selection["field"] for fields whose names collide with methods such as
+	vector or get_rows. Internal owner/count metadata is reserved by storage.
+	A structural edit to this store expires the selection. Numeric `x += value`
+	writes back through the setter; `x[:] = value` only edits a temporary array.
+	Object fields copy references: in-place object edits require accessor.touch().
+	"""
+	__slots__ = ()
+
+	def checked_rows(self) -> ComponentRows:
+		"""Capture these rows for checked slicing, owner lookup, or removal."""
+		self._validate()
+		return ComponentRows(self._store, self._rows)
 
 	def vector(self, *field_names: str) -> FieldArray:
+		self._validate()
 		field_names = field_names or self._store.fields
+		if not field_names:
+			return np.empty((len(self), 0))
 		return np.column_stack( tuple(self[field] for field in field_names) )
 
 	def set_vector(self, value : FieldArray, *field_names: str) -> None:
+		self._validate()
 		field_names = field_names or self._store.fields
+		if not field_names and np.shape(value) != (len(self), 0):
+			raise ValueError("tag vectors must have shape (number of rows, 0)")
 		for i, field in enumerate(field_names):
 			self[field] = value[:, i]
 
-	def __len__(self) -> int:
-		return int(self._rows.size)
-
 	def __getitem__(self, field: str) -> FieldArray:
+		self._validate()
 		return self._store._dense[field][self._rows]
 
 	def __setitem__(self, field: str, value: Any) -> None:
+		self._validate()
 		array = self._store._dense[field]
 		if self._rows.size: self._store.touch(field)
 		array[self._rows] = value
 
 	def __getattr__(self, name: str) -> FieldArray:
+		self._validate()
 		try:
 			array = self._store._dense[name]
 		except KeyError:
@@ -152,6 +220,7 @@ class ComponentSelection:
 			object.__setattr__(self, name, value)
 			return
 
+		self._validate()
 		try:
 			array = self._store._dense[name]
 		except KeyError:
@@ -161,8 +230,14 @@ class ComponentSelection:
 		array[self._rows] = value
 
 
+RowLike: TypeAlias = IndexLike | ComponentRows | ComponentSelection
+
+
 class ComponentAccessor:
 	"""Selections copy numeric fields; assign edited arrays back to write them.
+	Selections and checked rows expire on any structural edit to their store.
+	get_rows() and query() return legacy raw indices with no lifetime checking;
+	use rows(), query_rows(), or selection.checked_rows() for retained results.
 	
 	You can monitor changes to array using membership / field version tokens.
 	Version tokens count writes, so assigning the same value still invalidates a token.
@@ -190,6 +265,11 @@ class ComponentAccessor:
 		"""Conservative counter for nonempty component additions/removals."""
 		return self._store.membership_version
 
+	@property
+	def layout_version(self) -> int:
+		"""Token for row lifetimes; may advance more than once per structural edit."""
+		return self._store.layout_version
+
 	def version(self, *field_names: str) -> tuple[int, ...]:
 		"""Membership plus per-field writes, in argument order; default: all fields."""
 		fields = field_names or self._store.fields
@@ -202,10 +282,23 @@ class ComponentAccessor:
 		self._store.touch(*field_names)
 
 	def get_rows(self) -> IndexArray:
+		"""Return ephemeral raw row indices; rows() retains lifetime checks."""
 		return self._store._active_rows()
 
-	def owner_ids(self, component_rows: IndexArray) -> EntityArray:
-		return self._store._dense_entities[component_rows].astype(Entity, copy=False)
+	def rows(self) -> ComponentRows:
+		"""Select all active rows with storage identity and layout checks."""
+		return ComponentRows(self._store, self._store._active_rows())
+
+	def _resolve_rows(self, rows: RowLike) -> IndexArray:
+		if isinstance(rows, _RowSelection):
+			rows._validate(self._store)
+			return rows._rows
+		return as_rows(rows)
+
+	def owner_ids(self, component_rows: RowLike) -> EntityArray:
+		"""Resolve owners, checking lifetime and storage for checked row inputs."""
+		rows = self._resolve_rows(component_rows)
+		return self._store._dense_entities[rows].astype(Entity, copy=False)
 
 	def __getitem__(self, entities: EntityLike) -> ComponentSelection:
 		entities_ = self._ecs._filter_alive(as_entities(entities))
@@ -217,6 +310,7 @@ class ComponentAccessor:
 		condition: Callable[..., Any],
 		entities: EntityLike | None = None,
 	) -> IndexArray:
+		"""Return ephemeral raw predicate rows; query_rows() retains lifetime checks."""
 		if entities is None:
 			rows = self._store._active_rows()
 		else:
@@ -224,8 +318,25 @@ class ComponentAccessor:
 			rows = self._store._get_rows(_entity_indices(entities_))
 		return self._store._query_rows(condition, rows)
 
-	def remove(self, rows: IndexLike) -> None:
-		rows_ = np.unique(as_rows(rows))
+	def query_rows(
+		self,
+		condition: Callable[..., Any],
+		entities: EntityLike | None = None,
+	) -> ComponentRows:
+		"""Evaluate a predicate and capture matching rows with lifetime checks.
+
+		This is a snapshot of which rows matched, not a live value query. Predicate
+		callbacks must not structurally edit this component store.
+		"""
+		version = self.layout_version
+		rows = self.query(condition, entities)
+		if version != self.layout_version:
+			raise RuntimeError("component layout changed while evaluating the predicate")
+		return ComponentRows(self._store, rows)
+
+	def remove(self, rows: RowLike) -> None:
+		"""Remove rows; checked selections reject a stale or foreign row mapping."""
+		rows_ = np.unique(self._resolve_rows(rows))
 		rows_ = rows_[rows_ < self._store._size]
 		rows_ = rows_[self._store._dense_entities[rows_] != NO_ENTITY]
 		if rows_.size == 0:
@@ -246,11 +357,13 @@ class ComponentStorage:
 		self.component_cls = component_cls
 
 		field_defs = _component_fields(component_cls)
-		if not field_defs:
-			raise TypeError(f"{component_cls.__name__} has no annotated component fields")
 
 		self.fields = tuple(name for name, _ in field_defs)
+		reserved = {_ENTITY_STR, _COUNT_STR}.intersection(self.fields)
+		if reserved:
+			raise ValueError(f"reserved component fields: {', '.join(sorted(reserved))}")
 		self.membership_version = 0
+		self.layout_version = 0
 		self.field_versions = {name: 0 for name in self.fields}
 		self._field_dtypes = {
 			name: _dtype_for(annotation)
@@ -262,12 +375,13 @@ class ComponentStorage:
 		self._sparse = np.full(self._capacity, NONE, dtype=Index)
 
 		self._dense: dict[str, FieldArray] = {}
-		self._dense[_ENTITY_STR] = np.full(self._capacity, NO_ENTITY, dtype=Entity)
 		self._field_dtypes[_ENTITY_STR] = _dtype_for(Entity)
 
 		for name, dtype in self._field_dtypes.items():
 			array = np.empty(self._capacity, dtype=dtype)
-			if dtype == OBJECT_DTYPE:
+			if name == _ENTITY_STR:
+				array.fill(NO_ENTITY)
+			elif dtype == OBJECT_DTYPE:
 				array.fill(None)
 			self._dense[name] = array
 
@@ -312,6 +426,7 @@ class ComponentStorage:
 
 	def _grow_dense(self, minimum_capacity: int) -> None:
 		if minimum_capacity <= self._capacity: return
+		self.layout_version += 1
 
 		new_capacity = higher_pow2(minimum_capacity)
 		for name, old in tuple(self._dense.items()):
@@ -357,7 +472,10 @@ class ComponentStorage:
 			if not single and isinstance(value, (np.ndarray, list, tuple)):
 				n = len(value) if isinstance(value, (list, tuple)) else value.size
 				if n == quantity:
-					return np.asarray(value, dtype=object)
+					array = np.asarray(value, dtype=object)
+					if array.shape != (quantity,):
+						raise ValueError(f"field {field!r} expects a 1-D object array")
+					return array
 				if n == 1:
 					value = value[0]
 				else:
@@ -386,6 +504,10 @@ class ComponentStorage:
 		raise ValueError(f"field {field!r} expects shape {subshape} or {target_shape}, got {arr_shape}")
 
 	def _normalise_values(self, entities: EntityArray, values: object) -> dict[str, FieldArray]:
+		if not self.fields:
+			if values is self.component_cls or isinstance(values, self.component_cls):
+				return {}
+			raise TypeError("tags have no field payload; supply the component type or an instance")
 		quantity = entities.size
 		n_fields = len(self.fields)
 		field_values: tuple[Any, ...]
@@ -415,13 +537,22 @@ class ComponentStorage:
 
 	# ---------- mutation ----------
 
+	def _validate_add(self, entities: EntityArray) -> None:
+		indices = _entity_indices(entities)
+		if np.unique(indices).size != indices.size:
+			raise ValueError(f"duplicate owners for {self.component_cls.__name__}")
+		if np.any(self._get_dense_indices(indices) != NONE):
+			raise ValueError(f"{self.component_cls.__name__} already exists; use set() to replace it")
+
 	def _add_normalised(
 		self,
 		entities: EntityArray,
 		field_values: Mapping[str, FieldArray],
 	) -> None:
 		if not entities.size: return
+		self._validate_add(entities)
 		self.membership_version += 1
+		self.layout_version += 1
 		indices = _entity_indices(entities) 
 		self._ensure_sparse(indices)
 
@@ -449,15 +580,22 @@ class ComponentStorage:
 			return np.empty(0, dtype=Entity)
 
 		self.membership_version += 1
+		self.layout_version += 1
 		removed_entities = self._dense_entities[rows].astype(Entity, copy=True)
 		old_size = self._size
 		new_size = old_size - int(rows.size)
 
-		removed_mask = np.zeros(old_size, dtype=np.bool_)
-		removed_mask[rows] = True
 		holes = rows[rows < new_size]
 		tail = np.arange(new_size, old_size, dtype=Index)
-		sources = tail[~removed_mask[tail]]
+		if rows.size == 1:
+			sources = tail[tail != rows[0]]
+		elif rows.size <= 8 and old_size >= 4096:
+			# Bound temporary storage by the small removal batch, not the pool size.
+			sources = tail[~np.any(tail[:, None] == rows[None, :], axis=1)]
+		else:
+			removed_mask = np.zeros(old_size, dtype=np.bool_)
+			removed_mask[rows] = True
+			sources = tail[~removed_mask[tail]]
 
 		self._clear_dense_indices(_entity_indices(removed_entities))
 
@@ -478,18 +616,17 @@ class ComponentStorage:
 		condition: Callable[..., Any],
 		rows: IndexArray,
 	) -> IndexArray:
-		if rows.size == 0:
-			return np.empty(0, dtype=Index)
-
-		params = arg_names(condition)
-		missing = [name for name in params if name not in self._dense]
+		params = _predicate_parameters(condition)
+		missing = [param.name for param in params if param.name not in self._dense and param.default is inspect.Parameter.empty]
 		if missing:
 			raise TypeError(
 				f"query parameters are not component fields: {', '.join(missing)}"
 			)
+		if rows.size == 0:
+			return np.empty(0, dtype=Index)
 
 		result = np.asarray(
-			condition(**{name: self._dense[name][rows] for name in params}),
+			condition(**{param.name: self._dense[param.name][rows] for param in params if param.name in self._dense}),
 			dtype=np.bool_,
 		)
 		if result.ndim == 0:
@@ -507,6 +644,8 @@ class MultiComponentStorage(ComponentStorage):
 		capacity: int = INITIAL_CAPACITY,
 	) -> None:
 		super().__init__(component_cls, capacity)
+		if not self.fields:
+			raise TypeError("tags do not support multiple instances per entity")
 		self._dense[_COUNT_STR] = np.zeros( self._capacity, dtype=ComponentPerEntityCount )
 		self._field_dtypes[_COUNT_STR] = _dtype_for(ComponentPerEntityCount)
 		self._live_count = 0
@@ -527,7 +666,7 @@ class MultiComponentStorage(ComponentStorage):
 	def _block_rows(
 		self,
 		heads: IndexArray,
-		counts: CountArray | None = None,
+		counts: CountArray | NDArray[np.int64] | None = None,
 	) -> IndexArray:
 		"""Concatenate arange(head, head + count) for each block."""
 		if heads.size == 0:
@@ -586,6 +725,8 @@ class MultiComponentStorage(ComponentStorage):
 		if live == self._size and not grow:
 			return
 
+		self.layout_version += 1
+
 		for name in self._dense:
 			old = self._dense[name]
 
@@ -598,7 +739,7 @@ class MultiComponentStorage(ComponentStorage):
 
 			if name == _ENTITY_STR:
 				new[live:] = NO_ENTITY
-			elif name == _ENTITY_STR:
+			elif name == _COUNT_STR:
 				new[live:] = 0
 			elif old.dtype == OBJECT_DTYPE:
 				new[live:] = None
@@ -624,6 +765,14 @@ class MultiComponentStorage(ComponentStorage):
 		if self._size + quantity > self._capacity:
 			self._defragment(self._live_count + quantity)
 
+	def _validate_add(self, entities: EntityArray) -> None:
+		owners, counts = np.unique(_entity_indices(entities), return_counts=True)
+		heads = self._get_dense_indices(owners)
+		existing = heads != NONE
+		counts[existing] += self._dense_counts[heads[existing]].astype(np.int64)
+		if np.any(counts > np.iinfo(ComponentPerEntityCount).max):
+			raise OverflowError(f"too many {self.component_cls.__name__} components for one owner")
+
 	def _add_normalised(
 		self,
 		entities: EntityArray,
@@ -632,7 +781,9 @@ class MultiComponentStorage(ComponentStorage):
 		if entities.size == 0:
 			return
 
+		self._validate_add(entities)
 		self.membership_version += 1
+		self.layout_version += 1
 
 		# Group incoming components by owner.
 		order = np.argsort(entities, kind="stable")
@@ -644,7 +795,7 @@ class MultiComponentStorage(ComponentStorage):
 
 		add_counts = np.diff(
 			np.r_[starts, entities.size]
-		).astype(ComponentPerEntityCount, copy=False)
+		)
 
 		owners = entities[starts]
 		owner_indices = _entity_indices(owners)
@@ -658,6 +809,22 @@ class MultiComponentStorage(ComponentStorage):
 		old_counts[existing] = self._dense_counts[ old_heads[existing] ]
 
 		final_counts = old_counts + add_counts
+
+		if owners.size == 1 and existing[0] and int(old_heads[0]) + int(old_counts[0]) == self._size:
+			# Extend the last block without copying its existing rows on every append.
+			quantity = int(add_counts[0])
+			self._ensure_append_capacity(quantity)
+			# Capacity management may compact holes and relocate this block.
+			head = self._sparse[owner_indices[0]]
+			start, stop = self._size, self._size + quantity
+			self._dense_entities[start:stop] = owners[0]
+			self._dense_counts[start:stop] = 0
+			self._dense_counts[head] = final_counts[0]
+			for field in self.fields:
+				self._dense[field][start:stop] = field_values[field][order]
+			self._size = stop
+			self._live_count += quantity
+			return
 
 		# Save existing blocks before removing them.
 		old_rows = self._block_rows( old_heads[existing], old_counts[existing] )
@@ -681,7 +848,7 @@ class MultiComponentStorage(ComponentStorage):
 		start = self._size
 
 		offsets = (
-			np.cumsum(final_counts, dtype=np.uint64)
+			np.cumsum(final_counts, dtype=np.int64)
 			- final_counts
 		)
 
@@ -722,6 +889,7 @@ class MultiComponentStorage(ComponentStorage):
 	def _remove_rows(self, rows: IndexArray) -> EntityArray:
 		if not rows.size: return np.empty(0, dtype=Entity)
 		self.membership_version += 1
+		self.layout_version += 1
 		removed_owners = self._dense_entities[rows]
 
 		owners, removed_counts_ = np.unique(
@@ -778,6 +946,380 @@ class MultiComponentStorage(ComponentStorage):
 		return owners[emptied]
 
 
+def _query_types(types: type[Any] | Sequence[type[Any]] | None) -> tuple[type[Any], ...]:
+	if types is None:
+		return ()
+	items = (types,) if isinstance(types, type) else tuple(types)
+	if any(not isinstance(item, type) for item in items):
+		raise TypeError("query terms must be component types")
+	return tuple(dict.fromkeys(items))
+
+
+class QueryComponent:
+	"""Packed rows in query-entity order, with one presence bit and offset per owner.
+
+	For single components, selection rows align with result.entities[present].
+	For multicomponents, offsets[i]:offsets[i + 1] identifies owner i's rows.
+	Missing owners have zero rows. Different multicomponent terms are never zipped.
+	"""
+	__slots__ = ("_result", "_selection", "_present", "_offsets")
+
+	def __init__(self, result: QueryResult, store: ComponentStorage, indices: IndexArray) -> None:
+		self._result = result
+		heads = store._get_dense_indices(indices)
+		self._present = heads != NONE
+		counts = self._present.astype(np.int64)
+		if isinstance(store, MultiComponentStorage):
+			counts[self._present] = store._dense_counts[heads[self._present]]
+			rows = store._block_rows(heads[self._present], counts[self._present])
+		else:
+			rows = heads[self._present]
+		self._offsets = np.empty(indices.size + 1, dtype=np.int64)
+		self._offsets[0] = 0
+		self._offsets[1:] = np.cumsum(counts)
+		self._selection = ComponentSelection(store, rows)
+
+	@property
+	def selection(self) -> ComponentSelection:
+		"""Current field values at cached rows, using normal selection write-back."""
+		self._result._validate()
+		return self._selection
+
+	@property
+	def present(self) -> BoolArray:
+		self._result._validate()
+		return self._present.copy()
+
+	@property
+	def offsets(self) -> NDArray[np.int64]:
+		self._result._validate()
+		return self._offsets.copy()
+
+
+class QueryResult:
+	"""Cached entity membership and component row mappings, not cached field values.
+
+	Refetch from the query after relevant membership or layout changes. An extracted
+	ComponentSelection retains its own store's lifetime rules.
+	"""
+	__slots__ = ("_query", "_entities", "_membership", "_layout", "_components")
+
+	def __init__(
+		self, query: Query, entities: EntityArray, membership: tuple[int, ...], layout: tuple[int, ...],
+	) -> None:
+		self._query = query
+		self._entities = entities
+		self._membership = membership
+		self._layout = layout
+		indices = _entity_indices(entities)
+		self._components = {
+			cls: QueryComponent(self, store, indices) for cls, store in query._returned_stores.items()
+		}
+
+	def _validate(self) -> None:
+		if self._membership != self._query._membership_token() or self._layout != self._query._layout_token():
+			raise RuntimeError("stale query result: call fetch() again after membership or layout changes")
+
+	@property
+	def entities(self) -> EntityArray:
+		self._validate()
+		return self._entities.copy()
+
+	def __len__(self) -> int:
+		self._validate()
+		return int(self._entities.size)
+
+	def __getitem__(self, component_cls: type[Any]) -> QueryComponent:
+		self._validate()
+		return self._components[component_cls]
+
+
+class Query:
+	"""Reusable structural query. Results follow ascending entity-index order.
+
+	All required terms, at least one any_of term (when nonempty), and no excluded
+	terms must match. Optional terms do not filter membership. Returned terms are
+	the union of required, any_of, and optional components in declaration order.
+	Field writes keep cached membership/rows; field predicates remain separate,
+	uncached ComponentAccessor.query_rows() evaluations.
+	"""
+	def __init__(
+		self, ecs: ECS, required: Sequence[type[Any]], *,
+		exclude: type[Any] | Sequence[type[Any]] | None = None,
+		any_of: type[Any] | Sequence[type[Any]] | None = None,
+		optional: type[Any] | Sequence[type[Any]] | None = None,
+	) -> None:
+		self._ecs = ecs
+		required = _query_types(required)
+		excluded = _query_types(exclude)
+		any_types = _query_types(any_of)
+		optional_types = _query_types(optional)
+		self._required = ecs._component_bits(required)
+		self._excluded = ecs._component_bits(excluded)
+		self._any = ecs._component_bits(any_types)
+		filters = tuple(dict.fromkeys((*required, *excluded, *any_types)))
+		self._filter_stores = tuple(ecs._get_store(cls) for cls in filters)
+		self._required_stores = tuple(ecs._get_store(cls) for cls in required)
+		self._returned_stores = {
+			cls: ecs._get_store(cls) for cls in dict.fromkeys((*required, *any_types, *optional_types))
+		}
+		self._track_entities = not required
+		self._cached_membership: tuple[int, ...] | None = None
+		self._entities = np.empty(0, dtype=Entity)
+		self._result: QueryResult | None = None
+
+	def _membership_token(self) -> tuple[int, ...]:
+		versions = tuple(store.membership_version for store in self._filter_stores)
+		return versions + ((self._ecs.entity_version,) if self._track_entities else ())
+
+	def _layout_token(self) -> tuple[int, ...]:
+		return tuple(store.layout_version for store in self._returned_stores.values())
+
+	def _scan_entities(self) -> EntityArray:
+		return self._ecs._matching_entities(self._required, self._excluded, self._any, self._required_stores)
+
+	def _refresh_entities(self, membership: tuple[int, ...]) -> None:
+		if membership != self._cached_membership:
+			self._entities = self._scan_entities()
+			self._cached_membership = membership
+			self._result = None
+
+	def entities(self) -> EntityArray:
+		"""Return matching handles without constructing component row selections."""
+		self._refresh_entities(self._membership_token())
+		return self._entities.copy()
+
+	def fetch(self) -> QueryResult:
+		"""Reuse membership and rows until their structural version tokens change."""
+		membership = self._membership_token()
+		self._refresh_entities(membership)
+		layout = self._layout_token()
+		if self._result is None or self._result._layout != layout:
+			self._result = QueryResult(self, self._entities, membership, layout)
+		return self._result
+
+
+class DeferredEntities:
+	"""A creation result owned by one command buffer; resolve after its create runs.
+
+	Pass the token directly as a command target before flushing. It cannot be mixed
+	with other handles or sliced. Payload fields are not resolved automatically;
+	resolve explicitly before supplying entity handles as component field values.
+	"""
+	__slots__ = ("_buffer", "_entities", "_failed")
+
+	def __init__(self, buffer: CommandBuffer) -> None:
+		self._buffer = buffer
+		self._entities: EntityArray | None = None
+		self._failed = False
+
+	def resolve(self) -> EntityArray:
+		if self._failed:
+			raise RuntimeError("deferred creation failed or was cancelled")
+		if self._entities is None:
+			raise RuntimeError("deferred entities are unresolved; flush their creation first")
+		return self._entities.copy()
+
+
+@dataclass(frozen=True)
+class _Command:
+	index: int
+	operation: str
+	target: EntityArray | DeferredEntities
+	args: tuple[object, ...]
+
+
+class CommandError(RuntimeError):
+	"""A consumed command failed; earlier commands applied and the tail is pending."""
+	def __init__(self, command: _Command) -> None:
+		self.command_index = command.index
+		self.operation = command.operation
+		super().__init__(f"command {command.index} ({command.operation}) failed")
+
+
+class CommandBuffer:
+	"""FIFO edits applied at flush(), each preflighted by the ordinary ECS APIs.
+
+	Handle arrays are copied on enqueue. Component payloads are retained by reference;
+	copy mutable payloads yourself if they must not change before execution. A flush
+	processes the commands present at entry. Failure consumes the failed command,
+	keeps the tail, and raises CommandError with the original exception as its cause.
+	"""
+	def __init__(self, ecs: ECS) -> None:
+		self._ecs = ecs
+		self._commands: deque[_Command] = deque()
+		self._next_index = 0
+		self._flushing = False
+
+	def __len__(self) -> int:
+		return len(self._commands)
+
+	def _enqueue(self, operation: str, entities: EntityLike | DeferredEntities, args: tuple[object, ...]) -> None:
+		if isinstance(entities, DeferredEntities):
+			if entities._buffer is not self:
+				raise ValueError("deferred entities belong to another command buffer; resolve them explicitly")
+			target = entities
+		else:
+			target = as_entities(entities).copy()
+		self._commands.append(_Command(self._next_index, operation, target, args))
+		self._next_index += 1
+
+	def create(self, quantity: int = 1) -> DeferredEntities:
+		quantity = integer_index(quantity)
+		if quantity < 0:
+			raise ValueError("quantity must be >= 0")
+		result = DeferredEntities(self)
+		self._enqueue("create", result, (quantity,))
+		return result
+
+	def add(self, entities: EntityLike | DeferredEntities, *components: object) -> None:
+		self._enqueue("add", entities, components)
+
+	def set(self, entities: EntityLike | DeferredEntities, *components: object) -> None:
+		self._enqueue("set", entities, components)
+
+	def remove(self, entities: EntityLike | DeferredEntities, *types: type[Any]) -> None:
+		self._enqueue("remove", entities, types)
+
+	def delete(self, entities: EntityLike | DeferredEntities) -> None:
+		self._enqueue("delete", entities, ())
+
+	def clear(self) -> None:
+		"""Discard pending commands; pending creation tokens become cancelled."""
+		if self._flushing:
+			raise RuntimeError("cannot clear a flushing command buffer")
+		for command in self._commands:
+			if command.operation == "create":
+				cast(DeferredEntities, command.target)._failed = True
+		self._commands.clear()
+
+	def flush(self) -> int:
+		if self._flushing:
+			raise RuntimeError("command buffer flush is not reentrant")
+		self._flushing = True
+		completed = 0
+		try:
+			for _ in range(len(self._commands)):
+				command = self._commands.popleft()
+				try:
+					if command.operation == "create":
+						cast(DeferredEntities, command.target)._entities = self._ecs.create(cast(int, command.args[0]))
+					else:
+						target = command.target.resolve() if isinstance(command.target, DeferredEntities) else command.target
+						getattr(self._ecs, command.operation)(target, *command.args)
+				except Exception as error:
+					if command.operation == "create":
+						cast(DeferredEntities, command.target)._failed = True
+					raise CommandError(command) from error
+				completed += 1
+		finally:
+			self._flushing = False
+		return completed
+
+
+@dataclass(frozen=True)
+class _System:
+	name: str
+	callback: Callable[[ECS, CommandBuffer, float], None]
+	phase: str
+	before: tuple[str, ...]
+	after: tuple[str, ...]
+	flush_after: bool
+
+
+class Scheduler:
+	"""Sequential fixed_update, update, render_prep phases with explicit visibility.
+
+	Callbacks receive (world, commands, dt). Flush before a run and after each phase
+	(or fixed tick); flush_after=True also flushes after that system. Dependencies
+	order execution but do not themselves flush. Fixed tick counts are caller-owned.
+	"""
+	PHASES = ("fixed_update", "update", "render_prep")
+
+	def __init__(self, ecs: ECS) -> None:
+		self._ecs = ecs
+		self.commands = CommandBuffer(ecs)
+		self._systems: dict[str, _System] = {}
+		self._order: tuple[_System, ...] | None = None
+		self._running = False
+
+	def add(
+		self, name: str, callback: Callable[[ECS, CommandBuffer, float], None], *,
+		phase: str = "update", before: str | Sequence[str] = (),
+		after: str | Sequence[str] = (), flush_after: bool = False,
+	) -> None:
+		if self._running:
+			raise RuntimeError("cannot change a running schedule")
+		if not isinstance(name, str) or not name or name in self._systems:
+			raise ValueError("system names must be nonempty and unique")
+		if phase not in self.PHASES:
+			raise ValueError(f"unknown phase: {phase}")
+		if not callable(callback):
+			raise TypeError("system callback must be callable")
+		def names(value: str | Sequence[str]) -> tuple[str, ...]:
+			result = (value,) if isinstance(value, str) else tuple(value)
+			if any(not isinstance(item, str) or not item for item in result):
+				raise ValueError("dependencies must be nonempty system names")
+			return result
+		self._systems[name] = _System(name, callback, phase, names(before), names(after), flush_after)
+		self._order = None
+
+	def compile(self) -> tuple[str, ...]:
+		"""Validate all dependencies before execution; ties keep registration order."""
+		if self._order is None:
+			edges: dict[str, set[str]] = {name: set() for name in self._systems}
+			for system in self._systems.values():
+				dependencies = [(system.name, name) for name in system.before]
+				dependencies.extend((name, system.name) for name in system.after)
+				for source, dest in dependencies:
+					if source not in edges or dest not in edges:
+						raise ValueError(f"unknown system dependency: {source} -> {dest}")
+					if self.PHASES.index(self._systems[source].phase) > self.PHASES.index(self._systems[dest].phase):
+						raise ValueError(f"dependency contradicts phase order: {source} -> {dest}")
+					edges[source].add(dest)
+			incoming = {name: 0 for name in edges}
+			for destinations in edges.values():
+				for dest in destinations:
+					incoming[dest] += 1
+			order = []
+			while incoming:
+				ready = [name for name, count in incoming.items() if count == 0]
+				if not ready:
+					raise ValueError("system dependency cycle")
+				name = min(ready, key=lambda n: self.PHASES.index(self._systems[n].phase))
+				order.append(self._systems[name])
+				del incoming[name]
+				for dest in edges[name]:
+					incoming[dest] -= 1
+			self._order = tuple(order)
+		return tuple(system.name for system in self._order)
+
+	def _phase(self, phase: str, dt: float) -> None:
+		for system in self._order or ():
+			if system.phase == phase:
+				system.callback(self._ecs, self.commands, dt)
+				if system.flush_after:
+					self.commands.flush()
+		self.commands.flush()
+
+	def run(self, dt: float, *, fixed_steps: int = 0, fixed_dt: float = 1 / 60) -> None:
+		fixed_steps = integer_index(fixed_steps)
+		if fixed_steps < 0 or not np.isfinite(dt) or dt < 0 or not np.isfinite(fixed_dt) or fixed_dt <= 0:
+			raise ValueError("dt must be finite and nonnegative, fixed_dt positive, and fixed_steps nonnegative")
+		if self._running:
+			raise RuntimeError("schedule execution is not reentrant")
+		self.compile()
+		self._running = True
+		try:
+			self.commands.flush()
+			for _ in range(fixed_steps):
+				self._phase("fixed_update", fixed_dt)
+			self._phase("update", dt)
+			self._phase("render_prep", dt)
+		finally:
+			self._running = False
+
+
 class ECS:
 	def __init__(self) -> None:
 		self._stores: dict[type[Any], ComponentStorage] = {}
@@ -788,9 +1330,46 @@ class ECS:
 		self._free_entities: list[Entity] = []
 		self._next_entity_index = 0
 		self._entity_count = 0
+		self._entity_version = 0
 
 	def __len__(self) -> int:
 		return self._entity_count
+
+	def commands(self) -> CommandBuffer:
+		"""Create an independent command buffer bound to this world."""
+		return CommandBuffer(self)
+
+	@property
+	def entity_version(self) -> int:
+		"""Lifecycle token advanced by each successful nonempty create/delete call."""
+		return self._entity_version
+
+	def is_alive(self, entities: EntityLike) -> BoolArray:
+		"""Return one boolean per input handle, including duplicates and stale IDs."""
+		return self._alive_mask(as_entities(entities))
+
+	def has(self, entities: EntityLike, component_cls: type[Any]) -> BoolArray:
+		"""Return one presence bit per handle; unregistered component types raise."""
+		_, bit = self._component_info(component_cls)
+		entities_ = as_entities(entities)
+		present = self._alive_mask(entities_)
+		indices = _entity_indices(entities_)
+		present[present] &= (self.entity_masks[indices[present]] & bit) != 0
+		return present
+
+	def entities(self) -> EntityArray:
+		"""Return all live handles, including empty entities, in entity-index order."""
+		current = self._current_entities[:self._next_entity_index]
+		return current[current != NO_ENTITY]
+
+	def query(
+		self, *required: type[Any],
+		exclude: type[Any] | Sequence[type[Any]] | None = None,
+		any_of: type[Any] | Sequence[type[Any]] | None = None,
+		optional: type[Any] | Sequence[type[Any]] | None = None,
+	) -> Query:
+		"""Create a reusable structural query; no terms matches every live entity."""
+		return Query(self, required, exclude=exclude, any_of=any_of, optional=optional)
 
 	# ---------- entity state ----------
 
@@ -863,6 +1442,10 @@ class ECS:
 				continue
 
 			store, bit = self._component_info(item)
+			if not store.fields:
+				yield store, bit, item
+				i += 1
+				continue
 
 			if i + 1 >= len(params) or (
 				isinstance(params[i + 1], type)
@@ -881,21 +1464,26 @@ class ECS:
 		allow_same_type_components_per_entity: bool = False,
 		capacity: int = INITIAL_CAPACITY,
 	) -> tuple[ComponentAccessor, ...]:
-		res : list[ComponentAccessor] = []
+		"""Register a batch after validating every type and constructing its storage."""
+		pending: dict[type[Any], ComponentStorage] = {}
 
 		for cls in component_types:
-			if cls in self._stores:
+			if cls in self._stores or cls in pending:
 				raise ValueError(f"{cls.__name__} is already registered")
 			
-			bit_index = len(self._comp_bits)
+			bit_index = len(self._comp_bits) + len(pending)
 			if bit_index >= 64: raise ValueError("ECS supports at most 64 component types")
 
 			storage_cls: type[ComponentStorage] = (
-				MultiComponentStorage if cls._multicomponent or allow_same_type_components_per_entity
+				MultiComponentStorage if getattr(cls, "_multicomponent", False) or allow_same_type_components_per_entity
 				else ComponentStorage
 			)
 			
-			store = storage_cls(cls, capacity)
+			pending[cls] = storage_cls(cls, capacity)
+
+		res: list[ComponentAccessor] = []
+		for cls, store in pending.items():
+			bit_index = len(self._comp_bits)
 			self._stores[cls] = store
 			self._comp_bits[cls] = Mask(1 << bit_index)
 
@@ -913,6 +1501,10 @@ class ECS:
 			return np.empty(0, dtype=Entity)
 
 		reuse_count = min(quantity, len(self._free_entities))
+		new_count = quantity - reuse_count
+		stop = self._next_entity_index + new_count
+		if stop > INDEX_MAX:
+			raise OverflowError("entity index space exhausted")
 		reused = np.empty(0, dtype=Entity)
 
 		if reuse_count:
@@ -923,14 +1515,11 @@ class ECS:
 			self._current_entities[indices] = reused
 			self.entity_masks[indices] = Mask(0)
 
-		new_count = quantity - reuse_count
 		if new_count == 0:
 			self._entity_count += quantity
+			self._entity_version += 1
 			return reused
 
-		stop = self._next_entity_index + new_count
-		if stop > INDEX_MAX:
-			raise OverflowError("entity index space exhausted")
 		self._grow_entity_state(stop)
 		indices = np.arange(self._next_entity_index, stop, dtype=Index)
 		fresh = indices.astype(Entity)
@@ -938,6 +1527,7 @@ class ECS:
 		self.entity_masks[indices] = Mask(0)
 		self._next_entity_index = stop
 		self._entity_count += quantity
+		self._entity_version += 1
 
 		if reuse_count == 0:
 			return fresh
@@ -962,29 +1552,78 @@ class ECS:
 		self._current_entities[indices] = NO_ENTITY
 		self._free_entities.extend(entity_array.tolist())
 		self._entity_count -= int(entity_array.size)
+		self._entity_version += 1
 
 	# ---------- components ----------
 
-	def add(self, entities: EntityLike, *components: object) -> None:
+	def _prepare_components(
+		self, entities: EntityLike, components: tuple[object, ...], *, replace: bool = False,
+	) -> list[tuple[ComponentStorage, Mask, EntityArray, dict[str, FieldArray]]]:
+		"""Normalize and validate the complete request without changing world state."""
 		entity_array = as_entities(entities)
 		if entity_array.size == 0 or not components:
-			return
+			return []
 
 		alive = self._alive_mask(entity_array)
 		if not np.any(alive):
-			return
+			return []
 
 		live_entities = entity_array[alive]
-		live_indices = _entity_indices(live_entities)
-
-		for store, bit, values in list(self._parse_add_components(components)):
-			values = store._normalise_values(entity_array, values)
-
-			if not np.all(alive):
+		filter_values = not np.all(alive)
+		prepared: dict[ComponentStorage, tuple[Mask, list[dict[str, FieldArray]]]] = {}
+		for store, bit, payload in self._parse_add_components(components):
+			multiple = isinstance(store, MultiComponentStorage)
+			if replace and multiple:
+				raise TypeError("set() does not support multicomponent storage")
+			if store in prepared and not multiple:
+				raise ValueError(f"repeated component type: {store.component_cls.__name__}")
+			values = store._normalise_values(entity_array, payload)
+			if filter_values:
 				values = {field: value[alive] for field, value in values.items()}
+			if store not in prepared:
+				prepared[store] = (bit, [])
+			prepared[store][1].append(values)
 
-			store._add_normalised(live_entities, values)
-			self.entity_masks[live_indices] |= bit
+		result = []
+		for store, (bit, batches) in prepared.items():
+			owners = live_entities
+			values = batches[0]
+			if len(batches) > 1:
+				owners = np.tile(live_entities, len(batches))
+				values = {field: np.concatenate([batch[field] for batch in batches]) for field in store.fields}
+			if replace:
+				indices = _entity_indices(owners)
+				if np.unique(indices).size != indices.size:
+					raise ValueError(f"duplicate owners for {store.component_cls.__name__}")
+				if np.any(store._get_dense_indices(indices) == NONE):
+					raise ValueError(f"{store.component_cls.__name__} is missing; use add() to insert it")
+			else:
+				store._validate_add(owners)
+			result.append((store, bit, owners, values))
+		return result
+
+	def add(self, entities: EntityLike, *components: object) -> None:
+		"""Insert components after preflight. Single components must not already exist.
+
+		Duplicate live owners and repeated single-component types are errors.
+		Multicomponents append; stale handles and matching payload entries are ignored.
+		Expected validation errors leave the whole request unapplied.
+		"""
+		for store, bit, owners, values in self._prepare_components(entities, components):
+			store._add_normalised(owners, values)
+			self.entity_masks[_entity_indices(owners)] |= bit
+
+	def set(self, entities: EntityLike, *components: object) -> None:
+		"""Replace existing single-component values using the same forms as add().
+
+		All live owners must have each component. Stale handles are ignored.
+		Rows and membership stay unchanged; writes advance the field versions.
+		"""
+		for store, _, owners, values in self._prepare_components(entities, components, replace=True):
+			rows = store._get_rows(_entity_indices(owners))
+			for field, value in values.items():
+				store._dense[field][rows] = value
+			store.touch()
 
 	def remove(self, entities: EntityLike, *component_types: type[Any]) -> None:
 		entity_array = np.unique(self._filter_alive(as_entities(entities)))
@@ -992,8 +1631,8 @@ class ECS:
 			return
 
 		indices = _entity_indices(entity_array)
-		for component_cls in component_types:
-			store, bit = self._component_info(component_cls)
+		stores = [self._component_info(cls) for cls in dict.fromkeys(component_types)]
+		for store, bit in stores:
 			store._remove_entities(indices)
 			self.entity_masks[indices] &= ~bit
 
@@ -1020,9 +1659,25 @@ class ECS:
 		else:
 			excluded = self._component_bits(exclude)
 
-		masks = self.entity_masks[: self._next_entity_index]
-		selected = (masks & required) == required
-		if excluded: selected &= (masks & excluded) == 0
+		return self._matching_entities(required, excluded, Mask(0), (self._stores[cls] for cls in dict.fromkeys(component_types)))
 
-		indices = np.flatnonzero(selected).astype(Index, copy=False)
-		return self._current_entities[indices].astype(Entity, copy=False)
+	def _matching_entities(
+		self, required: Mask, excluded: Mask, any_mask: Mask, required_stores: Iterable[ComponentStorage],
+	) -> EntityArray:
+		store = min(required_stores, key=lambda candidate: candidate._size, default=None)
+		if store is not None and store._size * 16 <= self._next_entity_index:
+			if isinstance(store, MultiComponentStorage):
+				indices = np.unique(_entity_indices(store._dense_entities[store._active_rows()]))
+			else:
+				indices = np.sort(_entity_indices(store._dense_entities[:store._size]))
+			# Sorting by index preserves ordering after swap removal and generation reuse.
+			current, masks = self._current_entities[indices], self.entity_masks[indices]
+		else:
+			current = self._current_entities[:self._next_entity_index]
+			masks = self.entity_masks[:current.size]
+		selected = (current != NO_ENTITY) & ((masks & required) == required)
+		if excluded:
+			selected &= (masks & excluded) == 0
+		if any_mask:
+			selected &= (masks & any_mask) != 0
+		return current[selected]

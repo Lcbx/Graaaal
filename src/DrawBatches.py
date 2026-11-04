@@ -273,20 +273,22 @@ class DrawBatches:
 
 		Owners may repeat. Selection, membership or grouping-key changes invalidate
 		instance inputs; no component identity is retained across regrouping.
+		Layout changes also refresh the retained selection. component_rows contains
+		raw indices valid only until the next structural edit to the mesh store.
 		When this returns True (or instance_order_version changes), rewrite all
 		instance fields and custom attributes in the current entities/mesh_field order.
 		Synchronize before recording any reset/culling/draw passes for the frame.
 		"""
 		ents = as_entities(entities)
 		if ents.ndim != 1: raise ValueError("Expected a 1D entity selection")
-		version = (transforms, mesh_refs, transforms.membership_version, mesh_refs.version("lod_id", "shader_id"))
+		version = (transforms, mesh_refs, transforms.membership_version, mesh_refs.layout_version, mesh_refs.version("lod_id", "shader_id"))
 		regroup = version != self._batch_version or not np.array_equal(ents, self._selection)
 		if regroup:
 			refs = mesh_refs[ents]
 			rows = refs.get_rows()
 			order, batches = build_batches(np.arange(len(rows), dtype=Entity), refs["lod_id"], refs["shader_id"])
 			component_rows = rows[order]
-			owners = mesh_refs.owner_ids(component_rows)
+			owners = mesh_refs.owner_ids(refs)[order]
 			if batches != self.source_batches or self._destinations_dirty:
 				self._rebuild_destinations(owners, batches)
 			self._mesh_selection, self._mesh_order = refs, order

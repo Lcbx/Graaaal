@@ -27,6 +27,8 @@ world = ECS()
 transforms, velocities, mesh_refs = world.register(
 	Transform, Velocity, MeshRef
 )
+movement_query = world.query(Transform, Velocity)
+render_query = world.query(Transform, MeshRef)
 
 CUBE_COUNT = 1000
 SPACE_SIZE = 180
@@ -124,9 +126,9 @@ world.add([model_entity, model_entity],
 	]
 )
 
-def create_cubes(count):
-	cube_entities = world.create(count)
-	cube_count = cube_entities.size
+def create_cubes(count, commands=None):
+	cube_entities = world.create(count) if commands is None else commands.create(count)
+	cube_count = count
 
 	cube_positions = np.column_stack((
 		np.random.randint(-SPACE_SIZE, SPACE_SIZE, cube_count),
@@ -158,7 +160,7 @@ def create_cubes(count):
 		], dtype=np.uint32),
 	))
 
-	world.add(
+	(world if commands is None else commands).add(
 		cube_entities,
 		Transform, (cube_positions, cube_scales, cube_rotations),
 		Velocity, cube_velocities,
@@ -166,9 +168,9 @@ def create_cubes(count):
 	)
 
 deleted_count = 2 # start after ground and pole mesh
-def delete_cubes(count):
+def delete_cubes(count, commands=None):
 	global deleted_count
-	world.delete(range(deleted_count, deleted_count+count))
+	(world if commands is None else commands).delete(range(deleted_count, deleted_count+count))
 	deleted_count += count
 
 
@@ -181,8 +183,8 @@ def camera_system(camera, elapsed, camera_dist):
 
 
 def movement_system(world, dt):
-	pv = world.where(Transform, Velocity)
-	p, v = transforms[pv], velocities[pv]
+	matched = movement_query.fetch()
+	p, v = matched[Transform].selection, matched[Velocity].selection
 	p_vec, v_vec = p.position, v.vector()
 	p_vec += v_vec * dt
 
@@ -200,7 +202,7 @@ def movement_system(world, dt):
 def update_instances(world, data):
 	global instance_version
 	
-	entities = world.where(Transform, MeshRef)
+	entities = render_query.entities()
 	data.sync_batches(entities, transforms, mesh_refs)
 	version = (data.instance_order_version, transforms.version("position"), transforms.version("rotation"), transforms.version("scale"), mesh_refs.version("tint"))
 	if instance_version == version: return
@@ -238,8 +240,6 @@ def update_cameras(data, culling_camera, rendering_camera, light_dir):
 def render_system(world, culling_camera, rendering_camera):
 	width, height = RenderContext.windowDimensions
 	if width <= 0 or height <= 0: return
-	update_instances(world, render_data)
-
 	hzb.resize((width, height))
 	render_data.refresh_bindings(hzb.view)
 	update_cameras(render_data, culling_camera, rendering_camera, light_camera.direction())
@@ -291,17 +291,26 @@ fps_frames = 0
 start_t = get_time()
 fps_print_timestamp = start_t
 
+def queue_cube_changes(world, commands, dt):
+	if big_frame:
+		create_cubes(10, commands)
+		delete_cubes(3, commands)
+
+schedule = Scheduler(world)
+schedule.add("cube_changes", queue_cube_changes, before="movement")
+schedule.add("movement", lambda world, commands, dt: movement_system(world, dt))
+schedule.add("instances", lambda world, commands, dt: update_instances(world, render_data), phase="render_prep")
+
 while RenderContext.window_loop():
 	now = RenderContext.frame_start
 
 	fps_frames += 1
-	if (big_frame := now - fps_print_timestamp >= 1.0):
-		create_cubes(10)
-		delete_cubes(3)
+	big_frame = now - fps_print_timestamp >= 1.0
 
 	elapsed = now - start_t
 	camera_system(main_camera, elapsed, camera_dist)
-	movement_system(world, RenderContext.frame_time)
+	# Queued cube edits stay deferred during movement, then flush before render prep.
+	schedule.run(RenderContext.frame_time)
 	with WatchTimer("render system"):
 		render_system(world, main_camera, active_camera)
 
