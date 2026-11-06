@@ -3,6 +3,7 @@ from __future__ import annotations
 import time, os, re, gc
 from time import sleep, perf_counter as get_time
 from threading import Lock
+from math import isfinite
 from dataclasses import dataclass
 from typing import Any, Sequence, Iterator, Iterable, Callable, ParamSpec, TypeVar, ClassVar
 from collections import defaultdict, OrderedDict
@@ -54,6 +55,8 @@ class _RenderContext:
 		# event_name:[handlers]
 		# handlers return True if no need to propagate further
 		self.event_handlers: dict[str, list[Callable]] = {}
+		self._glfw_initialized = False
+		self._gc_manager: GC_Manager | None = None
 
 	def init_window(
 		self,
@@ -62,7 +65,7 @@ class _RenderContext:
 		title: str,
 		highpower_gpu: bool = True,
 		target_fps: int = 0,
-		required_gpu_features:list = [],
+		required_gpu_features: Sequence[str] = (),
 		custom_gc:bool=True
 	) -> None:
 		"""Init a window and wgpu rendering context.
@@ -72,8 +75,22 @@ class _RenderContext:
 		:param required_gpu_features: wgpu features requested                                                                
 		:param custom_gc: run the gc during idle time
 		"""
-		glfw.init()
+		if target_fps < -1:
+			raise ValueError("target_fps must be -1, 0, or positive")
+		if self.window is not None:
+			raise RuntimeError("A window is already initialized")
+		if not glfw.init():
+			raise RuntimeError("GLFW initialization failed")
+		self._glfw_initialized = True
+		atexit.unregister(self.cleanup)
 		atexit.register(self.cleanup)
+		try:
+			self._init_window(w, h, title, highpower_gpu, target_fps, required_gpu_features, custom_gc)
+		except BaseException:
+			self.cleanup()
+			raise
+
+	def _init_window(self, w, h, title, highpower_gpu, target_fps, required_gpu_features, custom_gc):
 
 		glfw.window_hint(glfw.CLIENT_API, glfw.NO_API)
 
@@ -82,23 +99,27 @@ class _RenderContext:
 		glfw.window_hint(glfw.POSITION_X, monitor_w - w)
 		glfw.window_hint(glfw.POSITION_Y, 30)
 
-		if target_fps == 0:
+		vsync = target_fps == 0
+		if vsync:
 			video_mode = glfw.get_video_mode(monitor)
 			target_fps = video_mode.refresh_rate
 
-		if target_fps != -1:
-			self.target_frame_time = 1.0 / float(target_fps)
+		self.target_frame_time = None if target_fps == -1 else 1.0 / float(target_fps)
 
 		self.window = glfw.create_window(w, h, title, None, None)
+		if not self.window:
+			self.window = None
+			raise RuntimeError("GLFW window creation failed")
 		self.setup_callbacks()
-		if custom_gc:
-			self.event_handlers["idle"].append(GC_Manager())
 
-		self.setup_graphics(vsync=target_fps == 0, highpower_gpu=highpower_gpu, required_gpu_features=required_gpu_features)
+		self.setup_graphics(vsync=vsync, highpower_gpu=highpower_gpu, required_gpu_features=required_gpu_features)
+		if custom_gc:
+			self._gc_manager = GC_Manager()
+			self.event_handlers["idle"].append(self._gc_manager)
 
 		self.frame_start = get_time()
 
-	def setup_graphics(self, *, vsync: bool, highpower_gpu: bool, required_gpu_features:list=[]) -> None:
+	def setup_graphics(self, *, vsync: bool, highpower_gpu: bool, required_gpu_features: Sequence[str] = ()) -> None:
 		"""Setup gpu compute & render surface."""
 		present_info = get_glfw_present_info(self.window, vsync=vsync)
 		self.canvas = wgpu.gpu.get_canvas_context(present_info)
@@ -106,13 +127,14 @@ class _RenderContext:
 		self.presentation_format = self.canvas.get_preferred_format(self.adapter)
 		self.canvas.configure(device=self.device, format=self.presentation_format)
 
-	def setup_graphics_backend(self, highpower_gpu: bool, required_features:list=[]) -> None:
+	def setup_graphics_backend(self, highpower_gpu: bool, required_features: Sequence[str] = ()) -> None:
 		"""Setup gpu compute, not necessarily with canvas output. Used notably for tests."""
 		request_params = {
 			"power_preference": "high-performance" if highpower_gpu else "low-power"
 		}
 		if self.canvas:
 			request_params["canvas"] = self.canvas
+		Mesh.reset_pools()
 		self.adapter = wgpu.gpu.request_adapter_sync(**request_params)
 		self.device = self.adapter.request_device_sync(required_features=required_features)
 
@@ -183,17 +205,35 @@ class _RenderContext:
 		return handlers_call
 
 	def cleanup(self) -> None:
-		if self.canvas:
-			self.canvas.unconfigure()
-
-		if self.window is not None:
-			glfw.destroy_window(self.window)
-
-		# work around https://github.com/glfw/glfw/issues/1766
-		end_time = get_time() + 0.1
-		while get_time() < end_time:
-			glfw.wait_events_timeout(end_time - get_time())
-		glfw.terminate()
+		canvas, self.canvas = self.canvas, None
+		window, self.window = self.window, None
+		initialized, self._glfw_initialized = self._glfw_initialized, False
+		self._screen_view = None
+		self.windowDimensions = (0, 0)
+		if hasattr(self, "depth"):
+			del self.depth
+		if self._gc_manager is not None:
+			self._gc_manager.close()
+			self._gc_manager = None
+		self.event_handlers.clear()
+		self.idle_hook = lambda: None
+		Mesh.reset_pools()
+		try:
+			if canvas is not None:
+				canvas.unconfigure()
+		finally:
+			try:
+				if window is not None:
+					glfw.destroy_window(window)
+			finally:
+				if initialized:
+					try:
+						# work around https://github.com/glfw/glfw/issues/1766
+						end_time = get_time() + 0.1
+						while (remaining := end_time - get_time()) > 0:
+							glfw.wait_events_timeout(remaining)
+					finally:
+						glfw.terminate()
 
 	def window_loop(self) -> bool:
 		"""Present the previous image, update window/input state, run gc, and continue the loop. """
@@ -227,6 +267,7 @@ class _RenderContext:
 			while now < wait_end:
 				now = get_time()
 
+		self.frame_time = now - self.frame_start
 		self.frame_start = now
 
 	# commands -----------------------------------------------------------------
@@ -266,62 +307,86 @@ class _RenderContext:
 RenderContext = _RenderContext()
 
 class GC_Manager:
-	""" decides whether to run gc, called by 'idle' hook
-	automatically instanciated by RenderContext.init_window by default
+	"""Run at most one collection per idle call, preferably in spare frame time.
+
+	Time budgets are estimates, not limits on GC pauses. A due generation is
+	collected after max_deferral seconds even if no frame has enough spare time.
+	One manager owns the process-wide GC settings until close() is called.
 	"""
 
 	def __init__(self,
 		thresholds  : tuple[int,int,int]         = (300, 15, 10),
 		time_budgets: tuple[float, float, float] = (0.0005, 0.002, 0.005), # sec
+		max_deferral: float = 1.0, # sec, measured while collections are due
 	) -> None:
-
-		# collect then freeze, assuming initial window setup is there to stay 
-		gc.collect(0)
-		gc.freeze()
-
+		if len(thresholds) != 3 or any(not isinstance(n, int) or n <= 0 for n in thresholds):
+			raise ValueError("GC thresholds must be three positive integers")
+		if len(time_budgets) != 3 or any(not isfinite(t) or t < 0 for t in time_budgets):
+			raise ValueError("GC time budgets must be three finite nonnegative durations")
+		if not isfinite(max_deferral) or max_deferral <= 0:
+			raise ValueError("max_deferral must be a finite positive duration")
+		self.time_budgets = time_budgets
+		self.max_deferral = max_deferral
+		self._pending_since: list[float | None] = [None, None, None]
+		self._was_enabled = gc.isenabled()
+		self._thresholds = gc.get_threshold()
+		self._closed = False
+		# Do not freeze process-wide objects: their ownership is not ours.
 		gc.disable()
 		gc.set_threshold(*thresholds)
-		self.time_budgets = time_budgets
+
+	def close(self) -> None:
+		if self._closed:
+			return
+		self._closed = True
+		gc.set_threshold(*self._thresholds)
+		if self._was_enabled:
+			gc.enable()
+		else:
+			gc.disable()
 
 	def __call__(self):
+		if self._closed:
+			return
 		counts = gc.get_count()
 		thresholds = gc.get_threshold()
 
-		#print(f'{counts=}, {thresholds=}')
+		now = get_time()
+		budget = (
+			RenderContext.target_frame_time - (now - RenderContext.frame_start)
+			if RenderContext.target_frame_time else float("inf")
+		)
+		for gen in range(3):
+			if counts[gen] < thresholds[gen]:
+				self._pending_since[gen] = None
+			elif self._pending_since[gen] is None:
+				self._pending_since[gen] = now
 
-		max_gen = -1
-		
-		if RenderContext.target_frame_time:
-			budget = RenderContext.target_frame_time - (get_time() - RenderContext.frame_start)
-			for gen in range(max_gen, -1, -1):
-				if budget >= self.time_budgets[gen]:
-					max_gen = gen
-					break
-		else:
-			max_gen = 2 # there are 3 generations : 0, 1, 2
-
-		#print(f'{max_gen=}')
-		for gen in range(max_gen, -1, -1):
-			if counts[gen] >= thresholds[gen]:
+		for gen in range(2, -1, -1):
+			since = self._pending_since[gen]
+			if since is not None and (
+				budget >= self.time_budgets[gen] or now - since >= self.max_deferral
+			):
 				gc.collect(gen)
-				print("collected gen", gen)
+				# Collecting a generation also collects all younger generations.
+				for younger in range(gen + 1):
+					self._pending_since[younger] = None
 				break
 
 	@classmethod
 	def full_sweep(cls) -> None:
-		gc.unfreeze()
+		"""Collect all generations without changing the process's frozen objects."""
 		gc.collect(2)
-		gc.freeze()
 
 	@classmethod
 	def scene_transition(cls, new_scene_load: Callable) -> None:
-		""" collects old scene, mark new scene for keeping """
-		gc.unfreeze()
-		gc.collect(2)  # Sweeps old scene
-		new_scene_load()
-		gc.collect(0)  # Sweeps temporary load junk
-		gc.collect(0)  # called twice since some stuff survives single sweeps
-		gc.freeze()    # exclude new scene from sweeps
+		"""Release old scene references before calling; retain the new scene in the loader."""
+		gc.collect(2)
+		try:
+			new_scene_load()
+		finally:
+			# Loading may promote temporary cycles; sweep every generation once.
+			gc.collect(2)
 
 
 class CommandContext:
@@ -680,12 +745,8 @@ _VertexFormat: dict[Any, tuple[str, int]] = {
 	np.uint16:	("uint16",  2),
 	np.int32:	("sint32",  4),
 	np.uint32:	("uint32",  4),
-	np.int64:	("sint64",  8),
-	np.uint64:	("uint64",  8),
-	np.uint64:	("uint32",  4),
 	np.float16:	("float16", 2),
 	np.float32:	("float32", 4),
-	np.float64:	("float64", 8),
 }
 
 
@@ -708,9 +769,14 @@ def dtype_to_vertex_format(dtype: np.dtype) -> list | str:
 			prefix, scalar_size = _VertexFormat[dtype.type]
 		except KeyError:
 			raise TypeError(f"Unsupported vertex scalar dtype: {dtype}") from None
-		return getattr(wgpu.VertexFormat, prefix)
+		format = getattr(wgpu.VertexFormat, prefix, None)
+		if format is None:
+			raise TypeError(f"Unsupported vertex format: {dtype}")
+		return format
 
 	base_dtype, shape = dtype.subdtype
+	if len(shape) != 1:
+		raise TypeError("Vertex attributes must be one-dimensional vectors")
 	base_type = base_dtype.type
 	count = shape[0]
 	if count < 1 or count > 4:
@@ -723,16 +789,10 @@ def dtype_to_vertex_format(dtype: np.dtype) -> list | str:
 	except KeyError:
 		raise TypeError(f"Unsupported vertex base dtype: {base_type}") from None
 
-	vformat = getattr(wgpu.VertexFormat, prefix if count == 1 else f"{prefix}x{count}")
-	if len(shape) == 1:
-		return vformat
-	if len(shape) == 2:
-		row_count = shape[1]
-		return [(vformat, scalar_size * count * i) for i in range(row_count)]
-
-	raise TypeError(
-		f"Only 1D or 2D array dtypes are valid vertex attributes (found {shape})"
-	)
+	vformat = getattr(wgpu.VertexFormat, prefix if count == 1 else f"{prefix}x{count}", None)
+	if vformat is None:
+		raise TypeError(f"Unsupported vertex format: {dtype}")
+	return vformat
 
 
 class GpuBuffer:
@@ -743,7 +803,7 @@ class GpuBuffer:
 		upload: bool = True,
 		label: str | None = None,
 	):
-		self.content = np.asarray(content)
+		self.content = self._content_array(content)
 		self.usage = usage
 		self.label = label
 		self.generation = 0
@@ -757,7 +817,7 @@ class GpuBuffer:
 		else:
 			self.handle = RenderContext.device.create_buffer(
 				label=label or "",
-				size=max(4, self.content.nbytes),
+				size=max(4, _round_up(4, self.content.nbytes)),
 				usage=self.usage,
 			)
 
@@ -775,9 +835,13 @@ class GpuBuffer:
 	
 
 	def resize(self, count: int) -> bool:
-		size = higher_pow2(max(4, count * self.content.itemsize))
-		if size <= self.handle.size:
+		"""Grow GPU capacity, discarding GPU data; callers must re-upload content."""
+		if count < 0:
+			raise ValueError("Buffer count cannot be negative")
+		required_size = max(4, _round_up(4, count * self.content.itemsize))
+		if required_size <= self.handle.size:
 			return False
+		size = higher_pow2(required_size)
 
 		self.handle = RenderContext.device.create_buffer(
 			label=self.label or "",
@@ -788,21 +852,60 @@ class GpuBuffer:
 		return True
 
 	def upload(self) -> None:
-		RenderContext.device.queue.write_buffer(self.handle, 0, self.content)
+		self._upload_bytes(0, self.content.nbytes)
 
 	def upload_range(self, start: int, count: int) -> None:
-		if count <= 0:
-			return
-		uploaded = self.content[start:start + count]
-		RenderContext.device.queue.write_buffer(
-			buffer=self.handle,
-			buffer_offset=start * self.content.itemsize,
-			data=uploaded,
-		)
+		if self.content.ndim != 1:
+			raise ValueError("Element range uploads require a one-dimensional array")
+		if start < 0 or count < 0 or start + count > self.content.size:
+			raise ValueError("Upload range is outside CPU content")
+		self._upload_bytes(start * self.content.itemsize, count * self.content.itemsize)
 
-	def write(self, data: np.ndarray, *, offset: int = 0) -> None:
-		self.content = np.asarray(data)
-		RenderContext.device.queue.write_buffer(self.handle, offset, self.content)
+	@staticmethod
+	def _content_array(data: np.ndarray) -> np.ndarray:
+		array = np.asarray(data)
+		if array.dtype.hasobject:
+			raise TypeError("GPU buffers cannot contain Python objects")
+		return np.ascontiguousarray(array)
+
+	def _upload_bytes(self, offset: int, size: int) -> None:
+		if not size:
+			return
+		if not self.usage & wgpu.BufferUsage.COPY_DST:
+			raise ValueError("Uploads require COPY_DST buffer usage")
+		start, end = offset // 4 * 4, _round_up(4, offset + size)
+		if end > self.handle.size:
+			raise ValueError("Upload exceeds GPU capacity; resize first")
+		# Preserve adjacent CPU bytes when uploading sub-word ranges.
+		raw = self.content.view(np.uint8).reshape(-1)
+		if end <= raw.size:
+			data = raw[start:end]
+		else:
+			data = np.zeros(end - start, dtype=np.uint8)
+			available = min(end, raw.size) - start
+			data[:available] = raw[start:start + available]
+		RenderContext.device.queue.write_buffer(self.handle, start, data)
+
+	def write(self, data: np.ndarray) -> None:
+		"""Replace CPU content and upload it, growing GPU capacity if necessary."""
+		content = self._content_array(data)
+		if not self.usage & wgpu.BufferUsage.COPY_DST:
+			raise ValueError("Writes require COPY_DST buffer usage")
+		self.content = content
+		self.resize(content.size)
+		self.upload()
+
+	def write_range(self, data: np.ndarray, *, offset: int = 0) -> None:
+		"""Update CPU/GPU content at a byte offset without changing binding size."""
+		data = self._content_array(data).view(np.uint8).reshape(-1)
+		if offset < 0 or offset + data.size > self.content.nbytes:
+			raise ValueError("Write range is outside CPU content")
+		if not self.usage & wgpu.BufferUsage.COPY_DST:
+			raise ValueError("Writes require COPY_DST buffer usage")
+		if _round_up(4, offset + data.size) > self.handle.size:
+			raise ValueError("Write exceeds GPU capacity; resize first")
+		self.content.view(np.uint8).reshape(-1)[offset:offset + data.size] = data
+		self._upload_bytes(offset, data.size)
 
 
 class GpuBufferPool:
@@ -847,6 +950,15 @@ class GpuBufferPool:
 
 class Mesh:
 	""" a specific mesh's data, gpu bugger pools are stored at class level for similar vertex layouts """
+
+	@classmethod
+	def reset_pools(cls) -> None:
+		"""Release pooled ownership; discard old meshes before scene/device resets.
+
+		Live meshes retain their buffers. Recreate them after a device change.
+		"""
+		cls.vertex_buffers.clear()
+		cls.index_buffers.clear()
 
 	vertex_buffers: ClassVar[dict[np.dtype, GpuBufferPool]] = {}
 	index_buffers: ClassVar[dict[np.dtype, GpuBufferPool]] = {}
@@ -1135,9 +1247,9 @@ class ShaderSource:
 	def __init__(self, source: str):
 
 		code = _strip_wgsl_comments(source)
-		self.structs  = self._parse_structs(source)
-		self.bindings = self._parse_bindings(source)
-		self.entry_points = self._parse_entry_points(source)
+		self.structs  = self._parse_structs(code)
+		self.bindings = self._parse_bindings(code)
+		self.entry_points = self._parse_entry_points(code)
 		self.source = self._process_dsl(code)
 		#print(self.source)
 		self.uniforms = self._uniforms()
@@ -1593,7 +1705,7 @@ class Shader:
 	) -> str | None:
 		entries = [
 			entry.name for entry in self.info.entry_points.values()
-			if entry.stage == stage and entry.name == name
+			if entry.stage == stage and (name is None or entry.name == name)
 		]
 
 		if not entries:
@@ -1775,7 +1887,7 @@ class RenderPipeline:
 		shader: Shader,
 		*,
 		vertex_entry: str | None = None,
-		fragment_entry: str | None = None,
+		fragment_entry: str | None = "auto",
 		topology: str = wgpu.PrimitiveTopology.triangle_list,
 		cull_mode: str = wgpu.CullMode.back,
 		front_face: str = wgpu.FrontFace.ccw,
@@ -1788,7 +1900,8 @@ class RenderPipeline:
 	):
 		self.shader = shader
 		self.vertex_entry = shader.entry("vertex", vertex_entry)
-		self.fragment_entry = shader.entry("fragment", fragment_entry)
+		# "auto" infers a sole fragment entry; None disables it for depth passes.
+		self.fragment_entry = None if fragment_entry is None else shader.entry("fragment", None if fragment_entry == "auto" else fragment_entry)
 		self.topology = topology
 		self.cull_mode = cull_mode
 		self.front_face = front_face
