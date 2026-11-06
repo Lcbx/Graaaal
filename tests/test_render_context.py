@@ -90,6 +90,36 @@ def test_buffer_write_preserves_handle_until_capacity_exceeded(monkeypatch, coun
         queue.write_buffer.assert_not_called()
 
 
+def test_buffer_growth_rounds_capacity_once(monkeypatch):
+    device = NS(create_buffer=lambda **kw: NS(size=kw["size"]))
+    monkeypatch.setattr(rc.RenderContext, "device", device, raising=False)
+    buffer = rc.GpuBuffer(np.zeros(1, dtype=np.uint32), rc.BufferUsage.COPY_DST, upload=False)
+    assert buffer.resize(4)
+    assert buffer.handle.size == 16
+    assert buffer.resize(5)
+    assert buffer.handle.size == 32
+
+
+def test_render_pass_material_switch_drops_previous_groups():
+    render_pass = rc.RenderPass(NS())
+    render_pass.handle = Mock()
+    first = NS(handle=object(), bind_group=Mock(side_effect=lambda binding: object()))
+    second = NS(handle=object(), bind_group=Mock(side_effect=lambda binding: object()))
+    shared, extra = NS(group=0, cache_key=lambda: (0,)), NS(group=2, cache_key=lambda: (2,))
+    render_pass.set_pipeline(NS(get_variant=lambda *args: first))
+    render_pass.set_bind_groups(shared, extra)
+    render_pass.draw(3)
+    assert first.bind_group.call_count == 2
+    render_pass.set_pipeline(NS(get_variant=lambda *args: second))
+    render_pass.set_bind_groups(shared)
+    render_pass.draw(3)
+    second.bind_group.assert_called_once_with(shared)
+    assert list(render_pass.bind_groups) == [0]
+    with pytest.raises(ValueError, match="only once"):
+        render_pass.set_bind_groups(shared, shared)
+    assert list(render_pass.bind_groups) == [0]
+
+
 def test_gc_budget_and_restore(monkeypatch):
     enabled, thresholds = rc.gc.isenabled(), rc.gc.get_threshold()
     manager = rc.GC_Manager()

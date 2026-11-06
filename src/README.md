@@ -46,3 +46,9 @@ The manager and its sweep helpers never freeze or unfreeze objects.
 Release old scene references before `scene_transition(loader)`; the loader must
 retain the new scene. Full sweeps run before loading and after it, including
 when loading raises an exception.
+
+`DrawBatches` requires render pipelines in its `ShaderPass` specifications.
+It replaces the complete bind-group set on each material draw, so supply every
+required group in `ShaderPass.bindings` except group 1 (owned by `DrawBatches`).
+For direct rendering, `RenderPass.set_bind_group()` updates one group, while
+`set_bind_groups(*bindings)` replaces the entire set.

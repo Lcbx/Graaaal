@@ -7,6 +7,8 @@ import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace as NS
+from contextlib import contextmanager
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -44,7 +46,12 @@ class Shader:
 		return Buffer(np.zeros(1, dtype=[('workgroup_count', 'u4'), ('batch_count', 'u4'), ('command_count', 'u4')]))
 
 	def bind_group(self, *args, **kwargs):
-		return NS(resources=kwargs)
+		return NS(group=args[0], resources=kwargs)
+
+
+class RenderPipeline:
+	def __init__(self):
+		self.shader = Shader()
 
 class Selection:
 
@@ -105,6 +112,7 @@ def m(monkeypatch):
 	rc = types.ModuleType("RenderContext")
 	for name in ("Texture", "Mesh", "ComputePipeline", "RenderPipeline"):
 		setattr(rc, name, object)
+	rc.RenderPipeline = RenderPipeline
 	rc.GpuBuffer, rc.Shader = Buffer, Shader
 	rc.BufferUsage = NS(STORAGE=1, COPY_DST=2, INDIRECT=4)
 	rc.TextureUsage = NS()
@@ -134,7 +142,7 @@ def d(m):
 		d.register_mesh(i, mesh, bounds=([0, 0, 0], [1, 1, 1]))
 	d.register_lod_group(10, (1, None), (20,))
 	d.register_lod_group(20, (2,))
-	pipeline = NS(shader=Shader())
+	pipeline = RenderPipeline()
 	d.register_shader(0, m.RenderShader(m.ShaderPass(pipeline), m.ShaderPass(pipeline)))
 	d.register_shader(1, m.RenderShader(m.ShaderPass(pipeline), None))
 	return d
@@ -212,7 +220,7 @@ def test_registry_updates_preserve_instances_and_selection(synced, m):
 	row = d.group_rows[10]
 	offset = int(d.buffers["mesh_metadata"].content[row]["lod_offset"])
 	assert d.buffers["lod_distances"].gpu[offset + 1] == 30
-	pipeline = NS(shader=Shader())
+	pipeline = RenderPipeline()
 	d.register_shader(1, m.RenderShader(m.ShaderPass(pipeline), m.ShaderPass(pipeline)))
 	d.sync_resources()
 	check(d)
@@ -326,6 +334,94 @@ def test_explicit_invalidation(synced):
 	d.invalidate_batches()
 	assert d.sync_batches(np.array([1, 2, 3]), transforms, refs)
 	assert d.instance_order_version == version + 1
+
+
+def test_mutating_selection_requires_regrouping(d):
+	transforms = NS(membership_version=0)
+	refs = Refs([1, 2, 3], [10, 10, 20], [0, 0, 1])
+	selection = np.array([1, 2], dtype=Entity)
+	assert d.sync_batches(selection, transforms, refs)
+	selection[1] = 3
+	assert d.sync_batches(selection, transforms, refs)
+	np.testing.assert_array_equal(d.entities, [1, 3])
+
+
+def test_register_shader_rejects_compute_pipeline(d, m):
+	before = d.shaders[0]
+	with pytest.raises(TypeError, match="RenderPipeline"):
+		d.register_shader(0, m.RenderShader(m.ShaderPass(object()), None))
+	assert d.shaders[0] is before
+
+
+def test_draw_replaces_material_bindings(synced, m):
+	d, _, _ = synced
+	extra = NS(group=2)
+	d.register_shader(0, m.RenderShader(m.ShaderPass(RenderPipeline(), (extra,)), None))
+	for info in d.meshes.values():
+		info.mesh.vertex_buffer = object()
+		info.mesh.index_buffer = object()
+		info.mesh.index_format = "uint32"
+	rp = Mock()
+	d.draw(rp, "main")
+	sets = [call.args for call in rp.set_bind_groups.call_args_list]
+	assert [binding.group for binding in sets[0]] == [1, 2]
+	assert [binding.group for binding in sets[-1]] == [1]
+	assert rp.draw_indexed_indirect.call_count == 2
+
+
+@pytest.mark.parametrize("position,matrix", [
+	([1, 2], np.eye(4)), ([1, 2, np.nan], np.eye(4)),
+	([1, 2, 3], np.eye(3)), ([1, 2, 3], np.full((4, 4), np.inf)),
+])
+def test_bad_camera_input_leaves_uniforms_unchanged(d, position, matrix):
+	buffer = d.camera_params_buffer
+	before = buffer.content.copy()
+	d._camera_params_dirty = False
+	with pytest.raises(ValueError):
+		d.update_cull_camera(position, matrix)
+	np.testing.assert_array_equal(buffer.content, before)
+	assert not d._camera_params_dirty
+
+
+@pytest.mark.parametrize("size", [(1, 1), (1, 9), (9, 1), (7, 5)])
+def test_hzb_mips_dispatch_and_resize_rebinding(m, monkeypatch, size):
+	class Texture:
+		def __init__(self, size, **kwargs):
+			self.size = size
+			self.default_view = object()
+		def view(self, **kwargs):
+			return object() if kwargs else self.default_view
+
+	monkeypatch.setattr(m, "Texture", Texture)
+	monkeypatch.setattr(m, "TextureUsage", NS(RENDER_ATTACHMENT=1, TEXTURE_BINDING=2, STORAGE_BINDING=4))
+	pipelines = (object(), object())
+	hzb = m.HZB(shader=Shader(), pipelines=pipelines)
+	assert hzb.resize(size)
+	width, height = max(1, size[0] // 2), max(1, size[1] // 2)
+	expected = []
+	for _ in range(max(width, height).bit_length()):
+		expected.append((width, height))
+		width, height = max(1, width // 2), max(1, height // 2)
+	assert [(w, h) for _, _, w, h in hzb.passes] == expected
+	passes = []
+	@contextmanager
+	def compute_pass(**kwargs):
+		cp = Mock()
+		passes.append(cp)
+		yield cp
+	hzb.build(NS(compute_pass=compute_pass))
+	for cp, (w, h) in zip(passes, expected):
+		cp.dispatch.assert_called_once_with((w + 15) // 16, (h + 15) // 16)
+	draws = m.DrawBatches(np.dtype("u4"))
+	draws.refresh_bindings(hzb.view)
+	old_binding, old_view = draws.bindings["hiz"], hzb.view
+	assert not hzb.resize(size)
+	draws.refresh_bindings(hzb.view)
+	assert draws.bindings["hiz"] is old_binding
+	assert hzb.resize((size[0] + 2, size[1] + 2))
+	draws.refresh_bindings(hzb.view)
+	assert hzb.view is not old_view
+	assert draws.bindings["hiz"].resources["hzb_texture"] is hzb.view
 
 
 @pytest.mark.parametrize("dtype", [np.dtype(object), np.dtype("V0"), np.dtype("u1"), np.dtype(("f4", (3,)))])

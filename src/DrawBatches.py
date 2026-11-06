@@ -58,7 +58,7 @@ class ShaderPass:
 	by visible_instances[instance_idx] in the current DrawBatches.entities order.
 	Owners may repeat; use mesh_field() for per-component attributes.
 	"""
-	pipeline: RenderPipeline | ComputePipeline
+	pipeline: RenderPipeline
 	bindings: tuple[BindGroup, ...] = ()
 
 @dataclass
@@ -220,6 +220,8 @@ class DrawBatches:
 		"""Replace bindings; rebuild destinations only when prepass participation changes."""
 
 		for spec in (shader.prepass, shader.main):
+			if spec is not None and not isinstance(spec.pipeline, RenderPipeline):
+				raise TypeError("Draw shader passes require a RenderPipeline")
 			if spec is not None and any(bindings.group == 1 for bindings in spec.bindings):
 				raise ValueError("Group 1 is reserved for instance data")
 
@@ -294,7 +296,7 @@ class DrawBatches:
 			self._mesh_selection, self._mesh_order = refs, order
 			self.component_rows, self.entities = component_rows, owners
 			self.instance_order_version += 1
-			self._selection = ents
+			self._selection = ents.copy()
 			self._batch_version = version
 		self.sync_resources()
 		return regroup
@@ -497,9 +499,7 @@ class DrawBatches:
 			spec: ShaderPass | None = getattr(self.shaders[batch.shader_id], stage)
 			if spec is None: continue
 			rp.set_pipeline(spec.pipeline)
-			rp.set_bind_group(self.bindings[batch.shader_id, stage])
-			for bindings in spec.bindings:
-				rp.set_bind_group(bindings)
+			rp.set_bind_groups(self.bindings[batch.shader_id, stage], *spec.bindings)
 			mesh = self.meshes[batch.mesh_id].mesh
 			rp.set_vertex_buffer(0, mesh.vertex_buffer)
 			rp.set_index_buffer(mesh.index_buffer, format=mesh.index_format)
@@ -511,11 +511,17 @@ class DrawBatches:
 
 	def update_cull_camera(self, cameraPosition: Sequence[float], viewProjectionMatrix: Sequence[Sequence[float]] | FieldArray) -> None:
 		"""Update when the camera changes; upload before the next reset/culling operation."""
-		vp = np.asarray(viewProjectionMatrix)
+		vp = np.asarray(viewProjectionMatrix, dtype=np.float32)
+		position = np.asarray(cameraPosition, dtype=np.float32)
+		if vp.shape != (4, 4) or position.shape != (3,) or not np.all(np.isfinite(vp)) or not np.all(np.isfinite(position)):
+			raise ValueError("Expected a finite 4x4 camera matrix and vec3 position")
+		planes = extract_frustum_planes(vp)
+		if not np.all(np.isfinite(planes)):
+			raise ValueError("Camera matrix produced nonfinite frustum planes")
 		buffer = self.camera_params_buffer
 		buffer.content["view_proj"] = vp
-		buffer.content["planes"] = extract_frustum_planes(vp)
-		buffer.content["camera_position"] = [*cameraPosition, 0.0]
+		buffer.content["planes"] = planes
+		buffer.content["camera_position"] = [*position, 0.0]
 		self._camera_params_dirty = True
 
 	def _upload_camera_params(self) -> None:

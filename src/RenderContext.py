@@ -511,6 +511,13 @@ class RenderPass:
 	def set_bind_group(self, bindings: BindGroup) -> None:
 		self.bind_groups[bindings.group] = bindings
 
+	def set_bind_groups(self, *bindings: BindGroup) -> None:
+		"""Replace the complete binding set, dropping groups from prior materials."""
+		groups = {binding.group: binding for binding in bindings}
+		if len(groups) != len(bindings):
+			raise ValueError("Each bind group index must be supplied only once")
+		self.bind_groups = groups
+
 	def set_vertex_buffer(
 		self,
 		slot: int,
@@ -841,7 +848,7 @@ class GpuBuffer:
 		required_size = max(4, _round_up(4, count * self.content.itemsize))
 		if required_size <= self.handle.size:
 			return False
-		size = higher_pow2(required_size)
+		size = higher_pow2(required_size - 1)
 
 		self.handle = RenderContext.device.create_buffer(
 			label=self.label or "",
