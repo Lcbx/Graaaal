@@ -30,6 +30,26 @@ def test_entry_inference_comments_and_depth_only():
     assert shader.entry("compute", "b") == "b"
 
 
+@pytest.mark.parametrize("fragment_entry", [None, "depth_fragment"])
+def test_depth_only_pipeline_keeps_explicit_fragment_shader(monkeypatch, fragment_entry):
+    shader = rc.Shader.__new__(rc.Shader)
+    shader.info = rc.ShaderSource('''
+        @vertex fn vertex() -> @builtin(position) vec4f { return vec4f(); }
+        @fragment fn depth_fragment() { discard; }
+    ''')
+    shader.module = object()
+    create_pipeline = Mock()
+    monkeypatch.setattr(rc.RenderContext, "device", NS(create_render_pipeline=create_pipeline), raising=False)
+    pipeline = rc.RenderPipeline(shader, fragment_entry=fragment_entry)
+    pipeline._make_pipeline(NS(color_formats=(), depth_format="depth32float"), [])
+    fragment = create_pipeline.call_args.kwargs["fragment"]
+    if fragment_entry is None:
+        assert fragment is None
+    else:
+        assert fragment["entry_point"] == "depth_fragment"
+        assert fragment["targets"] == []
+
+
 @pytest.mark.parametrize("dtype", [np.uint64, np.int64, np.float64, (np.float32, (2, 3))])
 def test_reject_unsupported_vertex_layouts(dtype):
     with pytest.raises(TypeError):

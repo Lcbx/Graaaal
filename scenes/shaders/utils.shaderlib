@@ -1,4 +1,35 @@
 
+// Standard forward perspective depth: WebGPU [0,1], near/far in world units.
+// Returns positive view-space distance. Orthographic/reversed-Z need a
+// different conversion; no camera uniforms are assumed by this helper.
+fn linear_depth(depth: f32, near: f32, far: f32) -> f32 {
+	return near * far / max(far - depth * (far-near), 1e-6);
+}
+
+fn linear_to_srgb(color: vec3f) -> vec3f {
+	let positive = max(color, vec3f(0.0));
+	return select(1.055*pow(positive, vec3f(1.0/2.4))-0.055,
+		positive*12.92, positive <= vec3f(0.0031308));
+}
+
+fn srgb_to_linear(color: vec3f) -> vec3f {
+	return select(pow((color+0.055)/1.055, vec3f(2.4)), color/12.92, color <= vec3f(0.04045));
+}
+
+// Isotropic mip footprint from screen-space UV derivatives, in base texels.
+fn texture_lod_from_gradients(dx: vec2f, dy: vec2f, dimensions: vec2f) -> f32 {
+	let x = dx*dimensions;
+	let y = dy*dimensions;
+	return max(0.0, 0.5*log2(max(max(dot(x, x), dot(y, y)), 1e-8)));
+}
+
+fn hash_u32(value: u32) -> u32 {
+	var x = value;
+	x = (x ^ (x >> 16u)) * 0x7feb352du;
+	x = (x ^ (x >> 15u)) * 0x846ca68bu;
+	return x ^ (x >> 16u);
+}
+
 fn unpack_rotation(packed: vec2u) -> vec4f {
 	return vec4f( unpack2x16snorm(packed.x), unpack2x16snorm(packed.y) );
 }

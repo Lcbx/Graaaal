@@ -367,6 +367,19 @@ def test_draw_replaces_material_bindings(synced, m):
 	assert [binding.group for binding in sets[0]] == [1, 2]
 	assert [binding.group for binding in sets[-1]] == [1]
 	assert rp.draw_indexed_indirect.call_count == 2
+	# A compatible depth-guide pass reuses the stage's indirect commands and
+	# visibility bindings without mutating the registered material passes.
+	registered = d.shaders[0].main
+	override = m.ShaderPass(RenderPipeline(), (NS(group=3),))
+	rp.reset_mock()
+	d.draw(rp, "main", pass_override=override)
+	assert d.shaders[0].main is registered
+	assert all(call.args == (override.pipeline,) for call in rp.set_pipeline.call_args_list)
+	assert all([binding.group for binding in call.args] == [1, 3] for call in rp.set_bind_groups.call_args_list)
+	assert rp.draw_indexed_indirect.call_count == 2
+	rp.reset_mock()
+	d.draw(rp, "prepass", pass_override=override)
+	rp.draw_indexed_indirect.assert_not_called()  # overrides retain stage participation
 
 
 @pytest.mark.parametrize("position,matrix", [

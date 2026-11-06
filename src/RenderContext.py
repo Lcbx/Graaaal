@@ -2033,12 +2033,12 @@ class RenderPipeline:
 
 		#print(render_pass.handle.label, self.vertex_entry, self.fragment_entry)
 
-		if render_pass.color_formats:
-			if self.fragment_entry is None:
-				raise ValueError(
-					"Rendering to a color target requires an @fragment entry point"
-				)
+		if render_pass.color_formats and self.fragment_entry is None:
+			raise ValueError("Rendering to a color target requires an @fragment entry point")
 
+		# A depth-only pass may still need fragment alpha tests and discard.
+		# fragment_entry=None explicitly requests a vertex-only depth pass.
+		if self.fragment_entry is not None:
 			fragment = wgpu.FragmentState(
 				module=self.shader.module,
 				entry_point=self.fragment_entry,

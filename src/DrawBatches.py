@@ -492,12 +492,18 @@ class DrawBatches:
 			cp.set_bind_group(self.bindings[stage])
 			cp.dispatch(x, y)
 
-	def draw(self, rp: Any, stage: str) -> None:
+	def draw(self, rp: Any, stage: str, *, pass_override: ShaderPass | None = None) -> None:
+		"""Draw stage visibility, optionally using another pass with the same group-1 ABI.
+
+		An override supplies its own pipeline and extra bindings for every batch;
+		it must accept the registered shaders' instance/visibility buffer layout.
+		"""
 		commands = self.buffers[f"{stage}_draw_cmd"]
 		for batch in self.draw_batches:
 			if batch.mesh_id is None: continue
-			spec: ShaderPass | None = getattr(self.shaders[batch.shader_id], stage)
-			if spec is None: continue
+			registered: ShaderPass | None = getattr(self.shaders[batch.shader_id], stage)
+			if registered is None: continue
+			spec = pass_override or registered
 			rp.set_pipeline(spec.pipeline)
 			rp.set_bind_groups(self.bindings[batch.shader_id, stage], *spec.bindings)
 			mesh = self.meshes[batch.mesh_id].mesh
