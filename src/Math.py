@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from functools import wraps
-from typing import Callable, ClassVar, ParamSpec, TypeVar
+from typing import ClassVar
 
 import numpy as np
+
+from .utils import cache_last
 
 
 def _array_accessor(index:int=0) -> property:
@@ -47,37 +48,6 @@ class Vec4(_baseVector):
 	y = _array_accessor(1)
 	z = _array_accessor(2)
 	w = _array_accessor(3)
-
-
-P = ParamSpec("P")
-
-
-R = TypeVar("R")
-
-
-def cache_last(key: Callable[..., object]) -> Callable[[Callable[P, R]], Callable[P, R]]:
-	missing = object()
-
-	def decorator(fn: Callable[P, R]) -> Callable[P, R]:
-		cache_key = f"__cache_key_{id(fn)}"
-		cache_val = f"__cache_val_{id(fn)}"
-
-		@wraps(fn)
-		def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
-			self = args[0]
-			current_key = key(*args, **kwargs)
-
-			cached = getattr(self, cache_key, missing)
-			if cached == current_key:
-				return getattr(self, cache_val)
-
-			value = fn(*args, **kwargs)
-			setattr(self, cache_key, current_key)
-			setattr(self, cache_val, value)
-
-			return value
-		return wrapped
-	return decorator
 
 
 class Camera:

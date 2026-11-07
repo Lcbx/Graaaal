@@ -139,14 +139,14 @@ def test_legacy_ecs_benchmark_queries_refresh_after_spawns_and_deletion(monkeypa
 	rays.get_random_value = lambda low, high: low
 	drawn = []
 	rays.draw_cube = lambda *args: drawn.append(args)
-	loop = ModuleType("scenes.benchmarks.benchmark_loop")
+	loop = ModuleType("scenes.benchmarks.raylib_benchmark_loop")
 	loop.SPACE_SIZE, loop.CUBE_MAX = 30, 7
 	loop.rnd_color = rays.Color
 	loop.run = lambda: None
 	monkeypatch.setitem(sys.modules, "pyray", rays)
 	monkeypatch.setitem(sys.modules, loop.__name__, loop)
-	monkeypatch.setattr(scenes.benchmarks, "benchmark_loop", loop, raising=False)
-	path = Path(__file__).resolve().parents[1] / "scenes/benchmarks/benchmark_optimized.py"
+	monkeypatch.setattr(scenes.benchmarks, "raylib_benchmark_loop", loop, raising=False)
+	path = Path(__file__).resolve().parents[1] / "scenes/benchmarks/benchmark_raylib_ecs.py"
 	spec = importlib.util.spec_from_file_location("_legacy_benchmark_callbacks", path)
 	module = importlib.util.module_from_spec(spec)
 	monkeypatch.setitem(sys.modules, spec.name, module)

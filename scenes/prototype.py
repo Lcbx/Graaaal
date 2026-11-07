@@ -155,7 +155,7 @@ def draw_actors(cache):
 
 
 def run_scene():
-	from numpyecs.Imgui import Imgui
+	from numpyecs.ImGui import ImGui
 	from numpyecs.RenderContext import RenderContext
 
 	world = create_world()
@@ -163,7 +163,7 @@ def run_scene():
 	idle_enemies = world.query(ActorMetadata, exclude=Action)
 	cache = ActorCache(world, actors)
 	RenderContext.init_window(1200, 650, "Combat prototype", target_fps=60)
-	with Imgui() as gui:
+	with ImGui() as gui:
 		while RenderContext.window_loop():
 			# TODO: choose and resolve actions for these entities using combat rules.
 			enemies = inactive_enemy_ids(world, idle_enemies)

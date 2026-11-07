@@ -2,25 +2,26 @@
 This checks CPU layout and requested uploads, not WGSL execution or actual GPU behavior.
 """
 
-import importlib.util
+import importlib
 import sys
 import types
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace as NS
-from contextlib import contextmanager
 from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
 
-from numpyecs.ECS import ECS, component, Entity, EntityArray, EntityLike, FieldArray, as_entities
-from numpyecs.RenderContext import higher_pow2, BindGroup
+from numpyecs.ECS import ECS, Entity, component
+from numpyecs.RenderContext import BindGroup
 
 
 class Buffer:
 
-	def __init__(self, content, usage=0, upload=True, label=None):
+	def __init__(self, content, usage=0, upload=True, label=None, *, dtype=None, count=0):
+		content = np.zeros(count, dtype=dtype) if content is None else content
 		self.content = content
 		self.uploads = []
 		self.gpu = np.zeros_like(content)
@@ -36,6 +37,12 @@ class Buffer:
 	def upload_range(self, offset, count):
 		self.gpu[offset:offset + count] = self.content[offset:offset + count]
 		self.uploads.append((offset, count))
+
+	def write(self, content):
+		self.content = content.copy()
+		self.resize(len(content))
+		self.upload()
+
 
 class Shader:
 
@@ -91,10 +98,10 @@ def check(d):
 	n = len(d.entities)
 	assert [b.offset for b in d.source_batches] == list(np.cumsum([0] + [b.count for b in d.source_batches[:-1]])) if d.source_batches else n == 0
 	assert sum((b.count for b in d.source_batches)) == n
-	for batch, params in zip(d.source_batches, d.buffers['batches'].gpu):
+	for batch, params in zip(d.source_batches, d.buffers['batches'].content):
 		assert params['instance_offset'] == batch.offset and params['instance_count'] == batch.count
 	offset = 0
-	for b, c in zip(d.draw_batches, d.buffers['main_draw_cmd'].gpu):
+	for b, c in zip(d.draw_batches, d.buffers['main_draw_cmd'].content):
 		assert b.offset == offset and c['first_instance'] == offset
 		offset += b.count
 	assert d.workgroup_count == sum(((b.count + 63) // 64 for b in d.source_batches))
@@ -102,49 +109,47 @@ def check(d):
 
 @pytest.fixture
 def m(monkeypatch):
-	ecs = types.ModuleType("numpyecs.ECS")
-	ecs.ComponentAccessor = object
-	ecs.Entity = np.uint64
-	ecs.EntityArray = EntityArray
-	ecs.FieldArray = FieldArray
-	ecs.EntityLike = EntityLike
-	ecs.as_entities = as_entities
-	rc = types.ModuleType("numpyecs.RenderContext")
-	for name in ("Texture", "Mesh", "ComputePipeline", "RenderPipeline"):
+	# Load a separate package so mocked resources cannot leak into real GPU tests.
+	prefix = "_numpyecs_drawing_under_test"
+	package = types.ModuleType(prefix)
+	package.__path__ = [str(Path(__file__).resolve().parents[1] / "src")]
+	monkeypatch.setitem(sys.modules, prefix, package)
+	rc = types.ModuleType(f"{prefix}.RenderContext")
+	for name in ("Texture", "Mesh", "ComputePipeline"):
 		setattr(rc, name, object)
 	rc.RenderPipeline = RenderPipeline
 	rc.GpuBuffer, rc.Shader = Buffer, Shader
 	rc.BufferUsage = NS(STORAGE=1, COPY_DST=2, INDIRECT=4)
 	rc.TextureUsage = NS()
-	rc.higher_pow2 = higher_pow2
 	rc.BindGroup = BindGroup
-	utils = types.ModuleType("numpyecs.Math")
-	utils.extract_frustum_planes = lambda x: x
-	for name, module in (("numpyecs.ECS", ecs), ("numpyecs.RenderContext", rc), ("numpyecs.Math", utils)):
-		monkeypatch.setitem(sys.modules, name, module)
-	root = Path(__file__).resolve().parent
-	candidates = (root.parent / "src" / "draw_compiler.py", root / "src" / "draw_compiler.py", root / "draw_compiler.py")
-	path = next((path for path in candidates if path.is_file()), None)
-	if path is None:
-		pytest.fail("Place this test in tests/ beside src/DrawBatches.py, or beside DrawBatches.py")
-	spec = importlib.util.spec_from_file_location("numpyecs._compact_draw_batches_under_test", path)
-	module = importlib.util.module_from_spec(spec)
-	monkeypatch.setitem(sys.modules, spec.name, module)
-	spec.loader.exec_module(module)
-	return module
+	rc.RenderContext = NS(record_stat=Mock(), require_features=Mock())
+	math = types.ModuleType(f"{prefix}.Math")
+	math.extract_frustum_planes = lambda x: x
+	monkeypatch.setitem(sys.modules, rc.__name__, rc)
+	monkeypatch.setitem(sys.modules, math.__name__, math)
+	loaded = {}
+	for name in ("utils", "DrawList", "draw_layout", "draw_compiler", "draw_resources", "draw_culling", "HZB", "DrawBatches"):
+		module_name = f"{prefix}.{name}"
+		module = importlib.import_module(module_name)
+		# Undo imported modules along with the resource stubs after the test.
+		del sys.modules[module_name]
+		monkeypatch.setitem(sys.modules, module_name, module)
+		loaded[name] = module
+	return NS(_DrawResources=loaded["draw_resources"]._DrawResources,
+		_CullingState=loaded["draw_culling"]._CullingState,
+		public=loaded["DrawBatches"], hzb=loaded["HZB"])
 
 
 @pytest.fixture
 def d(m):
-	d = m._BatchCompiler(np.dtype([("a", "u4"), ("b", "u4")]))
+	d = m._DrawResources(np.dtype([("a", "u4"), ("b", "u4")]))
 	for i in (1, 2):
 		mesh = NS(index_count=i * 3, index_range=(i * 5, 10), vertex_range=(i * 7, 10))
 		d.register_mesh(i, mesh, bounds=([0, 0, 0], [1, 1, 1]))
 	d.register_lod_group(10, (1, None), (20,))
 	d.register_lod_group(20, (2,))
-	pipeline = RenderPipeline()
-	d.register_shader(0, m._KernelShader(m.ShaderPass(pipeline), m.ShaderPass(pipeline)))
-	d.register_shader(1, m._KernelShader(m.ShaderPass(pipeline), None))
+	d.register_shader(0)
+	d.register_shader(1, prepass=False)
 	return d
 
 
@@ -198,12 +203,12 @@ def test_record_writes_validate_count_and_handle_aliases(synced):
 def test_unchanged_sync_does_not_read_or_upload(synced):
 	d, transforms, refs = synced
 	reads = refs.reads
-	uploads = {name: len(buffer.uploads) for name, buffer in d.buffers.items()}
+	uploads = {name: len(buffer.uploads) for name, buffer in d.buffers.items() if hasattr(buffer, "uploads")}
 	version = d.instance_order_version
 	assert not d.sync_batches(np.array([1, 2, 3]), transforms, refs)
 	assert refs.reads == reads
 	assert d.instance_order_version == version
-	assert uploads == {name: len(buffer.uploads) for name, buffer in d.buffers.items()}
+	assert uploads == {name: len(buffer.uploads) for name, buffer in d.buffers.items() if hasattr(buffer, "uploads")}
 
 
 def test_registry_updates_preserve_instances_and_selection(synced, m):
@@ -212,19 +217,18 @@ def test_registry_updates_preserve_instances_and_selection(synced, m):
 	before = d.buffers["instances"].content.copy()
 	reads = refs.reads
 	version = d.instance_order_version
-	uploads = {name: len(buffer.uploads) for name, buffer in d.buffers.items()}
+	uploads = {name: len(buffer.uploads) for name, buffer in d.buffers.items() if hasattr(buffer, "uploads")}
 	d.register_lod_group(10, (1, None), (30,))
 	d.sync_resources()
-	changed = {name for name, buffer in d.buffers.items() if len(buffer.uploads) != uploads[name]}
+	changed = {name for name, buffer in d.buffers.items() if hasattr(buffer, "uploads") and len(buffer.uploads) != uploads[name]}
 	assert changed == {"lod_distances"}
 	row = d.group_rows[10]
 	offset = int(d.buffers["mesh_metadata"].content[row]["lod_offset"])
 	assert d.buffers["lod_distances"].gpu[offset + 1] == 30
-	pipeline = RenderPipeline()
-	d.register_shader(1, m._KernelShader(m.ShaderPass(pipeline), m.ShaderPass(pipeline)))
+	d.register_shader(1)
 	d.sync_resources()
 	check(d)
-	assert np.all(d.buffers["batches"].gpu[:len(d.source_batches)]["prepass"] == 1)
+	assert np.all(d.buffers["batches"].content[:len(d.source_batches)]["prepass"] == 1)
 	assert refs.reads == reads and d.instance_order_version == version
 	np.testing.assert_array_equal(before, d.buffers["instances"].content)
 
@@ -233,7 +237,7 @@ def test_same_owners_with_reordered_components_invalidate_inputs(synced):
 	d, transforms, refs = synced
 	owners = d.entities.copy()
 	version = d.instance_order_version
-	uploads = {name: len(buffer.uploads) for name, buffer in d.buffers.items()}
+	uploads = {name: len(buffer.uploads) for name, buffer in d.buffers.items() if hasattr(buffer, "uploads")}
 	refs.fields["lod_id"][:2] = [10, 20]
 	refs.fields["shader_id"][:2] = [0, 1]
 	refs.v += 1
@@ -241,7 +245,7 @@ def test_same_owners_with_reordered_components_invalidate_inputs(synced):
 	assert d.instance_order_version == version + 1
 	np.testing.assert_array_equal(d.entities, owners)
 	np.testing.assert_array_equal(d.mesh_field("value"), [0, 2, 1, 3])
-	assert uploads == {name: len(buffer.uploads) for name, buffer in d.buffers.items()}
+	assert uploads == {name: len(buffer.uploads) for name, buffer in d.buffers.items() if hasattr(buffer, "uploads")}
 
 
 def test_accessor_replacement_with_equal_versions_invalidates_inputs(synced):
@@ -346,47 +350,58 @@ def test_mutating_selection_requires_regrouping(d):
 	np.testing.assert_array_equal(d.entities, [1, 3])
 
 
-def test_register_shader_rejects_compute_pipeline(d, m):
-	before = d.shaders[0]
+def test_register_shader_rejects_compute_pipeline(m):
+	public = m.public
+	draws = public.DrawBatches(np.dtype("u4"))
+	shader = public.RenderShader({"main": public.ShaderPass(RenderPipeline())})
+	draws.register_shader(0, shader)
 	with pytest.raises(TypeError, match="RenderPipeline"):
-		d.register_shader(0, m._KernelShader(m.ShaderPass(object()), None))
-	assert d.shaders[0] is before
+		draws.register_shader(0, public.RenderShader({"main": public.ShaderPass(object())}))
+	assert draws.shaders[0] is shader
+	assert draws._resources._shader_prepass == {0: True}
 
 
 def test_draw_replaces_material_bindings(synced, m):
 	d, _, _ = synced
+	public = m.public
+	draws = public.DrawBatches(d.instance_dtype)
+	draws._resources = d
 	extra = NS(group=2)
-	d.register_shader(0, m._KernelShader(m.ShaderPass(RenderPipeline(), (extra,)), None))
+	draws.register_shader(0, public.RenderShader({"main": public.ShaderPass(RenderPipeline(), (extra,))}))
+	draws.register_shader(1, public.RenderShader({"main": public.ShaderPass(RenderPipeline())}))
 	for info in d.meshes.values():
 		info.mesh.vertex_buffer = object()
 		info.mesh.index_buffer = object()
 		info.mesh.index_format = "uint32"
+	visibility = draws.create_visibility().all_visible()
 	rp = Mock()
-	d.draw(rp, "main")
+	draws.draw(rp, visibility)
 	sets = [call.args for call in rp.set_bind_groups.call_args_list]
 	assert [binding.group for binding in sets[0]] == [1, 2]
 	assert [binding.group for binding in sets[-1]] == [1]
 	assert rp.draw_indexed_indirect.call_count == 2
-	# A compatible depth-guide pass reuses the stage's indirect commands and
-	# visibility bindings without mutating the registered material passes.
-	registered = d.shaders[0].main
-	override = m.ShaderPass(RenderPipeline(), (NS(group=3),))
+	registered = draws.shaders[0]["main"]
+	override = public.ShaderPass(RenderPipeline(), (NS(group=3),))
 	rp.reset_mock()
-	d.draw(rp, "main", pass_override=override)
-	assert d.shaders[0].main is registered
+	draws.draw(rp, visibility, pass_override=override)
+	assert draws.shaders[0]["main"] is registered
 	assert all(call.args == (override.pipeline,) for call in rp.set_pipeline.call_args_list)
 	assert all([binding.group for binding in call.args] == [1, 3] for call in rp.set_bind_groups.call_args_list)
 	assert rp.draw_indexed_indirect.call_count == 2
 	rp.reset_mock()
-	d.draw(rp, "prepass", pass_override=override)
-	rp.draw_indexed_indirect.assert_not_called()  # overrides retain stage participation
+	draws.draw(rp, visibility, "prepass")
+	rp.draw_indexed_indirect.assert_not_called()
+	# An explicit override can add a pass without changing registered materials.
+	draws.draw(rp, visibility, "guide", pass_override=override)
+	assert rp.draw_indexed_indirect.call_count == 2
 
 
 @pytest.mark.parametrize("position,matrix", [
 	([1, 2], np.eye(4)), ([1, 2, np.nan], np.eye(4)),
 	([1, 2, 3], np.eye(3)), ([1, 2, 3], np.full((4, 4), np.inf)),
 ])
-def test_bad_camera_input_leaves_uniforms_unchanged(d, position, matrix):
+def test_bad_camera_input_leaves_uniforms_unchanged(m, position, matrix):
+	d = m._CullingState(Shader(), {})
 	buffer = d.camera_params_buffer
 	before = buffer.content.copy()
 	d._camera_params_dirty = False
@@ -397,7 +412,7 @@ def test_bad_camera_input_leaves_uniforms_unchanged(d, position, matrix):
 
 
 @pytest.mark.parametrize("size", [(1, 1), (1, 9), (9, 1), (7, 5)])
-def test_hzb_mips_dispatch_and_resize_rebinding(m, monkeypatch, size):
+def test_hzb_mips_dispatch_and_resize_rebinding(d, m, monkeypatch, size):
 	class Texture:
 		def __init__(self, size, **kwargs):
 			self.size = size
@@ -405,10 +420,10 @@ def test_hzb_mips_dispatch_and_resize_rebinding(m, monkeypatch, size):
 		def view(self, **kwargs):
 			return object() if kwargs else self.default_view
 
-	monkeypatch.setattr(m, "Texture", Texture)
-	monkeypatch.setattr(m, "TextureUsage", NS(RENDER_ATTACHMENT=1, TEXTURE_BINDING=2, STORAGE_BINDING=4))
+	monkeypatch.setattr(m.hzb, "Texture", Texture)
+	monkeypatch.setattr(m.hzb, "TextureUsage", NS(RENDER_ATTACHMENT=1, TEXTURE_BINDING=2, STORAGE_BINDING=4))
 	pipelines = (object(), object())
-	hzb = m.HZB(shader=Shader(), pipelines=pipelines)
+	hzb = m.hzb.HZB(shader=Shader(), pipelines=pipelines)
 	assert hzb.resize(size)
 	width, height = max(1, size[0] // 2), max(1, size[1] // 2)
 	expected = []
@@ -425,7 +440,7 @@ def test_hzb_mips_dispatch_and_resize_rebinding(m, monkeypatch, size):
 	hzb.build(NS(compute_pass=compute_pass))
 	for cp, (w, h) in zip(passes, expected):
 		cp.dispatch.assert_called_once_with((w + 15) // 16, (h + 15) // 16)
-	draws = m._BatchCompiler(np.dtype("u4"))
+	draws = m._CullingState(Shader(), d.buffers)
 	draws.refresh_bindings(hzb.view)
 	old_binding, old_view = draws.bindings["hiz"], hzb.view
 	assert not hzb.resize(size)
@@ -440,4 +455,4 @@ def test_hzb_mips_dispatch_and_resize_rebinding(m, monkeypatch, size):
 @pytest.mark.parametrize("dtype", [np.dtype(object), np.dtype("V0"), np.dtype("u1"), np.dtype(("f4", (3,)))])
 def test_invalid_instance_layout(m, dtype):
 	with pytest.raises(ValueError):
-		m._BatchCompiler(dtype)
+		m._DrawResources(dtype)

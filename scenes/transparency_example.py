@@ -375,7 +375,7 @@ def on_char(code):
 
 def run_scene():
 	global settings, angle
-	from numpyecs.Imgui import Imgui
+	from numpyecs.ImGui import ImGui
 
 	RenderContext.init_window(1200, 900, "Stochastic transparency | F: settings | D: debug | Space: orbit",
 		required_gpu_features=["indirect-first-instance"])
@@ -385,7 +385,7 @@ def run_scene():
 	RenderContext.event_handlers["char"].append(on_char)
 	RenderContext.event_handlers["key"].append(settings.handle_key)
 	try:
-		with Imgui() as gui:
+		with ImGui() as gui:
 			while RenderContext.window_loop():
 				if orbit:
 					angle += RenderContext.frame_time * 0.2

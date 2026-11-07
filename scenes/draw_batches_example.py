@@ -6,7 +6,8 @@ from pyrr import Quaternion
 
 from numpyecs.Assets import load_gltf_first_mesh_interleaved
 from numpyecs.Diagnostics import WatchTimer
-from numpyecs.DrawBatches import DrawBatches, FrustumCuller, HZB, HiZCuller, standard_render_shader
+from numpyecs.DrawBatches import DrawBatches, FrustumCuller, HiZCuller, standard_render_shader
+from numpyecs.HZB import HZB
 from numpyecs.ECS import ECS, Scheduler, component
 from numpyecs.EcsDrawing import EcsDrawAdapter
 from numpyecs.Geometry import make_cube_mesh

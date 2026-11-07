@@ -1,9 +1,13 @@
-from numpyecs.Math import *
-from numpyecs.InstanceData import *
-from numpyecs.Geometry import *
-from numpyecs.Assets import *
-from numpyecs.Diagnostics import *
-from pyrr import Quaternion
+"""Shared utility contracts for capacity growth and per-instance caching."""
+
+from numpyecs.utils import cache_last, higher_pow2
+
+
+def test_higher_pow2() -> None:
+	for i in range(0, 512):
+		res = higher_pow2(i)
+		assert res >= max(1, i)
+		assert res & (res - 1) == 0
 
 
 class A:

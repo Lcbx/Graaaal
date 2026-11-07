@@ -15,6 +15,44 @@ def read(texture, dtype, channels):
     return np.frombuffer(raw, dtype=dtype).reshape(height, width, channels)
 
 
+def test_draw_mesh_uses_gpu_generated_instances_with_offset():
+    rc.RenderContext.setup_graphics_backend(True)
+    shader = rc.Shader(source='''
+        @group(0) @binding(0) var<storage, read_write> positions: array<vec2f>;
+        @compute @workgroup_size(1) fn generate() {
+            positions[0] = vec2f(-0.5, 0.0);
+            positions[1] = vec2f(0.5, 0.0);
+            positions[2] = vec2f(0.0, 0.5);
+        }
+        @vertex fn vertex(@location(0) position: vec2f, @location(1) offset: vec2f) -> @builtin(position) vec4f {
+            return vec4f(position + offset, 0.0, 1.0);
+        }
+        @fragment fn fragment() -> @location(0) vec4f { return vec4f(1.0, 0.0, 0.0, 1.0); }
+    ''')
+    vertices = np.zeros(3, dtype=[("position", "f4", 2)])
+    vertices["position"] = [[-0.2, -0.2], [0.2, -0.2], [0, 0.2]]
+    mesh = rc.Mesh(vertices, np.arange(3, dtype=np.uint32))
+    instances = rc.GpuBuffer(None, rc.BufferUsage.STORAGE | rc.BufferUsage.VERTEX,
+        dtype=np.dtype([("offset", "f4", 2)]), count=3)
+    output = rc.Texture((32, 32), format="rgba8unorm",
+        usage=rc.TextureUsage.RENDER_ATTACHMENT | rc.TextureUsage.COPY_SRC)
+    compute_pipeline = rc.ComputePipeline(shader)
+    render_pipeline = rc.RenderPipeline(shader, depth_test=None, depth_write=False, cull_mode="none")
+    commands = rc.RenderContext.commands("generated_instances")
+    with commands.compute_pass() as compute:
+        compute.set_pipeline(compute_pipeline)
+        compute.set_bind_group(shader.bind_group(0, positions=instances))
+        compute.dispatch(1)
+    with commands.render_pass(color=output.color_attachment(clear=(0, 0, 0, 1))) as render:
+        render.set_pipeline(render_pipeline)
+        render.draw_mesh(mesh, instances=instances, instance_offset=1, instance_count=1)
+    rc.RenderContext.submit(commands.finish())
+    pixels = read(output, np.uint8, 4)
+    assert np.any(pixels[:, 16:, 0])
+    assert not np.any(pixels[:, :16, 0])
+    assert instances.content is None
+
+
 def test_two_view_visibility_and_named_passes_share_instances(monkeypatch):
     rc.RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
     monkeypatch.setattr(db, "GpuBuffer", lambda content, usage, **kw:
@@ -42,6 +80,9 @@ def test_two_view_visibility_and_named_passes_share_instances(monkeypatch):
     draws.write_instance_fields(iPosition=[[-0.5, 0, 0.5], [0.5, 0, 0.5]], iTint=0,
         iRotation=pack_quaternion([0, 0, 0, 1]), iScale=pack_scale([1, 1, 1]))
     first, second = draws.create_visibility(), draws.create_visibility()
+    for attribute in ("commands", "visible_instances"):
+        with pytest.raises(RuntimeError, match="Prepare visibility"):
+            getattr(first, attribute)
     shifted = np.eye(4)
     shifted[3, 0] = 1.4
     commands = rc.RenderContext.commands("two_views")
@@ -61,6 +102,9 @@ def test_two_view_visibility_and_named_passes_share_instances(monkeypatch):
     assert direct.visible_instances is not first.visible_instances
     draws.sync([10], [0])
     with pytest.raises(RuntimeError, match="stale"): first.check(draws)
+    for attribute in ("commands", "visible_instances"):
+        with pytest.raises(RuntimeError, match="stale"):
+            getattr(first, attribute)
 
 
 def test_explicit_uniform_layout_bypasses_reflector_and_gpu_only_buffer():

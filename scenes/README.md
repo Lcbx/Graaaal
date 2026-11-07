@@ -4,10 +4,10 @@ Run from the repository root with a Python environment containing the engine's
 the package and optional dependencies installed: `pip install -e ".[render,assets,ui,examples,test]"`.
 
 The prototype and transparency settings use `imgui-bundle==1.92.5` (listed in
-`requirements.txt`) through the shared [ImGui plugin](../src/Imgui.py).
+`requirements.txt`) through the shared [ImGui plugin](../src/ImGui.py).
 
 ```powershell
-python main.py scenes/drawbatches_example.py
+python main.py scenes/draw_batches_example.py
 python main.py scenes/direct_draw_example.py
 python main.py scenes/prototype.py
 python main.py scenes/transparency_example.py
@@ -15,7 +15,7 @@ python main.py scenes/transparency_example.py
 
 | Scene | Purpose |
 | --- | --- |
-| `drawbatches_example.py` | Cached movement/render queries, deferred cube creation/deletion, scheduler phases, LoD and Hi-Z rendering. Space switches cameras; scrolling adjusts the view. |
+| `draw_batches_example.py` | Cached movement/render queries, deferred cube creation/deletion, scheduler phases, LoD and Hi-Z rendering. Space switches cameras; scrolling adjusts the view. |
 | `direct_draw_example.py` | Direct instanced drawing and shadows, with cached movement joins and versioned instance packing. Scrolling adjusts the view. |
 | `prototype.py` | ImGui combat actor panels show names and health bars, with blue player and red enemy backgrounds. Displayed ECS data is cached until it changes. Combat action selection/resolution remains a placeholder. |
 | `transparency_example.py` | Single-winner stochastic order-independent transparency using DrawBatches and `resources/small_scene.glb`. ImGui exposes filter settings and diagnostic views; drag values or Ctrl+click to type. F hides/shows settings. Space toggles orbit, scrolling zooms, R reverses transparent draw order, A toggles adaptation, and D cycles debug views. |
@@ -46,7 +46,7 @@ Use `--frames` to render a fixed number of frames and exit:
 ```powershell
 python -u main.py scenes/prototype.py --frames 120
 python -u main.py scenes/direct_draw_example.py --frames 120
-python -u main.py scenes/drawbatches_example.py --frames 1500
+python -u main.py scenes/draw_batches_example.py --frames 1500
 ```
 
 The launcher presents the final submitted frame and prints the actual frame count.

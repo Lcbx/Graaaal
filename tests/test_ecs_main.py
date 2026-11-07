@@ -9,13 +9,6 @@ import pytest
 from numpyecs.ECS import *
 
 
-def test_higher_pow2() -> None:
-	for i in range(0, 512):
-		res = higher_pow2(i)
-		assert res >= max(1, i)
-		assert res & (res - 1) == 0
-
-
 def test_create_entities() -> None:
 	ecs = ECS()
 	ids = ecs.create(3)

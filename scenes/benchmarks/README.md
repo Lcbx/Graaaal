@@ -46,10 +46,10 @@ documented in [the benchmark report](../../src/ECS_BENCHMARKS.md).
 
 ## Legacy Raylib comparison
 
-`benchmark_python_only.py` is the original non-ECS comparison;
-`benchmark_optimized.py` uses the ECS and cached movement/render queries.
-Both use `benchmark_loop.py` and require the optional `pyray` backend. Their
-historical names are retained because callers/tests import them. They are separate
+`benchmark_raylib_objects.py` is the original non-ECS comparison;
+`benchmark_raylib_ecs.py` uses the ECS and cached movement/render queries.
+Both use `raylib_benchmark_loop.py` and require the optional `pyray` backend. Their
+names identify the backend and object/ECS comparison. They are separate
 from the standalone NumPy CPU benchmark and the current rendering-upload benchmark.
 
 See [the scene guide](../README.md) for renderer examples and bounded smoke checks.

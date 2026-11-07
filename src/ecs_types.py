@@ -28,7 +28,7 @@ from typing import (
 import numpy as np
 from numpy.typing import NDArray
 
-from .array_utils import higher_pow2
+from .utils import higher_pow2
 
 
 def component(cls: type | None = None, *, multiples: bool = False) -> Any | Callable:

@@ -4,14 +4,81 @@ Status: core implementation completed on 2026-11-07. The phase descriptions
 below remain the design/acceptance checklist; the implementation record identifies
 the delivered APIs and the deliberately deferred, workload-dependent work.
 
-Review results:
+Review results (both resolved):
 - [P2] Allow released meshes to leave the draw registry — C:/Users/User/Desktop/tests/engines/numpyEcs/src/draw_compiler.py:267-271
   After removing a mesh's instances and calling mesh.release(), subsequent synchronization still visits the registered mesh: its changed generation marks it dirty, and this unconditional range access raises RuntimeError("Mesh allocation has been released"), even when _mesh_commands contains no destinations for it. There is no public unregister operation, so unloading an unused mesh breaks the retained DrawBatches object. Provide registry removal or skip range access for meshes without active destinations.
 - [P2] Remove the remaining CPU-mirror dependency from draw_mesh — C:/Users/User/Desktop/tests/engines/numpyEcs/src/RenderContext.py:719-720
   When a newly supported GPU-only buffer is passed as instances, draw_mesh() still calculates the vertex-buffer offset using instances.content.dtype.itemsize. Since content is None, this raises AttributeError before reaching the updated count calculation, including when instance_offset is zero. Use instances.dtype.itemsize for the offset so GPU-generated instance buffers work through this drawing API.
 
 
+Resolution: unused dirty meshes are skipped before accessing released draw ranges.
+`unregister_lod_group()` and `unregister_mesh()` provide explicit registry removal;
+active instances and remaining LoD references are checked before removal. Mesh
+release remains caller-owned. `draw_mesh()` now uses `instances.dtype.itemsize`,
+preserving GPU-only operation for zero/nonzero offsets and inferred/explicit counts.
+Regressions cover retained-registry unloading/reuse and compute-generated instance
+data drawn without a CPU mirror.
+
 ## Implementation record
+
+### Module separation and naming review
+
+| Module | Responsibility after separation |
+| --- | --- |
+| `DrawBatches.py` | Public drawing, visibility, culler entry points, `ShaderPass`, and `RenderShader` |
+| `draw_compiler.py` | Pure NumPy generation of destination arrays, group bounds, and culling workgroups; no GPU dependencies or resource mutation |
+| `draw_resources.py` | Retained registries, grouping caches, allocation, shared-data uploads, and synchronization with mesh lifetimes |
+| `draw_layout.py` | CPU-only NumPy records shared with the default culling shader ABI |
+| `draw_culling.py` | Internal per-view camera state, culling bindings, and compute recording |
+| `HZB.py` | Independently reusable hierarchical depth-pyramid generation |
+
+Removed the compiler's obsolete draw/cull execution path, render shader wrapper,
+and grouping wrapper. Tests exercise drawing through the public API and culling
+through its own state. The resource layer stores shader participation metadata;
+compilation receives it as an input. Bounds/workgroup algorithms have one shared
+implementation, and compilation is covered by the CPU-only dependency check.
+
+Naming convention: public subsystem modules use PascalCase, internal helper
+modules and executable scripts use snake_case, classes use PascalCase, and
+functions/methods use snake_case. Standard names such as `__main__.py`, `main.py`,
+and build `setup.py` entry points keep their conventional spelling.
+
+| Files reviewed | Assessment/action |
+| --- | --- |
+| `ECS.py`, `ecs_types.py`, `ecs_schema.py`, `ecs_commands.py`, `ecs_schedule.py`, `ecs_diagnostics.py` | Keep: public ECS entry point and accurately named implementation concerns |
+| `RenderContext.py`, `MeshArena.py` | Keep: resource/work manager and pooled mesh allocation; RenderContext's central role is deliberate |
+| `DrawList.py`, `DrawBatches.py`, `EcsDrawing.py` | Keep: CPU grouping, retained GPU drawing, and optional ECS adapter are distinct responsibilities |
+| `Math.py` | Keep vectors/cameras/frustum math; generic `cache_last` belongs in the shared `utils.py` module alongside `higher_pow2` |
+| `Assets.py`, `Geometry.py`, `InstanceData.py` | Keep: CPU loading, geometry creation, and instance layout/packing |
+| `TransparencyPass.py`, `TransparencyData.py`, `TextureProcessing.py` | Keep: GPU technique, CPU scene/layout preparation, and GPU material texture preparation |
+| `Diagnostics.py`, `ecs_diagnostics.py` | Keep: general timing/GC/memory tools versus ECS-specific inspection/invariants |
+| `Imgui.py` | Rename module/type to `ImGui.py`/`ImGui` to match Dear ImGui's spelling |
+| `scenes/drawbatches_example.py` | Rename to `draw_batches_example.py` for snake_case word separation |
+| `scenes/prototype.py`, other `*_example.py`, descriptive ECS/array benchmarks | Keep: prototype status and example/workload purpose are explicit |
+| Legacy `benchmark_python_only.py`, `benchmark_optimized.py`, `benchmark_loop.py` | Rename to `benchmark_raylib_objects.py`, `benchmark_raylib_ecs.py`, `raylib_benchmark_loop.py`; identify the backend and comparison rather than implying one variant is generally optimized |
+| `tests/test_tranparency_pass.py` | Fix typo: `test_transparency_pass.py` |
+| `tests/utils_tests.py` | Rename to `test_utils.py`, remove unrelated imports, and collect the existing caching/capacity utility tests together under default pytest discovery |
+
+### Simplification follow-up
+
+- Consolidated the small cache and array helpers in `utils.py`; callers import
+  the shared implementation directly, and utility regressions live in `test_utils.py`.
+- Array and ECS compiler inputs share grouping, destination rebuilding, and
+  instance-order invalidation in one implementation.
+- Per-view visibility owns a small culling state rather than shallow-copying the
+  complete registry/compiler and its selection caches. Shared geometry buffers
+  remain explicit; view-owned counters and GPU outputs remain independent.
+- Counter reset and frustum/Hi-Z dispatch share pipeline selection, camera upload,
+  dispatch-limit checks, binding, and recording. View initialization allocates
+  outputs once instead of creating placeholders and immediately replacing them.
+- Removed the unused append-only `GpuBufferPool`; mesh storage uses `MeshArena`.
+- The standard shader factory creates one shared uniform binding for its passes.
+- Visibility buffer access uses the same readiness/staleness validation as drawing.
+
+The public draw workflow and RenderContext's central role remain unchanged.
+The remaining differences between checked ECS copies/borrows, CPU upload buffers,
+GPU-only buffers, and mesh arena allocations express distinct ownership/lifetime
+contracts; they are not merged behind an ambiguous generic mutation API.
 
 | Phase | Delivered |
 | --- | --- |
@@ -23,7 +90,7 @@ Review results:
 | 6 | External opaque inputs and caller-owned targets; shared raster/deferred transforms and inverse-scale normals; bounded winner addressing; custom material source and matched deformation shader/resource interfaces |
 | 7 | Installed CPU/offscreen/window examples; migrated scene integrations; opt-in counters and resource inspection; GPU readback tests; recorded NumPy access measurements |
 
-Validation: the complete suite passes (415 tests), including CPU-only dependency
+Validation: the complete suite passes (422 tests), including CPU-only dependency
 checks, scene import checks, independent GPU visibility, padded explicit uniforms,
 MSAA, custom materials, transformed reconstruction, and resource lifetimes. A wheel
 was independently installed in a temporary directory and its packaged shader
@@ -31,6 +98,12 @@ example rendered successfully from an unrelated working directory.
 The batched-draw, direct-draw, transparency, and prototype scenes each completed
 a bounded three-frame window run. The direct-draw shadow pipeline now explicitly
 disables its fragment entry for the depth-only pass. `git diff --check` passes.
+
+After the module separation, the renamed batched-draw example, prototype, and
+transparency example each completed another bounded three-frame window run.
+The CPU-only dependency check also compiles a destination layout with GPU
+dependencies blocked. The legacy Raylib scripts retain CPU/cache regression
+coverage; no new interactive Raylib run is claimed.
 
 The current public contracts are in [PROCEDURAL_API.md](PROCEDURAL_API.md).
 Measured array access costs and retained scratch-memory tradeoffs are in

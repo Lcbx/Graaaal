@@ -103,7 +103,7 @@ attributes and metadata in the same `instance_order`. Pass names are arbitrary.
 Use `visibility.all_visible(lod=0)` for CPU/direct preparation, or
 `visibility.write(uint32_indices, indirect_records)` for a custom culler;
 `INDIRECT_DTYPE` describes those command records. After
-drawing depth, build `HZB` and call
+drawing depth, build `HZB` (imported from `numpyecs.HZB`) and call
 `HiZCuller().record(commands, main_view, hzb_view=hzb.view)` to refine that view's
 frustum results. No dummy HZB or prepass-to-main copies are needed. Indirect
 drawing requires the `indirect-first-instance` device feature.
@@ -140,6 +140,13 @@ without destroying handles referenced by recorded GPU work.
 lifetime boundary. `mesh.release()` returns allocations for reuse;
 `arena.compact()` updates live ranges/generations. Draw synchronization detects
 relocation. Copy-on-reuse/reallocation preserves previously recorded handles.
+
+To unload registered geometry, synchronize away the group's instances, call
+`draws.unregister_lod_group(group_id)`, then `draws.unregister_mesh(mesh_id)` once
+all referencing groups are removed. Registry removal does not release the mesh;
+call `mesh.release()` when no other owner needs it. Releasing an unused mesh
+before removing its registration also permits subsequent synchronization.
+Active groups and referenced meshes cannot be unregistered.
 
 `RenderPipeline` accepts explicit `layout`, `depth_stencil`, per-attachment
 `targets`, `sample_count`, and normalized `vertex_formats`. Color attachments

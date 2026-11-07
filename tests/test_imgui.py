@@ -10,7 +10,7 @@ import wgpu
 from imgui_bundle import imgui
 import wgpu.utils.imgui as backend_module
 
-from numpyecs.Imgui import Imgui
+from numpyecs.ImGui import ImGui
 from numpyecs.RenderContext import RenderContext
 from scenes.prototype import ActorCache, Damageable, Attributes, ActorMetadata, create_world, draw_actors
 from scenes.transparency_example import BilateralFilter, FilterSettings
@@ -37,7 +37,7 @@ def ui(monkeypatch):
 	context = NS(window=object(), canvas=object(), device=object(), presentation_format="rgba8unorm",
 		frame_time=1/60, event_handlers={}, screen=Mock(return_value="screen"),
 		commands=Mock(return_value=commands), submit=Mock())
-	gui = Imgui(context)
+	gui = ImGui(context)
 	try:
 		yield gui, sizes, commands, outer
 	finally:
@@ -137,7 +137,7 @@ def test_both_scenes_render_real_imgui_draw_data_to_gpu(monkeypatch):
 	renderer = NS(bilateral_filter=BilateralFilter(), debug_view="final")
 	settings = FilterSettings(renderer)
 	try:
-		with Imgui() as gui:
+		with ImGui() as gui:
 			for draw in (lambda: draw_actors(cache), settings.draw):
 				# A first-use window may defer layout for one frame.
 				for _ in range(2):

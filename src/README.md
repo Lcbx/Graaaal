@@ -33,13 +33,22 @@ package, so the packaged examples also work from another working directory.
 components to the array-based renderer. `DrawBatches` shares geometry/instances
 across independent visibility results and named shader passes.
 
+`HZB` builds hierarchical depth pyramids independently of the batching API.
+Internally, `draw_compiler` generates layouts with NumPy, `draw_resources` retains
+registries and uploads shared data, `draw_layout` defines NumPy records, and
+`draw_culling` records per-view GPU work. Compilation can run without a GPU.
+Public subsystem modules use PascalCase; implementation helpers use snake_case.
+Classes use PascalCase and functions/methods use snake_case.
+`utils` contains the small CPU helpers shared across subsystems: `cache_last`
+and `higher_pow2`.
+
 `TransparencyPass` accepts caller-owned opaque inputs/targets and applies matching
 instance transforms in rasterization and deferred shading. Its material shader
 and matched geometry/reconstruction shaders can be customized under an explicit
 winner ABI. It records work into caller commands and leaves submission/presentation
 to the application. The procedural API guide documents the layouts and pass order.
 
-`Imgui` is an optional integration with the RenderContext window and surface.
+`ImGui` is an optional integration with the RenderContext window and surface.
 Create it after window setup and close it before context cleanup. It overlays the
 current surface and forwards uncaptured input to application handlers.
 

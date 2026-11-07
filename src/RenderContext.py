@@ -21,7 +21,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from wgpu import BufferUsage, TextureUsage  # type: ignore[import-untyped]
 from wgpu.utils.glfw_present_info import get_glfw_present_info  # type: ignore[import-untyped]
 
-from .array_utils import higher_pow2
+from .utils import higher_pow2
 
 
 Color = tuple[float, float, float, float]
@@ -704,7 +704,7 @@ class RenderPass:
 			self.set_vertex_buffer(
 				1,
 				instances,
-				offset=instance_offset * instances.content.dtype.itemsize,
+				offset=instance_offset * instances.dtype.itemsize,
 				step_mode=wgpu.VertexStepMode.instance,
 			)
 
@@ -1083,46 +1083,6 @@ class GpuBuffer(_OwnedResource):
 			raise ValueError("Write exceeds GPU capacity; resize first")
 		self.content.view(np.uint8).reshape(-1)[offset:offset + data.size] = data
 		self._upload_bytes(offset, data.size)
-
-
-class GpuBufferPool:
-	def __init__(
-		self,
-		dtype: np.dtype,
-		usage: wgpu.BufferUsage,
-		initial_count: int = 0,
-	):
-		self.dtype = np.dtype(dtype)
-		self.used = 0
-		self.buffer = GpuBuffer(
-			np.empty(initial_count, dtype=self.dtype),
-			usage | wgpu.BufferUsage.COPY_DST,
-			upload=False,
-		)
-
-	def alloc(self, data: np.ndarray) -> tuple[int, int]:
-		start = self.used
-		count = len(data)
-		end = start + count
-
-		self._ensure_capacity(end)
-		self.buffer.content[start:end] = data
-		self.buffer.upload_range(start, count)
-		self.used = end
-		return start, count
-
-	def _ensure_capacity(self, count: int) -> None:
-		old_content = self.buffer.content
-		if count <= old_content.size:
-			return
-
-		new_count = higher_pow2(max(1, count))
-		new_content = np.empty(new_count, dtype=self.dtype)
-		new_content[:self.used] = old_content[:self.used]
-		self.buffer.content = new_content
-
-		if self.buffer.resize(new_count):
-			self.buffer.upload_range(0, self.used)
 
 
 class Mesh:

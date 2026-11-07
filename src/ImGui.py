@@ -11,10 +11,10 @@ import glfw
 from .RenderContext import RenderContext
 
 
-class Imgui:
+class ImGui:
 	def __init__(self, context=RenderContext):
 		if context.window is None or context.canvas is None:
-			raise RuntimeError("Initialize a RenderContext window before creating Imgui")
+			raise RuntimeError("Initialize a RenderContext window before creating ImGui")
 		# Optional for applications that do not use the UI plugin.
 		from imgui_bundle import imgui
 		from wgpu.utils.imgui import ImguiWgpuBackend
@@ -82,7 +82,7 @@ class Imgui:
 	@contextmanager
 	def _activate(self):
 		if self._imgui_context is None:
-			raise RuntimeError("Imgui is closed")
+			raise RuntimeError("ImGui is closed")
 		previous = self.imgui.get_current_context()
 		self.imgui.set_current_context(self._imgui_context)
 		try:

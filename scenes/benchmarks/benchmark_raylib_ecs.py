@@ -1,5 +1,5 @@
-from scenes.benchmarks.benchmark_loop import *
-import scenes.benchmarks.benchmark_loop as loop
+from scenes.benchmarks.raylib_benchmark_loop import *
+import scenes.benchmarks.raylib_benchmark_loop as loop
 
 import numpy as np
 from pyray import *

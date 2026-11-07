@@ -9,6 +9,9 @@ from numpyecs import DrawBatches as batches
 from numpyecs import RenderContext as rc
 from numpyecs import TransparencyPass as transparency
 from numpyecs.ECS import ECS, component, columns
+from numpyecs.draw_resources import _DrawResources
+from numpyecs.draw_culling import _CullingState, default_cull_shader
+from numpyecs.HZB import HZB
 
 
 @pytest.fixture
@@ -19,14 +22,12 @@ def draws(monkeypatch, tmp_path):
     monkeypatch.setattr(rc.RenderContext, "device", device, raising=False)
     # Default engine shaders must also load from outside the repository.
     monkeypatch.chdir(tmp_path)
-    draws = batches._BatchCompiler(np.dtype([("value", "u4")]))
-    pipeline = rc.RenderPipeline.__new__(rc.RenderPipeline)
-    pipeline.shader = NS(bind_group=lambda group, **resources: NS(group=group, resources=resources))
+    draws = _DrawResources(np.dtype([("value", "u4")]))
     for mesh_id in (1, 2):
         mesh = NS(index_count=3, index_range=(0, 3), vertex_range=(0, 3))
         draws.register_mesh(mesh_id, mesh, bounds=([0, 0, 0], [1, 1, 1]))
         draws.register_lod_group(mesh_id * 10, (mesh_id,))
-    draws.register_shader(0, batches._KernelShader(batches.ShaderPass(pipeline)))
+    draws.register_shader(0)
     return draws
 
 
@@ -159,6 +160,7 @@ def test_passes_explain_missing_targets(method, args):
 
 
 def test_cull_camera_uses_explicit_keywords(draws):
+    draws = _CullingState(default_cull_shader(), draws.buffers)
     draws.update_cull_camera(camera_position=[0, 0, 0], view_projection=np.eye(4))
     assert np.isfinite(draws.camera_params_buffer.content["view_proj"]).all()
     with pytest.raises(TypeError):
@@ -170,37 +172,31 @@ def test_gpu_array_batches_cull_in_compact_order_from_another_directory(monkeypa
 
     rc.RenderContext.setup_graphics_backend(True)
     monkeypatch.chdir(tmp_path)
-    draws = batches._BatchCompiler(MESH_INSTANCE_DTYPE)
-    # Read back the actual GPU indirect commands, including frustum rejection.
-    name = "prepass_draw_cmd"
-    buffer = draws.buffers[name]
-    draws.buffers[name] = rc.GpuBuffer(buffer.content,
-        buffer.usage | rc.BufferUsage.COPY_SRC, upload=False)
+    monkeypatch.setattr(batches, "GpuBuffer", lambda content, usage, **kw:
+        rc.GpuBuffer(content, usage | rc.BufferUsage.COPY_SRC, **kw))
+    draws = batches.DrawBatches(MESH_INSTANCE_DTYPE)
     shader = rc.Shader(filepath=str(transparency.SHADERS / "stochastic_geometry.shader"))
     pipeline = rc.RenderPipeline(shader, vertex_entry="vertex", fragment_entry="opaque")
     spec = batches.ShaderPass(pipeline)
-    draws.register_shader(0, batches._KernelShader(spec, spec))
+    draws.register_shader(0, batches.RenderShader({"main": spec, "prepass": spec}))
     mesh = NS(index_count=3, index_range=(0, 3), vertex_range=(0, 3))
     draws.register_mesh(1, mesh, bounds=([0, 0, 0], [0.1, 0.1, 0.1]))
     for group_id in (10, 20):
         draws.register_lod_group(group_id, (1,))
-    draws.sync_arrays([7, 7], [20, 10], [0, 0])
+    draws.sync([20, 10], [0, 0], labels=[7, 7])
     positions = np.array([[100, 0, 0.5], [0, 0, 0.5]], dtype=np.float32)
     draws.write_instance_fields(iPosition=positions[draws.instance_order], iTint=0,
         iRotation=pack_quaternion(np.array([0, 0, 0, 1], dtype=np.float32)),
         iScale=pack_scale(np.ones(3, dtype=np.float32)))
-    dummy = rc.Texture((1, 1), format="r32float", usage=rc.TextureUsage.TEXTURE_BINDING)
-    draws.refresh_bindings(dummy.view())
-    draws.update_cull_camera(camera_position=[0, 0, 0], view_projection=np.eye(4))
+    visibility = draws.create_visibility()
     commands = rc.RenderContext.commands("array_culling")
-    draws.reset_draw_counts(commands)
-    draws.cull_instances(commands, "frustum")
+    batches.FrustumCuller().record(commands, visibility, camera_position=[0, 0, 0], view_projection=np.eye(4))
     rc.RenderContext.submit(commands.finish())
-    raw = rc.RenderContext.device.queue.read_buffer(draws.buffers[name].handle)
+    raw = rc.RenderContext.device.queue.read_buffer(visibility.commands.handle)
     indirect = np.frombuffer(raw, dtype=batches.INDIRECT_DTYPE, count=2)
     np.testing.assert_array_equal(indirect["instance_count"], [1, 0])
     # Compile both HZB entries from the engine path as well.
-    hzb = batches.HZB()
+    hzb = HZB()
     assert hzb.resize((8, 8))
 
 
