@@ -1,4 +1,4 @@
-# Procedural engine API
+# NumPy ECS and procedural rendering
 
 Install the checkout from its repository root with `pip install -e .`.
 The Python package is `numpyecs`; core simulation needs only NumPy. GPU rendering,
@@ -11,9 +11,15 @@ resource manager. There is one shared device; callers do not need to pass it
 through each API. Systems remain ordinary functions; command order is explicit.
 Import the manager with `from numpyecs.RenderContext import RenderContext`.
 
-Use PascalCase public modules/types, snake_case functions/attributes, and
-UPPER_SNAKE_CASE constants. RenderContext's singleton spelling is deliberate.
-Superseded spelling aliases and `Utils.py` are removed.
+Public subsystem modules and classes use PascalCase; internal helpers, functions,
+and attributes use snake_case. Constants use UPPER_SNAKE_CASE.
+
+| Guide | Contents |
+| --- | --- |
+| [ECS API](src/ECS_API.md) | Components, arrays, queries, lifetimes, commands, and scheduling |
+| [Scenes](scenes/README.md) | Running interactive examples and their controls |
+| [Transparency](src/stochastic_transparency.md) | Pass order, reconstruction, and technique limits |
+| [Benchmarks](scenes/benchmarks/README.md) | Reproduction commands and dated measurements |
 
 ## Module boundaries
 
@@ -29,9 +35,21 @@ Superseded spelling aliases and `Utils.py` are removed.
 | `Diagnostics` | Optional timing and memory helpers |
 | `TextureProcessing` | GPU material mip generation |
 | `EcsDrawing` | Optional ECS-to-array drawing adapter |
+| `DrawBatches` | Shared draw resources, named shader passes, and per-view visibility |
+| `HZB` | Hierarchical depth-pyramid generation |
+| `RenderContext`, `MeshArena` | Window/event loop, command recording, GPU resources, pooled mesh allocation |
+| `TransparencyPass` | Composable stochastic transparency passes |
+| `ImGui` | Optional Dear ImGui integration with the RenderContext window/surface |
+| `utils` | Small shared CPU helpers: `cache_last` and `higher_pow2` |
 
-CPU modules can be imported without graphics dependencies or initialization.
-Engine shaders are included in the installed package.
+Simulation, math, asset-data, packing, grouping, and utility modules import without
+graphics dependencies. Asset decoders load their optional dependencies when called.
+Engine shaders are included in the installed package. `Geometry.make_cube_mesh()`
+creates a GPU mesh and requires an initialized backend.
+
+Internally, `draw_compiler` generates layouts with NumPy, `draw_layout` defines
+their records, `draw_resources` manages registries/uploads, and `draw_culling`
+records per-view compute work. Compilation can run without a GPU.
 
 ## Arrays and ordinary systems
 
@@ -67,10 +85,17 @@ request can partially apply. Declared fields are touched on exit, including afte
 exceptions; writes are not rolled back. Compact multicomponent stores containing
 holes first. General joins between independently ordered stores still gather.
 
-See [ECS_API.md](ECS_API.md) and [ARRAY_BENCHMARKS.md](ARRAY_BENCHMARKS.md) for
-full ECS contracts and measured allocation/timing costs.
+See the [ECS reference](src/ECS_API.md) for full contracts and the
+[array measurements](scenes/benchmarks/README.md#array-access) for scratch-memory costs.
 
 ## Shared draws and independent visibility
+
+Initialize RenderContext first and request `indirect-first-instance` through
+`init_window(..., required_gpu_features=[...])` or
+`setup_graphics_backend(..., required_features=[...])` when using indirect draws.
+The following recording example assumes a compatible `mesh`, `pipeline`,
+`input_instances`, camera values, and output texture already exist. Configure the
+pipeline for the target attachments; this example uses a color-only pass.
 
 ```python
 from numpyecs.RenderContext import RenderContext
@@ -84,7 +109,6 @@ draws.register_shader(0, RenderShader({"color": ShaderPass(pipeline)}))
 draws.sync([10, 10], [0, 0], labels=["first", "second"])
 draws.write_instances(input_instances[draws.instance_order])
 main_view = draws.create_visibility()
-shadow_view = draws.create_visibility()
 
 commands = RenderContext.commands("frame")
 FrustumCuller().record(commands, main_view,
@@ -96,17 +120,19 @@ RenderContext.submit(commands.finish())
 
 `DrawList.build(lod_ids, shader_ids)` provides pure CPU grouping. `DrawBatches`
 owns shared geometry/instances; `Visibility` owns each view's counters, visible
-indices, and indirect commands. `sync()` snapshots keys and labels to detect
+indices, and indirect commands. Create a separate visibility for each camera or
+shadow view. `sync()` snapshots keys and labels to detect
 in-place changes and returns whether instance order was invalidated. Upload all
 attributes and metadata in the same `instance_order`. Pass names are arbitrary.
 
+Prepare visibility again after regrouping or invalidating instance order; stale
+or unprepared results raise `RuntimeError` when drawn or accessed.
 Use `visibility.all_visible(lod=0)` for CPU/direct preparation, or
 `visibility.write(uint32_indices, indirect_records)` for a custom culler;
 `INDIRECT_DTYPE` describes those command records. After
 drawing depth, build `HZB` (imported from `numpyecs.HZB`) and call
 `HiZCuller().record(commands, main_view, hzb_view=hzb.view)` to refine that view's
-frustum results. No dummy HZB or prepass-to-main copies are needed. Indirect
-drawing requires the `indirect-first-instance` device feature.
+frustum results.
 
 The default culling ABI is `MESH_INSTANCE_DTYPE`; another dtype requires matching
 shaders/culling or caller-produced visibility. Group 1 supplies `instances` and
@@ -121,8 +147,9 @@ expand once; no transform component type is prescribed by the renderer.
 
 ## Resources and pipelines through RenderContext
 
-`GpuBuffer(content, usage, copy=False)` borrows contiguous CPU content by default;
-`copy=True` requests a copy. `GpuBuffer(None, usage, dtype=..., count=...)` allocates
+`GpuBuffer(content, usage, copy=False)` retains contiguous CPU content by default;
+noncontiguous input is copied to make it contiguous, and `copy=True` always copies.
+`GpuBuffer(None, usage, dtype=..., count=...)` allocates
 GPU-only storage. `count`, `binding_size`, and `capacity_bytes` distinguish active
 records/scalars, bound bytes, and GPU capacity. Element-range uploads require 1-D
 content; `write_range()` offsets are bytes.
@@ -191,8 +218,9 @@ Use `update_frame(view=..., projection=..., camera_position=..., near=..., far=.
 or the `update_camera(camera)` adapter. The row-vector matrix convention remains
 `view @ projection`. Record opaque (skip when inputs already exist), guide,
 transmittance, selection, shading, and composition explicitly in caller commands.
-The technique does not submit or present. The migrated transparency scene and
-GPU integration tests show the complete pass order.
+Call `resize()` before updating camera uniforms or recording passes. The technique
+does not submit or present. See the [transparency notes](src/stochastic_transparency.md)
+and [scene implementation](scenes/transparency_example.py) for complete pass order.
 
 ## Examples and diagnostics
 
@@ -205,7 +233,13 @@ python -m numpyecs --window --frames 120
 ```
 
 The first command needs only NumPy. GPU modes load packaged shaders and use
-RenderContext. Existing scenes also run through `python main.py ...`.
+RenderContext. Repository scenes run through `python main.py scenes/<name>.py`;
+add `--frames N` for a bounded run. Imports do not create windows or devices.
+
+Create `ImGui` after initializing a window and close it before context cleanup.
+It overlays the current surface and forwards uncaptured input to application handlers.
+`GCManager` is an optional idle-time collection policy; its budget estimates spare
+time rather than capping a collection pause. `close()` restores process settings.
 
 Enable counters with `RenderContext.enable_statistics()` and inspect them through
 `inspect_resources()`. Counters cover resource creation, uploads, cache behavior,

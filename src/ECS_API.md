@@ -4,12 +4,13 @@ This guide covers the application-facing API. Python examples can be executed in
 document order; later examples use the reusable setup below and reset their world
 explicitly. Run after installing the package with `pip install -e .` from the repository root.
 
-Related documents: [implementation status](ECS_TODO.md),
-[benchmark report](ECS_BENCHMARKS.md), and [source guide](README.md).
+Related documents: [engine guide](../README.md) and
+[benchmarks](../scenes/benchmarks/README.md).
 
 - [Quick start: named batches and writes](#named-batches-and-explicit-writes)
 - [Entity and row addressing](#entities-and-checked-component-rows)
 - [Vectors](#vector-layout-and-validation)
+- [Reusable array reads and dense edits](#explicit-arrays-and-reusable-field-reads)
 - [Inspection and allocation](#inspection-and-allocation-control)
 - [Reusable example setup](#reusable-example-setup)
 - [Component schemas and registration](#component-schemas-and-registration)
@@ -146,7 +147,7 @@ These definitions are shared by the remaining examples. Every call to
 
 ```python
 from numpyecs.ECS import (
-    ECS, Scheduler, CommandBuffer, CommandError, component, columns,
+    ECS, Scheduler, CommandBuffer, CommandError, component, array_field, columns,
     Entity, Index, entity_index, entity_generation, as_entities, as_rows,
 )
 
@@ -189,7 +190,8 @@ Annotated ordinary classes and ordinary dataclasses can also be registered.
 | Annotation | Storage |
 | --- | --- |
 | `float`, `int`, `bool`, NumPy scalar types | NumPy dtype resolved from the annotation |
-| `str`, `bytes`, `object`, unsupported annotations | Python object references |
+| `str`, `bytes`, `object` | Python object references |
+| `np.ndarray` with `array_field(dtype, shape=...)` metadata | Explicit dtype and per-row shape |
 | `IntFlag` subclass | `int64`; selection reads return integer arrays |
 | `np.dtype((base, shape))` | One shaped value per row |
 | Class with `storage_dtype()` | Dtype returned by that class method |
@@ -197,7 +199,8 @@ Annotated ordinary classes and ordinary dataclasses can also be registered.
 
 Prefer explicit NumPy types such as `np.float32` and `np.uint32` when field width
 matters. Strings are object references, not fixed-width NumPy strings. No general
-runtime validation of arbitrary Python object types is performed.
+runtime validation of arbitrary Python object types is performed. Unsupported
+annotations raise `TypeError`; declare `object` explicitly for Python data.
 
 ```python
 from enum import IntFlag
@@ -395,7 +398,7 @@ joins with explicit optional presence masks when alignment matters.
 `ComponentRows` supports positional indexing; `ComponentSelection` supports
 `take(key)` for positions and `['field']` for fields. Both expose `len()` and
 `get_rows()`. `ComponentSelection` additionally exposes `checked_rows()`, field
-attributes/brackets, `assign()`, `vector()`, and `set_vector()`. Construct them via
+attributes/brackets, `read()`, `assign()`, `vector()`, and `set_vector()`. Construct them via
 accessors or queries, rather than manually using storage objects.
 
 Use brackets for user field names such as `vector`, `assign`, or `get_rows` that
@@ -753,7 +756,7 @@ their return values and lifetime rules. Mutators return `None` unless specified.
 
 | Object | Public entry points |
 | --- | --- |
-| Definitions | `component(cls=None, *, multiples=False)`, `columns(Type, /, **fields)` |
+| Definitions | `component(cls=None, *, multiples=False)`, `array_field(dtype, *, shape=())`, `columns(Type, /, **fields)` |
 | World setup | `ECS()`, `register(*types, allow_same_type_components_per_entity=False, capacity=128) -> tuple`, `get(Type) -> ComponentAccessor` |
 | Entity state | `create(quantity=1) -> EntityArray`, `delete(ids)`, `len(world)`, `entities()`, `is_alive(ids)`, `has(ids, Type)`, `entity_version`, `entity_masks` |
 | World mutation | `add(ids, *payloads)`, `set(ids, *payloads)`, `remove(ids, *types)` |
@@ -762,14 +765,14 @@ their return values and lifetime rules. Mutators return `None` unless specified.
 | Accessor predicates | `query(condition, entities=None) -> IndexArray`, `query_rows(condition, entities=None) -> ComponentRows` |
 | Accessor mutation/tracking | `remove(rows)`, `touch(*fields)`, `version(*fields) -> tuple`, `membership_version`, `layout_version` |
 | Checked rows | `len(rows)`, `rows[key] -> ComponentRows`, `get_rows() -> IndexArray` |
-| Selection | `len(selection)`, `['field']`, `.field`, `assign(**fields)`, `take(key)`, `checked_rows()`, `get_rows()`, `vector(*fields)`, `set_vector(value, *fields)` |
+| Selection | `len(selection)`, `['field']`, `.field`, `read(field, out=None)`, `assign(**fields)`, `take(key)`, `checked_rows()`, `get_rows()`, `vector(*fields)`, `set_vector(value, *fields)` |
 | Query/result | `Query.entities()`, `Query.fetch()`, `len(result)`, `result.entities`, `result[Type]`; term `.selection`, `.present`, `.offsets` |
-| Allocation/inspection | World `reserve(capacity)`, `inspect()`, `check_invariants()`; accessor `reserve(capacity, sparse_capacity=None)`, `compact()`, `inspect()` |
+| Allocation/inspection | World `reserve(capacity)`, `inspect()`, `check_invariants()`; accessor `reserve(capacity, sparse_capacity=None)`, `compact()`, `edit_dense(*fields)`, `inspect()` |
 | Deferred edits | `world.commands()` / `CommandBuffer(world)`, `len(buffer)`, `create`, `add`, `set`, `remove`, `delete`, `flush() -> int`, `clear()`, token `resolve() -> EntityArray` |
 | Scheduling | `Scheduler(world)`, `.commands`, `add(name, callback, phase='update', before=(), after=(), flush_after=False)`, `compile() -> tuple[str, ...]`, `run(dt, fixed_steps=0, fixed_dt=1/60)` |
 
 `exclude`, `any_of`, `optional`, scheduler configuration after the callback, run
-options after `dt`, and `sparse_capacity` are keyword-only arguments.
+options after `dt`, selection `read()`'s `out`, and `sparse_capacity` are keyword-only arguments.
 Accessor `get_rows()` is also available as an unchecked export of all active rows.
 
 Exported numeric types are `Entity=np.uint64`, `Index=np.uint32`,
@@ -779,9 +782,6 @@ Array aliases include `EntityArray`, `IndexArray`, `GenerationArray`, `MaskArray
 `IndexLike`, and `RowLike`. `NONE` is the missing row sentinel, `NO_ENTITY` the
 missing owner sentinel; neither is a usable live identity. `entity_index()` and
 `entity_generation()` accept a scalar or array and preserve scalar/array form.
-`higher_pow2(n)` returns the power of two strictly above nonnegative `n` (zero
-returns one), as used by growth policies. `arg_names(predicate)` returns validated
-predicate parameter names.
 
 The facade also exports `ComponentColumns`, `ComponentSchema`, `ComponentStorage`,
 and `MultiComponentStorage`. Schema/storage construction is implementation-facing;
@@ -792,7 +792,7 @@ Methods beginning with `_` and dense/sparse buffers are internal.
 | --- | --- |
 | `KeyError` | Unregistered type, unknown field, or indexing a query term not requested |
 | `ValueError` | Invalid shape, missing/existing single-component membership, duplicates, reserved schema fields, negative ID/count, invalid schedule/dependencies |
-| `TypeError` | Noninteger/boolean handle or creation quantity, unsupported callback, wrong row wrapper, unsupported vector dtype, multicomponent `set()` or tag registration |
+| `TypeError` | Unsupported annotation/callback/vector dtype, noninteger/boolean handle or creation quantity, wrong row wrapper, multicomponent `set()` or tag registration |
 | `OverflowError` | Handle/row representation overflow, exhausted index space, owner instance-count overflow |
 | `RuntimeError` | Stale selection/result, unresolved/cancelled token, reentrant flush/run, editing an active schedule |
 | `CommandError` | Failed command; inspect `.command_index`, `.operation`, and `.__cause__` |
@@ -824,5 +824,6 @@ Fields are touched on exit even after exceptions; writes are not rolled back.
 Exported views must not escape the scope. Compact multicomponent holes first.
 Independent component stores still require joins/gathers to align their rows.
 
-See [the procedural guide](PROCEDURAL_API.md) for a complete shaped-field example
-and [array measurements](ARRAY_BENCHMARKS.md) for scratch-memory tradeoffs.
+See [the engine guide](../README.md#arrays-and-ordinary-systems) for a complete
+shaped-field example and [array measurements](../scenes/benchmarks/README.md#array-access)
+for scratch-memory tradeoffs.
