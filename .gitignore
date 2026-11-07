@@ -12,3 +12,6 @@ build/*
 # blender
 *.blend1
 *.egg-info/
+
+# sublime
+project.sublime-workspace
