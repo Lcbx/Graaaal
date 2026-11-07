@@ -4,3 +4,4 @@ pyrr==0.10.3
 pytest==8.3.5
 Jinja2==3.1.6
 wgpu==0.31.0
+imgui-bundle==1.92.5

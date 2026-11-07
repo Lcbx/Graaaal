@@ -1,12 +1,11 @@
 """Combat prototype: actor panels and health bars; combat actions remain a placeholder.
 
-Run with `python main.py scenes/prototype.py`. Names/health appear in the window
-title; the player panel is blue and enemy panels are red. Model helpers can be
+Run with `python main.py scenes/prototype.py`. ImGui shows actor names and health;
+the player panel is blue and enemy panels are red. Model helpers can be
 imported without initializing a graphics device.
 """
 from enum import IntFlag, auto
-
-import numpy as np
+from dataclasses import dataclass
 
 from ECS import ECS, Entity, component
 
@@ -54,7 +53,16 @@ class Action:
 	target: Entity
 
 
-PANEL_DTYPE = np.dtype([("iRect", np.float32, 4), ("iColor", np.float32, 4)])
+@dataclass(frozen=True)
+class ActorStatus:
+	name: str
+	health: int
+	max_health: int
+	is_player: bool
+
+	@property
+	def health_fraction(self):
+		return min(1.0, max(0.0, self.health/self.max_health)) if self.max_health > 0 else 0.0
 
 
 def create_world():
@@ -76,39 +84,24 @@ def inactive_enemy_ids(world, query):
 	return metadata.owner_ids(rows)
 
 
-def actor_panels(world, query):
-	"""Build normalized screen rectangles from aligned actor components."""
+def actor_statuses(world, query):
+	"""Read aligned actor fields without any graphics dependencies."""
 	matched = query.fetch()
 	health = matched[Damageable].selection.health
 	attributes = matched[Attributes].selection
 	flags = matched[ActorMetadata].selection.value
-	maximum = attributes.max_health
-	ratios = np.divide(health, maximum, out=np.zeros(len(health)), where=maximum > 0)
-	ratios = np.clip(ratios, 0, 1)
-	panels = np.zeros(3 * len(matched), dtype=PANEL_DTYPE)
-	for i, ratio in enumerate(ratios):
-		x, width = 0.05 + i * 0.9 / len(matched), 0.8 / len(matched)
-		panel, track, fill = panels[3 * i:3 * i + 3]
-		panel["iRect"] = (x, 0.3, width, 0.32)
-		panel["iColor"] = (0.12, 0.25, 0.45, 1) if flags[i] & ActorMetadataEnum.isPlayer else (0.38, 0.14, 0.13, 1)
-		track["iRect"] = (x, 0.65, width, 0.045)
-		track["iColor"] = (0.12, 0.12, 0.14, 1)
-		fill["iRect"] = (x, 0.65, width * ratio, 0.045)
-		fill["iColor"] = (0.15, 0.75, 0.3, 1) if ratio > 0.3 else (0.85, 0.2, 0.1, 1)
-	title = "Combat prototype | " + " | ".join(
-		f"{name}: {current}/{limit}" for name, current, limit in zip(attributes.name, health, maximum))
-	return panels, title
+	return tuple(ActorStatus(name, int(current), int(maximum), bool(flag & ActorMetadataEnum.isPlayer))
+		for name, current, maximum, flag in zip(attributes.name, health, attributes.max_health, flags))
 
 
-class PanelCache:
-	"""Rebuild panels only when actor membership or displayed fields change."""
+class ActorCache:
+	"""Refresh displayed data only when actor membership or fields change."""
 	def __init__(self, world, query):
 		self.world, self.query = world, query
 		self.health = world.get(Damageable)
 		self.attributes = world.get(Attributes)
 		self.metadata = world.get(ActorMetadata)
-		self.panels = np.empty(0, dtype=PANEL_DTYPE)
-		self.title = ""
+		self.actors = ()
 		self._version = None
 
 	def update(self):
@@ -116,51 +109,65 @@ class PanelCache:
 			self.attributes.version("name", "max_health"), self.metadata.version("value"))
 		if version == self._version:
 			return False
-		self.panels, self.title = actor_panels(self.world, self.query)
+		self.actors = actor_statuses(self.world, self.query)
 		self._version = version
 		return True
 
 
+def draw_actors(cache):
+	from imgui_bundle import imgui
+
+	imgui.set_next_window_pos((30, 100), imgui.Cond_.first_use_ever)
+	imgui.set_next_window_size((1100, 320), imgui.Cond_.first_use_ever)
+	expanded, _ = imgui.begin("Combat prototype")
+	try:
+		if not expanded:
+			return
+		imgui.text("Actors")
+		if cache.actors and imgui.begin_table("actors", len(cache.actors), imgui.TableFlags_.sizing_stretch_same):
+			try:
+				for index, actor in enumerate(cache.actors):
+					imgui.table_next_column()
+					imgui.push_id(index)
+					color = (0.12, 0.25, 0.45, 1) if actor.is_player else (0.38, 0.14, 0.13, 1)
+					imgui.push_style_color(imgui.Col_.child_bg, color)
+					imgui.begin_child("actor", (0, 160))
+					try:
+						imgui.text(actor.name)
+						imgui.text("Player" if actor.is_player else "Enemy")
+						imgui.spacing()
+						fill = (0.15, 0.75, 0.3, 1) if actor.health_fraction > 0.3 else (0.85, 0.2, 0.1, 1)
+						imgui.push_style_color(imgui.Col_.plot_histogram, fill)
+						imgui.progress_bar(actor.health_fraction, (-1, 24), f"{actor.health}/{actor.max_health}")
+						imgui.pop_style_color()
+					finally:
+						imgui.end_child()
+						imgui.pop_style_color()
+						imgui.pop_id()
+			finally:
+				imgui.end_table()
+		elif not cache.actors:
+			imgui.text("No actors")
+		imgui.text_disabled("Combat action selection and resolution are not implemented yet.")
+	finally:
+		imgui.end()
+
+
 def run_scene():
-	# Keep graphics imports/device setup out of the CPU model helpers.
-	from pathlib import Path
-	import glfw
-	from RenderContext import RenderContext, Shader, RenderPipeline, GpuBuffer, BufferUsage
+	from Imgui import Imgui
+	from RenderContext import RenderContext
 
 	world = create_world()
 	actors = world.query(Damageable, Attributes, ActorMetadata)
 	idle_enemies = world.query(ActorMetadata, exclude=Action)
-	cache = PanelCache(world, actors)
-	cache.update()
-	panels, title = cache.panels, cache.title
-	RenderContext.init_window(1200, 650, title, target_fps=60)
-	shader = Shader(filepath=str(Path(__file__).with_name("shaders") / "prototype.shader"))
-	pipeline = RenderPipeline(shader, vertex_entry="vertex", fragment_entry="fragment", depth_test=None, depth_write=False, cull_mode="none")
-	buffer = GpuBuffer(panels, BufferUsage.VERTEX | BufferUsage.COPY_DST)
-	previous_title = title
-	while RenderContext.window_loop():
-		# TODO: choose and resolve actions for these entities using combat rules.
-		enemies = inactive_enemy_ids(world, idle_enemies)
-		if cache.update():
-			panels, title = cache.panels, cache.title
-			if title != previous_title:
-				glfw.set_window_title(RenderContext.window, title)
-				previous_title = title
-			if len(panels) != len(buffer.content):
-				buffer.resize(len(panels))
-			buffer.content = panels
-			if len(panels):
-				buffer.upload()
-		width, height = RenderContext.windowDimensions
-		if width <= 0 or height <= 0:
-			continue
-		cmd = RenderContext.commands("prototype")
-		with cmd.render_pass(color=RenderContext.screen(clear=(0.035, 0.04, 0.055, 1))) as rp:
-			rp.set_pipeline(pipeline)
-			if len(panels):
-				rp.set_vertex_buffer(0, buffer, step_mode="instance")
-				rp.draw(6, instance_count=len(panels))
-		RenderContext.submit(cmd.finish())
+	cache = ActorCache(world, actors)
+	RenderContext.init_window(1200, 650, "Combat prototype", target_fps=60)
+	with Imgui() as gui:
+		while RenderContext.window_loop():
+			# TODO: choose and resolve actions for these entities using combat rules.
+			enemies = inactive_enemy_ids(world, idle_enemies)
+			cache.update()
+			gui.render(lambda: draw_actors(cache), clear=(0.035, 0.04, 0.055, 1))
 
 
 if __name__ == "__main__":

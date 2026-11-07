@@ -88,3 +88,19 @@ def test_arrow_edits_keep_distances_and_sigmas_valid():
 	assert 0 <= renderer.bilateral_filter.filter_near < renderer.bilateral_filter.filter_far
 	assert renderer.bilateral_filter.depth_sigma > 0
 	assert renderer.bilateral_filter.far_transmittance_weight == 1
+
+
+@pytest.mark.parametrize("name,value,expected", [
+	("filter_near", 100, 49.9999), ("filter_far", 0, 10.0001),
+	("depth_sigma", -2, 0.0001), ("far_transmittance_weight", 2, 1),
+	("far_transmittance_weight", -2, 0),
+])
+def test_widget_edits_use_validated_ranges(name, value, expected):
+	renderer = SimpleNamespace(bilateral_filter=BilateralFilter())
+	renderer.set_bilateral_filter = lambda value: setattr(renderer, "bilateral_filter", value)
+	settings = FilterSettings(renderer)
+	settings.set_value(name, value)
+	assert getattr(renderer.bilateral_filter, name) == pytest.approx(expected)
+	before = renderer.bilateral_filter
+	settings.set_value(name, float("nan"))
+	assert renderer.bilateral_filter is before

@@ -1,7 +1,10 @@
 # Running the scenes
 
 Run from the repository root with a Python environment containing the engine's
-NumPy, WGPU, GLFW, and supporting dependencies:
+NumPy, WGPU, GLFW, and supporting dependencies.
+
+The prototype and transparency settings use `imgui-bundle==1.92.5` (listed in
+`requirements.txt`) through the shared [ImGui plugin](../src/Imgui.py).
 
 ```powershell
 python main.py scenes/drawbatches_example.py
@@ -14,8 +17,8 @@ python main.py scenes/transparency_example.py
 | --- | --- |
 | `drawbatches_example.py` | Cached movement/render queries, deferred cube creation/deletion, scheduler phases, LoD and Hi-Z rendering. Space switches cameras; scrolling adjusts the view. |
 | `direct_draw_example.py` | Direct instanced drawing and shadows, with cached movement joins and versioned instance packing. Scrolling adjusts the view. |
-| `prototype.py` | Static combat actor panels and health bars using the native WGPU renderer. Rebuilds/uploads only when displayed data changes. The player is blue, enemies red; actor names and health are in the window title. Combat action selection/resolution remains a placeholder. |
-| `transparency_example.py` | Single-winner stochastic order-independent transparency using DrawBatches and `resources/small_scene.glb`. Up/Down selects a filter setting, Left/Right edits it, Shift gives fine steps, and F hides/shows the list. Space toggles orbit, scrolling zooms, R reverses transparent draw order, A toggles adaptation, and D cycles debug views. |
+| `prototype.py` | ImGui combat actor panels show names and health bars, with blue player and red enemy backgrounds. Displayed ECS data is cached until it changes. Combat action selection/resolution remains a placeholder. |
+| `transparency_example.py` | Single-winner stochastic order-independent transparency using DrawBatches and `resources/small_scene.glb`. ImGui exposes filter settings and diagnostic views; drag values or Ctrl+click to type. F hides/shows settings. Space toggles orbit, scrolling zooms, R reverses transparent draw order, A toggles adaptation, and D cycles debug views. |
 
 The prototype preserves the original actor data, including the player's initial
 150 health versus 100 maximum; the health bar clamps to its full width. It uses
@@ -33,7 +36,7 @@ scene cache module. The scene exposes `run_scene()` so importing its CPU helpers
 does not initialize graphics. Reusable queries and version tokens remain ECS APIs.
 
 The prototype tracks health, names, maximum health, metadata, and actor membership.
-Changes to unrelated attributes such as damage do not rebuild its panels. As with
+Changes to unrelated attributes such as damage do not refresh its cached actor data. As with
 other ECS version consumers, in-place object or raw-array edits require `touch()`.
 
 ## Bounded GPU checks
@@ -154,16 +157,21 @@ The footprint remains fixed, so empty neighborhoods remain zero and permissive
 weights can blend colors across overlapping surfaces. No temporal accumulation
 is introduced.
 
-The settings list is drawn in the render window and is visible at startup.
+The ImGui settings window is visible at startup. Drag numeric values or
+**Ctrl+click** to type; checkboxes and combo boxes control adaptation, kernel size,
+and diagnostic views. Reset, Save, and Load buttons operate on the same settings
+as the keyboard shortcuts. The window can be moved, resized, collapsed, or closed.
 **Up/Down** selects a row; **Left/Right** changes its value immediately; hold
-**Shift** for one-tenth increments. The list exposes every filter parameter,
+**Shift** for one-tenth increments. These shortcuts apply when ImGui is not
+capturing keyboard input for a widget. The window exposes every filter parameter,
 including the adaptation toggle and 3×3/5×5 kernel. Values are bounded so sigmas
 stay positive, near distance stays below far distance, and edge weight stays in
 [0,1]. **Home** restores startup settings. **F** hides/shows the list; arrow edits
 are disabled while hidden. **F5** saves all settings to
 `scenes/transparency_filter.json`; **F9** loads that file. Load errors appear in
-the list without changing active settings. No separate window or Tkinter is used.
-The text texture is rebuilt only when selection, values, status, or size changes.
+the window without changing active settings. ImGui renders into the existing
+WGPU surface after scene composition. Mouse input over the UI does not zoom the
+camera, and typing into a field does not trigger scene shortcuts.
 
 For code-level tuning, pass settings to the renderer or change them live:
 

@@ -145,6 +145,7 @@ class _RenderContext:
 		glfw.set_cursor_pos_callback(self.window, self.setup_glfw_event("mouse_move"))
 		glfw.set_cursor_enter_callback(self.window, self.setup_glfw_event("mouse_enter"))
 		glfw.set_scroll_callback(self.window, self.setup_glfw_event("mouse_scroll"))
+		glfw.set_window_focus_callback(self.window, self.setup_glfw_event("focus"))
 		self.idle_hook = self.setup_event("idle")
 
 	def update_window_size(self, wh: tuple[int, int]) -> None:

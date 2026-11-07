@@ -3,8 +3,8 @@
 Run: python main.py scenes/transparency_example.py [--frames 120]
 Space toggles orbit, scrolling zooms, R reverses transparent submission order.
 3 and 5 select the bilateral reconstruction kernel size.
-D cycles diagnostic views; A toggles adaptation; F shows/hides the settings list.
-Up/Down selects a setting; Left/Right edits; Shift edits in finer steps.
+D cycles diagnostic views; A toggles adaptation; F shows/hides ImGui settings.
+Drag settings or Ctrl+click to type; Up/Down and Left/Right also select/edit.
 Imports only prepare CPU helpers; graphics are initialized by run_scene().
 """
 
@@ -561,7 +561,7 @@ SETTINGS = (
 
 
 class FilterSettings:
-	"""Keyboard filter settings and a cached text overlay in the render window."""
+	"""ImGui filter controls, keyboard shortcuts, and validated JSON profiles."""
 
 	def __init__(self, renderer, profile_path=None):
 		self.renderer = renderer
@@ -570,17 +570,13 @@ class FilterSettings:
 		self.selected = 0
 		self.visible = True
 		self.message = ""
-		self._signature = None
-		self._pipeline = None
-		self._texture = None
-		self._viewport = None
 
 	def move(self, direction):
 		self.selected = (self.selected+direction) % len(SETTINGS)
 		self.message = ""
 
 	def adjust(self, direction, fine=False):
-		name, _, step, minimum, maximum = SETTINGS[self.selected]
+		name, _, step, _, _ = SETTINGS[self.selected]
 		options = self.renderer.bilateral_filter
 		current = getattr(options, name)
 		if name == "adaptive":
@@ -589,15 +585,7 @@ class FilterSettings:
 			value = 5 if direction > 0 else 3
 		else:
 			value = round(current + direction*step*(0.1 if fine else 1), 9)
-			value = max(value, minimum)
-			if maximum is not None:
-				value = min(value, maximum)
-			if name == "filter_near":
-				value = min(value, options.filter_far-min(0.0001, options.filter_far*0.5))
-			elif name == "filter_far":
-				value = max(value, options.filter_near+0.0001)
-		self.renderer.set_bilateral_filter(replace(options, **{name: value}))
-		self.message = ""
+		self.set_value(name, value)
 
 	def reset(self):
 		self.renderer.set_bilateral_filter(self.defaults)
@@ -640,65 +628,72 @@ class FilterSettings:
 			return False
 		return True
 
+	def set_value(self, name, value):
+		"""Apply the same valid ranges to mouse widgets and keyboard edits."""
+		options = self.renderer.bilateral_filter
+		_, _, _, minimum, maximum = next(row for row in SETTINGS if row[0] == name)
+		if name not in ("adaptive", "kernel_size"):
+			if not np.isfinite(value):
+				return
+			value = max(value, minimum)
+			if maximum is not None:
+				value = min(value, maximum)
+			if name == "filter_near":
+				value = min(value, options.filter_far-min(0.0001, options.filter_far*0.5))
+			elif name == "filter_far":
+				value = max(value, options.filter_near+0.0001)
+		self.renderer.set_bilateral_filter(replace(options, **{name: value}))
+		self.message = ""
+
 	def draw(self):
+		from imgui_bundle import imgui
+
 		if not self.visible:
 			return
-		from PIL import ImageDraw, ImageFont
-		width, height = RenderContext.windowDimensions
-		if width < 240 or height < 160:
-			return
-		options = self.renderer.bilateral_filter
-		signature = (options, self.selected, self.message, width, height)
-		if signature != self._signature:
-			rows = max(1, min(len(SETTINGS), (height-120)//22))
-			start = min(max(0, self.selected-rows+1), len(SETTINGS)-rows)
-			image = Image.new("RGBA", (min(440, width-24), 88+22*rows), (12, 16, 24, 232))
-			text = ImageDraw.Draw(image)
-			font = ImageFont.load_default(size=16)
-			text.text((10, 8), "FILTER SETTINGS", font=font, fill=(220, 240, 255))
-			for row, index in enumerate(range(start, start+rows)):
-				name, label, _, _, _ = SETTINGS[index]
-				value = getattr(options, name)
-				value = ("On" if value else "Off") if isinstance(value, bool) else f"{value:.5g}"
-				y = 34+22*row
-				if index == self.selected:
-					text.rectangle((3, y-2, image.width-4, y+19), fill=(32, 80, 104, 255))
-				text.text((10, y), ("> " if index == self.selected else "   ")+label, font=font, fill=(240, 240, 240))
-				text.text((image.width-88, y), value, font=font, fill=(120, 225, 255))
-			y = 36+22*rows
-			text.text((10, y), "Up/Down select | Left/Right edit | Shift fine", font=font, fill=(210, 215, 220))
-			text.text((10, y+17), "Home reset | F hide | F5 save | F9 load", font=font, fill=(210, 215, 220))
+		imgui.set_next_window_pos((12, 12), imgui.Cond_.first_use_ever)
+		imgui.set_next_window_size((460, 560), imgui.Cond_.first_use_ever)
+		expanded, self.visible = imgui.begin("Transparency settings", self.visible)
+		try:
+			if not expanded:
+				return
+			changed, index = imgui.combo("Diagnostic view", DEBUG_VIEWS.index(self.renderer.debug_view), DEBUG_VIEWS)
+			if changed:
+				self.renderer.set_debug_view(DEBUG_VIEWS[index])
+			imgui.separator()
+			for index, (name, label, step, minimum, maximum) in enumerate(SETTINGS):
+				value = getattr(self.renderer.bilateral_filter, name)
+				label = ("> " if index == self.selected else "") + label + "###" + name
+				if name == "adaptive":
+					changed, value = imgui.checkbox(label, value)
+				elif name == "kernel_size":
+					changed, selection = imgui.combo(label, 0 if value == 3 else 1, ("3 x 3", "5 x 5"))
+					value = (3, 5)[selection]
+				else:
+					changed, value = imgui.drag_float(label, value, step, minimum, maximum or 0.0, "%.6g")
+				if changed:
+					self.selected = index
+					self.set_value(name, value)
+			imgui.separator()
+			if imgui.button("Reset (Home)"):
+				self.reset()
+			for label, action in (("Save (F5)", self.save), ("Load (F9)", self.load)):
+				imgui.same_line()
+				if imgui.button(label):
+					try:
+						action()
+					except (OSError, TypeError, ValueError) as error:
+						self.message = str(error)
+			imgui.text_wrapped("Drag values or Ctrl+click to type. Shift gives fine keyboard steps. F hides/shows this window.")
 			if self.message:
-				text.text((10, y+34), self.message, font=font, fill=(255, 210, 100))
-			if self._pipeline is None:
-				shader = Shader(filepath=str(SHADERS / "transparency_settings.shader"),
-					params={"srgb_surface": RenderContext.presentation_format.endswith("-srgb")})
-				self._uniforms = shader.UniformBuffer("settings")
-				self._shader = shader
-				self._pipeline = RenderPipeline(shader, depth_test=None, depth_write=False, cull_mode="none",
-					blend={"color": {"src_factor": "src-alpha", "dst_factor": "one-minus-src-alpha", "operation": "add"},
-						"alpha": {"src_factor": "one", "dst_factor": "one-minus-src-alpha", "operation": "add"}})
-			if self._texture is None or self._texture.size[:2] != image.size:
-				self._texture = Texture(image.size, format="rgba8unorm", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
-				self._bindings = self._shader.bind_group(0, settings=self._uniforms, settings_image=self._texture)
-			RenderContext.device.queue.write_texture({"texture": self._texture.handle}, np.asarray(image),
-				{"bytes_per_row": image.width*4, "rows_per_image": image.height}, (*image.size, 1))
-			viewport = (width, height, image.width, image.height)
-			if viewport != self._viewport:
-				self._uniforms.content["viewport"] = viewport
-				self._uniforms.upload()
-				self._viewport = viewport
-			self._signature = signature
-		commands = RenderContext.commands("filter_settings_overlay")
-		with commands.render_pass(color=RenderContext.screen(), label="filter_settings_overlay") as render:
-			render.set_pipeline(self._pipeline)
-			render.set_bind_groups(self._bindings)
-			render.draw(6)
-		RenderContext.submit(commands.finish())
+				imgui.text_wrapped(self.message)
+		finally:
+			imgui.end()
 
 
 def run_scene():
-	RenderContext.init_window(1200, 900, "Stochastic transparency | Arrows: settings | Shift: fine | F: hide list | D: debug | Space: orbit",
+	from Imgui import Imgui
+
+	RenderContext.init_window(1200, 900, "Stochastic transparency | F: settings | D: debug | Space: orbit",
 		required_gpu_features=["indirect-first-instance"])
 	renderer = TransparencyRenderer()
 	settings = FilterSettings(renderer)
@@ -731,12 +726,13 @@ def run_scene():
 	RenderContext.event_handlers["char"].append(character)
 	RenderContext.event_handlers["key"].append(settings.handle_key)
 	try:
-		while RenderContext.window_loop():
-			if orbit:
-				angle += RenderContext.frame_time * 0.2
-			renderer.camera.position = Vec3(renderer.center + distance * np.array([cos(angle), 0.5, sin(angle)]))
-			renderer.render()
-			settings.draw()
+		with Imgui() as gui:
+			while RenderContext.window_loop():
+				if orbit:
+					angle += RenderContext.frame_time * 0.2
+				renderer.camera.position = Vec3(renderer.center + distance * np.array([cos(angle), 0.5, sin(angle)]))
+				renderer.render()
+				gui.render(settings.draw)
 	finally:
 		RenderContext.event_handlers["mouse_scroll"].remove(scroll)
 		RenderContext.event_handlers["char"].remove(character)

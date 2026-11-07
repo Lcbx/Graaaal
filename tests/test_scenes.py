@@ -4,7 +4,6 @@ import runpy
 import sys
 from types import ModuleType, SimpleNamespace
 
-import numpy as np
 import pytest
 
 from scenes import prototype as scene
@@ -27,25 +26,23 @@ def test_prototype_panels_show_health_and_refresh_after_field_and_membership_edi
 	world = scene.create_world()
 	query = world.query(scene.Damageable, scene.Attributes, scene.ActorMetadata)
 	ids = query.entities()
-	panels, title = scene.actor_panels(world, query)
-	assert panels.dtype == scene.PANEL_DTYPE
-	assert len(panels) == 9
-	assert "player: 150/100" in title
-	np.testing.assert_allclose(panels[2::3]["iRect"][:, 2], panels[1::3]["iRect"][:, 2])
+	actors = scene.actor_statuses(world, query)
+	assert len(actors) == 3
+	assert actors[0] == scene.ActorStatus("player", 150, 100, True)
+	assert all(actor.health_fraction == 1 for actor in actors)
 	world.set(ids[1], scene.Damageable(5))
-	updated, title = scene.actor_panels(world, query)
-	assert "mosquito: 5/30" in title
-	assert updated[5]["iRect"][2] == pytest.approx(updated[4]["iRect"][2] / 6)
+	updated = scene.actor_statuses(world, query)
+	assert updated[1].name == "mosquito" and updated[1].health == 5
+	assert updated[1].health_fraction == pytest.approx(1/6)
 	world.get(scene.Attributes)[ids[1]].max_health = 0
-	updated, _ = scene.actor_panels(world, query)
-	assert updated[5]["iRect"][2] == 0
-	assert np.isfinite(updated["iRect"]).all()
+	updated = scene.actor_statuses(world, query)
+	assert updated[1].health_fraction == 0
 	world.delete(ids[1])
-	updated, title = scene.actor_panels(world, query)
-	assert len(updated) == 6
-	assert "mosquito" not in title
+	updated = scene.actor_statuses(world, query)
+	assert len(updated) == 2
+	assert "mosquito" not in [actor.name for actor in updated]
 	world.delete(world.entities())
-	assert len(scene.actor_panels(world, query)[0]) == 0
+	assert scene.actor_statuses(world, query) == ()
 
 
 @pytest.mark.parametrize("entrypoint", [True, False])

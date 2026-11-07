@@ -24,6 +24,36 @@ responsibility:
 supporting utilities. Generated compiler output belongs under `build/`; recorded
 benchmark observations belong under `scenes/benchmarks/results/`.
 
+`Imgui.py` provides an optional Dear ImGui plugin backed by WGPU's
+`ImguiWgpuBackend`, inspired by its
+[canvas renderer](https://github.com/pygfx/wgpu-py/blob/main/wgpu/utils/imgui/imgui_renderer.py).
+Install `imgui-bundle==1.92.5` alongside the pinned WGPU version. Create it after
+`RenderContext.init_window()` and use a context manager to detach handlers and
+release its ImGui context before `RenderContext.cleanup()`:
+
+```python
+from Imgui import Imgui
+from imgui_bundle import imgui
+
+def draw_ui():
+    imgui.begin("Settings")
+    imgui.text("Hello")
+    imgui.end()
+
+with Imgui() as gui:
+    while RenderContext.window_loop():
+        # Render the scene first, then overlay its controls.
+        gui.render(draw_ui)
+```
+
+For a UI-only scene, pass `clear=(r, g, b, a)` to `render()`. The plugin shares
+`RenderContext.screen()` and leaves presentation to `window_loop()`. It updates
+logical size, framebuffer scale and elapsed time each frame, skips minimized
+windows, and feeds GLFW keyboard, Unicode, pointer, scroll and focus events to
+ImGui before scene handlers. Captured input stops propagation. Widget callbacks
+run with the plugin's context selected; an existing caller context is restored.
+Applications that do not create the plugin do not import `imgui-bundle`.
+
 `GpuBuffer.write(data)` replaces CPU content and uploads it, growing capacity
 when needed. Use `write_range(data, offset=byte_offset)` for partial updates;
 it preserves CPU content outside the range and the binding size. Uploads require

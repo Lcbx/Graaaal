@@ -103,30 +103,30 @@ def test_direct_instances_refresh_membership_generation_order_layout_and_empty_w
 def test_panel_cache_tracks_only_displayed_fields_and_actor_membership(monkeypatch):
 	world = prototype.create_world()
 	query = world.query(prototype.Damageable, prototype.Attributes, prototype.ActorMetadata)
-	cache = prototype.PanelCache(world, query)
+	cache = prototype.ActorCache(world, query)
 	builds = []
-	original = prototype.actor_panels
+	original = prototype.actor_statuses
 	def build(*args):
 		builds.append(1)
 		return original(*args)
-	monkeypatch.setattr(prototype, "actor_panels", build)
+	monkeypatch.setattr(prototype, "actor_statuses", build)
 	assert cache.update()
-	panels = cache.panels
+	actors = cache.actors
 	assert not cache.update()
 	world.get(prototype.Attributes)[query.entities()[:1]].damage = 9
 	assert not cache.update()
-	assert cache.panels is panels
+	assert cache.actors is actors
 	assert len(builds) == 1
 	world.get(prototype.Damageable)[query.entities()[1]].health = 5
 	assert cache.update()
-	assert "mosquito: 5/30" in cache.title
+	assert cache.actors[1].name == "mosquito" and cache.actors[1].health == 5
 	assert len(builds) == 2
 	world.get(prototype.Attributes)[query.entities()[0]].name = "hero"
 	assert cache.update()
-	assert "hero" in cache.title
+	assert cache.actors[0].name == "hero"
 	world.delete(query.entities()[-1])
 	assert cache.update()
-	assert len(cache.panels) == 6
+	assert len(cache.actors) == 2
 	assert not cache.update()
 
 
