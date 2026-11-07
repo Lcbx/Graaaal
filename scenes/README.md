@@ -55,11 +55,17 @@ using `RenderContext.window_loop()`; legacy Raylib benchmark loops do not use it
 The option requires a positive integer and cannot be combined with testing or
 compilation modes.
 
-The transparency scene implements [the stochastic transparency pipeline](stochastic_transparency.md):
+The transparency scene implements [the stochastic transparency pipeline](../src/stochastic_transparency.md):
 opaque HDR color/depth, multiplicative RGB/scalar transmittance, hardware-depth
 winner selection, deferred compute shading, and 3×3 or 5×5 cross-bilateral reconstruction
 guided by transparent/opaque depth and transmittance. Selection uses static, surface-decorrelated
 blue noise and a separate depth buffer; no temporal accumulation or sorting is used.
+The reusable GPU passes live in [`src/tranparency_pass.py`](../src/tranparency_pass.py),
+with procedural recording documented in the [source guide](../src/README.md).
+The example keeps its render data, camera, and orbit controls in module globals,
+initialized by `init_scene()` after device setup. Its main loop records each
+pass and submits the completed commands. CPU glTF loading, shader
+data packing, material texture preparation, and blue-noise decoding live in `src/Utils.py`.
 The original tileable 64×64, 16-bit texture is bundled in
 [`resources/blue_noise`](resources/blue_noise/README.md), together with Christoph
 Peters' CC0 dedication. It is loaded as linear thresholds without resizing or
@@ -70,7 +76,7 @@ RGB opacity is supported by the shader and material buffer; glTF alpha maps to
 scalar opacity by default. Its RGB estimator has the approximation described in
 the pipeline notes for overlapping surfaces with different RGB opacities.
 
-The scene's static glTF loader bakes node hierarchies and honors OPAQUE, MASK,
+The shared static glTF loader bakes node hierarchies; the example honors OPAQUE, MASK,
 BLEND, and double-sided materials. It uses base-color textures resized to 512×512
 array layers with repeat/trilinear sampling, base color/roughness/metallic factors, emissive
 factors, and simple directional lighting. Normal/metallic/roughness texture maps,
@@ -149,7 +155,7 @@ low nonzero opacity. Neighbors use squared relative depth differences with a
 Gaussian weight and a world-unit minimum tolerance. Both transparent-guide and
 opaque depth remain in the weights as transmittance constraints relax.
 
-When no settings are supplied to `TransparencyRenderer`, the transition spans
+When no settings are supplied to the example's `init_scene()`, the transition spans
 one to four times the framed objects' radius in world units. Explicit
 `BilateralFilter()` settings default to distances 10 through 50. Distance is a
 proxy for projected feature size; the filter does not measure individual leaves.
@@ -161,6 +167,9 @@ The ImGui settings window is visible at startup. Drag numeric values or
 **Ctrl+click** to type; checkboxes and combo boxes control adaptation, kernel size,
 and diagnostic views. Reset, Save, and Load buttons operate on the same settings
 as the keyboard shortcuts. The window can be moved, resized, collapsed, or closed.
+Hover a setting or the diagnostic view control for its meaning, units, and tuning
+tradeoffs. Expand **Tuning guide** for a suggested workflow and an explanation of
+near/far adaptation and filter support.
 **Up/Down** selects a row; **Left/Right** changes its value immediately; hold
 **Shift** for one-tenth increments. These shortcuts apply when ImGui is not
 capturing keyboard input for a widget. The window exposes every filter parameter,
@@ -173,10 +182,10 @@ the window without changing active settings. ImGui renders into the existing
 WGPU surface after scene composition. Mouse input over the UI does not zoom the
 camera, and typing into a field does not trigger scene shortcuts.
 
-For code-level tuning, pass settings to the renderer or change them live:
+For code-level tuning, configure the example's pass or change it live:
 
 ```python
-renderer = TransparencyRenderer(bilateral_filter=BilateralFilter(
+init_scene(bilateral_filter=BilateralFilter(
     kernel_size=5,
     adaptive=True,
     filter_near=10.0, filter_far=50.0,   # view-space distances in scene units
@@ -186,7 +195,7 @@ renderer = TransparencyRenderer(bilateral_filter=BilateralFilter(
     far_transmittance_weight=0.0,         # fade transmittance edge rejection out
     min_depth_sigma=0.01,                # world-unit depth tolerance floor
 ))
-renderer.set_bilateral_filter(BilateralFilter(kernel_size=5, adaptive=False))
+transparency.set_bilateral_filter(BilateralFilter(kernel_size=5, adaptive=False))
 ```
 
 To check whether bilateral edge rejection makes the effective footprint too
@@ -198,7 +207,7 @@ Smaller tolerances reject neighbors across depth/transmittance edges more
 strongly; larger spatial spreads smooth more broadly within the selected
 footprint. All tolerances must be finite and positive. Settings update a uniform
 buffer without recreating render targets or pipelines. `linear_depth`,
-`linear_to_srgb`, and `hash_u32` live in `shaders/utils.shaderlib`;
+`linear_to_srgb`, and `hash_u32` live in `src/shaders/utils.shaderlib`;
 `linear_depth(depth, near, far)` uses standard forward perspective WebGPU depth.
 
 CPU and offscreen GPU read-back regressions (requires a WGPU adapter):

@@ -1746,7 +1746,7 @@ class Shader:
 		base = (
 			basedir
 			if basedir
-			else os.path.dirname(os.path.abspath(filepath))
+			else [os.path.dirname(os.path.abspath(filepath)), os.path.join(os.path.dirname(__file__), "shaders")]
 			if filepath
 			else glob("**/shaders/", recursive=True)
 		)

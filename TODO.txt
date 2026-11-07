@@ -1,5 +1,4 @@
 * add proper monitoring and logging
-* support vegetation / transparency
 * add bindless materials
 * implement Forward+ / tiled shading
 * add compute light binning
@@ -10,7 +9,6 @@
 * experiment with a kuwahara material
 * add post-process depth/normal edge detection outlines
 * support msaa (NOTE: wgpu-py Canvas does not per default)
-* plug imGUI (see https://github.com/pygfx/wgpu-py/blob/main/wgpu/utils/imgui/imgui_renderer.py)
 * ensure depth prepass only has close / big, not alpha-tested surfaces 
 * implement gpu animation using custom vertex attributes and animation texture atlas
 * use openAL for binaural audio

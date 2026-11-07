@@ -8,44 +8,31 @@ Drag settings or Ctrl+click to type; Up/Down and Left/Right also select/edit.
 Imports only prepare CPU helpers; graphics are initialized by run_scene().
 """
 
-import base64
-from dataclasses import asdict, dataclass, replace
-import io
+from dataclasses import asdict, replace
 import json
 from math import cos, sin
 from pathlib import Path
 
 import numpy as np
 import glfw
-from PIL import Image
-from pygltflib import GLTF2
 
 from ECS import ECS, component
-from DrawBatches import DrawBatches, RenderShader, ShaderPass
+from DrawBatches import DrawBatches
 from RenderContext import (
-	BufferUsage, ComputePipeline, GpuBuffer, Mesh, RenderContext,
-	RenderPipeline, Sampler, Shader, Texture, TextureUsage,
+	BufferUsage, GpuBuffer, Mesh, RenderContext, Texture, TextureUsage,
 )
-from Utils import Camera, Vec3, Vec4, mesh_instance_dtype, pack_quaternion, pack_scale
+from Utils import (
+	Camera, Vec3, Vec4, build_material_texture_array, load_blue_noise, load_scene,
+	mesh_instance_dtype, pack_quaternion, pack_scale,
+)
+from tranparency_pass import (
+	BilateralFilter, DEBUG_VIEWS, TransparencyPass,
+)
 
 
 PATH = Path(__file__).parent / "resources/small_scene.glb"
-SHADERS = Path(__file__).parent / "shaders"
 BLUE_NOISE_PATH = Path(__file__).parent / "resources/blue_noise/HDR_L_0.png"
 TEXTURE_SIZE = 512
-DEBUG_VIEWS = ("final", "transmittance", "winner", "reconstruction", "filter_support")
-VERTEX_DTYPE = np.dtype([
-	("position", "<f4", 3), ("normal", "<f4", 3), ("uv", "<f4", 2),
-	("barycentric", "<f4", 2), ("triangle", "<u4"),
-])
-SHADING_VERTEX_DTYPE = np.dtype([
-	("position", "<f4", 4), ("normal", "<f4", 4), ("uv", "<f4", 4),
-])
-MATERIAL_DTYPE = np.dtype([
-	("base_color", "<f4", 4), ("emission", "<f4", 4),
-	("surface", "<f4", 4), ("opacity_rgb", "<f4", 4),
-	("flags", "<u4", 4),
-])
 
 
 @component
@@ -64,298 +51,8 @@ class MeshRef:
 	stable_id: np.uint32
 
 
-@dataclass
-class Primitive:
-	vertices: np.ndarray
-	material_id: int
-	triangle_offset: int
-	stable_id: int
-
-
-@dataclass(frozen=True)
-class BilateralFilter:
-	"""Reconstruction footprint and spatial/depth/transmittance edge tolerances.
-
-	Spatial sigma is in pixels; depth sigma is relative to view-space depth,
-	with a world-space minimum. Near/far sigma sets interpolate with view depth.
-	Transmittance sigma operates on linear RGBA; its far weight can fade to zero.
-	"""
-	kernel_size: int = 5
-	# Retain the original reconstruction support near cutout-shaped BLEND edges.
-	spatial_sigma: float = 2**0.5
-	depth_sigma: float = 0.02
-	transmittance_sigma: float = (1/24)**0.5
-	min_depth_sigma: float = 0.01
-	adaptive: bool = True
-	filter_near: float = 10.0
-	filter_far: float = 50.0
-	far_spatial_sigma: float = 2.0
-	far_depth_sigma: float = 0.05
-	far_transmittance_sigma: float = 0.5
-	far_transmittance_weight: float = 0.0
-
-	def __post_init__(self):
-		if not isinstance(self.kernel_size, int) or self.kernel_size not in (3, 5):
-			raise ValueError("Bilateral kernel_size must be 3 or 5")
-		for name in ("spatial_sigma", "depth_sigma", "transmittance_sigma", "min_depth_sigma",
-			"far_spatial_sigma", "far_depth_sigma", "far_transmittance_sigma"):
-			value = getattr(self, name)
-			if not np.isfinite(value) or value <= 0:
-				raise ValueError(f"Bilateral {name} must be finite and positive")
-		if not isinstance(self.adaptive, bool):
-			raise ValueError("Bilateral adaptive must be a boolean")
-		if not (np.isfinite(self.filter_near) and np.isfinite(self.filter_far)
-			and 0 <= self.filter_near < self.filter_far):
-			raise ValueError("Bilateral distances must satisfy 0 <= filter_near < filter_far")
-		if not np.isfinite(self.far_transmittance_weight) or not 0 <= self.far_transmittance_weight <= 1:
-			raise ValueError("Bilateral far_transmittance_weight must be between zero and one")
-
-
-def buffer_bytes(gltf, index, base_dir):
-	buffer = gltf.buffers[index]
-	if buffer.uri is None:
-		return gltf.binary_blob()
-	if buffer.uri.startswith("data:"):
-		return base64.b64decode(buffer.uri.split(",", 1)[1])
-	return (Path(base_dir) / buffer.uri).read_bytes()
-
-
-def get_image_bytes(gltf, image, base_dir=None):
-	if image.uri:
-		if image.uri.startswith("data:"):
-			return base64.b64decode(image.uri.split(",", 1)[1])
-		return (Path(base_dir) / image.uri).read_bytes()
-	if image.bufferView is not None:
-		view = gltf.bufferViews[image.bufferView]
-		start = view.byteOffset or 0
-		return buffer_bytes(gltf, view.buffer, base_dir)[start:start + view.byteLength]
-	return None
-
-
-def read_accessor(gltf, index, base_dir):
-	"""Read interleaved/normalized glTF attributes without opening a GPU device."""
-	accessor = gltf.accessors[index]
-	if accessor.sparse is not None:
-		raise ValueError("This example does not support sparse glTF accessors")
-	dtype = np.dtype({5120: "i1", 5121: "u1", 5122: "<i2", 5123: "<u2",
-		5125: "<u4", 5126: "<f4"}[accessor.componentType])
-	components = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}[accessor.type]
-	if accessor.bufferView is None:
-		values = np.zeros((accessor.count, components), dtype=dtype)
-	else:
-		view = gltf.bufferViews[accessor.bufferView]
-		values = np.ndarray(
-			(accessor.count, components), dtype=dtype,
-			buffer=buffer_bytes(gltf, view.buffer, base_dir),
-			offset=(view.byteOffset or 0) + (accessor.byteOffset or 0),
-			strides=(view.byteStride or components * dtype.itemsize, dtype.itemsize),
-		).copy()
-	if accessor.normalized and dtype.kind in "iu":
-		values = values.astype(np.float32) / np.iinfo(dtype).max
-		if dtype.kind == "i":
-			values = np.maximum(values, -1.0)
-	return values
-
-
-def node_matrix(node):
-	"""Column-vector glTF local transform (including nonuniform/mirrored scale)."""
-	if node.matrix is not None:
-		return np.asarray(node.matrix, dtype=np.float64).reshape(4, 4).T
-	x, y, z, w = node.rotation or (0, 0, 0, 1)
-	rotation = np.array([
-		[1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)],
-		[2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w)],
-		[2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)],
-	])
-	matrix = np.eye(4)
-	matrix[:3, :3] = rotation @ np.diag(node.scale or (1, 1, 1))
-	matrix[:3, 3] = node.translation or (0, 0, 0)
-	return matrix
-
-
-def build_material_texture_array(images, materials, size):
-	"""Upload source images, then resample/filter/correct/encode mips on the GPU.
-
-	Uncorrected premultiplied linear RGBA32F scratch mips retain tiny alpha values.
-	MASK coverage search uses GPU reductions; no CPU filtering or read-back occurs.
-	Encoded bytes are copied from a storage texture into the sRGB sampling array.
-	This also works with WGPU backends that do not support mutable texture views.
-	"""
-	width, height = size
-	levels = max(width, height).bit_length()
-	result = Texture((*size, len(images)), format="rgba8unorm-srgb", mip_level_count=levels,
-		usage=TextureUsage.COPY_DST | TextureUsage.TEXTURE_BINDING, label="material_mip_array")
-	encoded = Texture((*size, 1), format="rgba8unorm", mip_level_count=levels,
-		usage=TextureUsage.STORAGE_BINDING | TextureUsage.COPY_SRC, label="encoded_mip_scratch")
-	shader = Shader(filepath=str(SHADERS / "material_mipmaps.shader"))
-	pipelines = {entry: ComputePipeline(shader, entry=entry) for entry in (
-		"decode", "resample", "init_source", "measure_source", "begin_search", "measure_candidate", "update_search", "encode")}
-	def dispatch(compute, entry, resources, x=1, y=1):
-		compute.set_pipeline(pipelines[entry])
-		compute.set_bind_group(shader.bind_group(0, **resources))
-		compute.dispatch(x, y)
-
-	for layer, (image, material) in enumerate(zip(images, materials)):
-		source_height, source_width, _ = image.shape
-		source_size = (source_width, source_height)
-		upload = Texture(source_size, format="rgba8unorm-srgb",
-			usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
-		RenderContext.device.queue.write_texture({"texture": upload.handle}, np.ascontiguousarray(image),
-			{"bytes_per_row": source_width*4, "rows_per_image": source_height}, (*source_size, 1))
-		scratch_usage = TextureUsage.TEXTURE_BINDING | TextureUsage.STORAGE_BINDING
-		original = Texture(source_size, format="rgba32float", usage=scratch_usage)
-		working = Texture(size, format="rgba32float", usage=scratch_usage, mip_level_count=levels)
-		mode, factor = int(material["surface"][2]), float(material["base_color"][3])
-		cutoff = float(material["surface"][3])/factor if factor > 0 else 0
-		preserve = mode == 1 and 0 < cutoff <= 1
-		params = shader.UniformBuffer("params")
-		params.content["info"] = (0, mode, preserve, 0)
-		params.content["cutoff"] = (cutoff, 0, 0, 0)
-		params.upload()
-		state = GpuBuffer(np.zeros(12, dtype=np.uint32), BufferUsage.STORAGE | BufferUsage.COPY_DST)
-		cmd = RenderContext.commands(f"material_mips_{layer}")
-		with cmd.compute_pass(label="decode_and_source_coverage") as compute:
-			dispatch(compute, "decode", dict(params=params, source=upload, linear_destination=original),
-				(source_width+7)//8, (source_height+7)//8)
-			if preserve:
-				dispatch(compute, "init_source", dict(source=original, coverage=state))
-				dispatch(compute, "measure_source", dict(params=params, source=original, coverage=state),
-					(source_width+7)//8, (source_height+7)//8)
-		previous = original.view()
-		for level in range(levels):
-			mip_width, mip_height = max(1, width >> level), max(1, height >> level)
-			current = working.view(base_mip_level=level, mip_level_count=1, dimension="2d")
-			destination = encoded.view(base_mip_level=level, mip_level_count=1, dimension="2d-array")
-			groups = ((mip_width+7)//8, (mip_height+7)//8)
-			with cmd.compute_pass(label=f"generate_mip_{level}") as compute:
-				dispatch(compute, "resample", dict(source=previous, linear_destination=current), *groups)
-				if preserve:
-					dispatch(compute, "begin_search", dict(source=current, coverage=state))
-					# Bracket by doubling, then bisect. Converged searches skip sample
-					# work; fixed bounds cover RGBA8 source alpha through tiny mips.
-					for _ in range(56):
-						dispatch(compute, "measure_candidate", dict(params=params, source=current, coverage=state), *groups)
-						dispatch(compute, "update_search", dict(params=params, coverage=state))
-				dispatch(compute, "encode", dict(params=params, source=current,
-					encoded_destination=destination, coverage=state), *groups)
-			cmd.handle.copy_texture_to_texture(
-				{"texture": encoded.handle, "mip_level": level},
-				{"texture": result.handle, "mip_level": level, "origin": (0, 0, layer)},
-				(mip_width, mip_height, 1))
-			previous = current
-		RenderContext.submit(cmd.finish())
-	return result
-
-
-def load_scene(path=PATH):
-	"""Bake static node hierarchies and expand triangles for portable barycentrics.
-
-	Each node primitive remains an independent DrawBatches mesh. Baking also makes
-	the culling bounds exact for arbitrary glTF node matrices, including shear.
-	"""
-	path = Path(path)
-	gltf = GLTF2().load(str(path))
-	materials = list(gltf.materials) + [None]  # glTF's default material
-	records = np.zeros(len(materials), dtype=MATERIAL_DTYPE)
-	images = []
-	for i, material in enumerate(materials):
-		pbr = material.pbrMetallicRoughness if material else None
-		mode = (material.alphaMode or "OPAQUE") if material else "OPAQUE"
-		records[i]["base_color"] = (pbr.baseColorFactor if pbr else None) or (1, 1, 1, 1)
-		records[i]["emission"][:3] = (material.emissiveFactor if material else None) or (0, 0, 0)
-		records[i]["surface"] = (
-			pbr.roughnessFactor if pbr and pbr.roughnessFactor is not None else 1,
-			pbr.metallicFactor if pbr and pbr.metallicFactor is not None else 1,
-			{"OPAQUE": 0, "MASK": 1, "BLEND": 2}[mode],
-			material.alphaCutoff if material and material.alphaCutoff is not None else 0.5,
-		)
-		# RGB opacity is separate from color; scalar glTF alpha uses (1,1,1).
-		records[i]["opacity_rgb"] = (1, 1, 1, 1)
-		records[i]["flags"] = (i, bool(material and material.doubleSided), 0, 0)
-		image = Image.new("RGBA", (1, 1), "white")
-		if pbr and pbr.baseColorTexture:
-			texture_info = pbr.baseColorTexture
-			if texture_info.texCoord != 0 or texture_info.extensions:
-				raise ValueError("This example supports base-color textures on TEXCOORD_0 without transforms")
-			texture = gltf.textures[texture_info.index]
-			image = Image.open(io.BytesIO(get_image_bytes(gltf, gltf.images[texture.source], path.parent))).convert("RGBA")
-		# Preserve source coverage before the texture-array resize and mip build.
-		images.append(np.asarray(image))
-
-	primitives, shading_vertices = [], []
-	vertex_offset = 0
-	def visit(node_id, parent):
-		nonlocal vertex_offset
-		node = gltf.nodes[node_id]
-		if node.skin is not None:
-			raise ValueError("This static example does not support skinned glTF nodes")
-		matrix = parent @ node_matrix(node)
-		if node.mesh is not None:
-			for primitive in gltf.meshes[node.mesh].primitives:
-				if primitive.mode not in (None, 4):
-					raise ValueError("This example requires triangle-list glTF primitives")
-				positions = read_accessor(gltf, primitive.attributes.POSITION, path.parent)
-				indices = (read_accessor(gltf, primitive.indices, path.parent).reshape(-1)
-					if primitive.indices is not None else np.arange(len(positions)))
-				if len(indices) % 3:
-					raise ValueError("Triangle index count must be divisible by three")
-				indices = indices.reshape(-1, 3).copy()
-				# Baking a reflection requires reversing winding as well as normals.
-				if np.linalg.det(matrix[:3, :3]) < 0:
-					indices = indices[:, [0, 2, 1]]
-				indices = indices.reshape(-1)
-				if not len(indices):
-					continue
-				vertices = np.zeros(len(indices), dtype=VERTEX_DTYPE)
-				vertices["position"] = (positions @ matrix[:3, :3].T + matrix[:3, 3])[indices]
-				if primitive.attributes.NORMAL is not None:
-					normals = read_accessor(gltf, primitive.attributes.NORMAL, path.parent)
-					vertices["normal"] = (normals @ np.linalg.inv(matrix[:3, :3]))[indices]
-				else:
-					tri = vertices["position"].reshape(-1, 3, 3)
-					vertices["normal"] = np.repeat(np.cross(tri[:, 1]-tri[:, 0], tri[:, 2]-tri[:, 0]), 3, axis=0)
-				vertices["normal"] /= np.maximum(np.linalg.norm(vertices["normal"], axis=1, keepdims=True), 1e-8)
-				if primitive.attributes.TEXCOORD_0 is not None:
-					vertices["uv"] = read_accessor(gltf, primitive.attributes.TEXCOORD_0, path.parent)[indices]
-				vertices["barycentric"] = np.tile(((1, 0), (0, 1), (0, 0)), (len(indices)//3, 1))
-				vertices["triangle"] = np.repeat(np.arange(len(indices)//3), 3)
-				material_id = primitive.material if primitive.material is not None else len(materials)-1
-				primitives.append(Primitive(vertices, material_id, vertex_offset//3, len(primitives)))
-				stored = np.zeros(len(indices), dtype=SHADING_VERTEX_DTYPE)
-				stored["position"][:, :3] = vertices["position"]
-				stored["normal"][:, :3] = vertices["normal"]
-				stored["uv"][:, :2] = vertices["uv"]
-				shading_vertices.append(stored)
-				vertex_offset += len(indices)
-		for child in node.children or ():
-			visit(child, matrix)
-	if gltf.scenes:
-		roots = gltf.scenes[gltf.scene if gltf.scene is not None else 0].nodes
-	else:
-		children = {child for node in gltf.nodes for child in node.children or ()}
-		roots = [i for i in range(len(gltf.nodes)) if i not in children]
-	for root in roots:
-		visit(root, np.eye(4))
-	if not primitives:
-		raise ValueError("The glTF scene has no triangles")
-	return primitives, records, images, np.concatenate(shading_vertices)
-
-
-def load_blue_noise(path=BLUE_NOISE_PATH):
-	"""Load the bundled tileable 16-bit linear noise without sRGB conversion.
-
-	Use quantization-bin midpoints so thresholds stay strictly inside (0, 1).
-	The original texture and CC0 dedication are in resources/blue_noise/.
-	"""
-	with Image.open(path) as image:
-		samples = np.asarray(image)
-		if samples.ndim != 2 or samples.dtype != np.uint16:
-			raise ValueError("Blue noise must be a single-channel 16-bit PNG")
-		return np.ascontiguousarray((samples.astype(np.float32) + 0.5) / 65536)
-
-
 class GeometryBatches:
-	def __init__(self, primitives, materials, shader, uniforms, shared, transparent):
+	def __init__(self, primitives, materials, transparency, transparent):
 		self.world = ECS()
 		transforms, refs = self.world.register(Transform, MeshRef)
 		self.data = DrawBatches(mesh_instance_dtype)
@@ -365,20 +62,9 @@ class GeometryBatches:
 			buffer = self.data.buffers[name]
 			self.data.buffers[name] = GpuBuffer(buffer.content,
 				buffer.usage | BufferUsage.COPY_SRC, upload=False, label=name)
-		frame_bindings = shader.bind_group(0, frame=uniforms)
-		if transparent:
-			multiply = {"color": {"src_factor": "zero", "dst_factor": "src", "operation": "add"},
-				"alpha": {"src_factor": "zero", "dst_factor": "src-alpha", "operation": "add"}}
-			first = RenderPipeline(shader, vertex_entry="vertex", fragment_entry="transmittance",
-				cull_mode="none", depth_write=False, blend=multiply, label="transmittance")
-			last = RenderPipeline(shader, vertex_entry="vertex", fragment_entry="select_winner",
-				cull_mode="none", label="select_winner")
-		else:
-			first = last = RenderPipeline(shader, vertex_entry="vertex", fragment_entry="opaque",
-				cull_mode="none", label="opaque")
-		self.first_pass = ShaderPass(first)
-		self.last_pass = ShaderPass(last)
-		self.data.register_shader(0, RenderShader(self.last_pass, self.first_pass))
+		self.metadata = GpuBuffer(np.zeros((1, 4), dtype=np.uint32), BufferUsage.STORAGE | BufferUsage.COPY_DST)
+		self.passes = transparency.create_geometry_passes(self.metadata, transparent=transparent)
+		self.data.register_shader(0, self.passes.render_shader)
 		for primitive in primitives:
 			if (materials[primitive.material_id]["surface"][2] == 2) != transparent:
 				continue
@@ -397,13 +83,7 @@ class GeometryBatches:
 		metadata = np.zeros((max(1, len(self.data.entities)), 4), dtype=np.uint32)
 		for column, name in enumerate(("triangle_offset", "material_id", "stable_id")):
 			metadata[:len(self.data.entities), column] = self.data.mesh_field(name)
-		self.metadata = GpuBuffer(metadata, BufferUsage.STORAGE | BufferUsage.COPY_DST)
-		self.first_pass.bindings = (frame_bindings, shader.bind_group(2, **shared, metadata=self.metadata))
-		self.last_pass.bindings = self.first_pass.bindings
-		self.guide_pass = None
-		if transparent:
-			self.guide_pass = ShaderPass(RenderPipeline(shader, vertex_entry="vertex",
-				fragment_entry="transparent_depth", cull_mode="none", label="transparent_depth"), self.first_pass.bindings)
+		self.metadata.write(metadata)
 
 	def prepare(self, commands, camera, view_projection, dummy_hzb):
 		self.data.refresh_bindings(dummy_hzb)
@@ -418,129 +98,43 @@ class GeometryBatches:
 			commands.copy_buffer(self.data.buffers[source], self.data.buffers[destination])
 
 
-class TransparencyRenderer:
-	def __init__(self, path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_PATH):
-		primitives, materials, images, vertices = load_scene(path)
-		# Ignore a large flat ground plane when framing and scaling filter distance.
-		objects = [p.vertices["position"] for p in primitives if np.ptp(p.vertices["position"][:, 1]) > 0.01]
-		positions = np.concatenate(objects or [p.vertices["position"] for p in primitives])
-		self.center = (positions.min(axis=0) + positions.max(axis=0)) * 0.5
-		self.radius = max(float(np.linalg.norm(np.ptp(positions, axis=0))) * 0.8, 1.0)
-		self.shader = Shader(filepath=str(SHADERS / "stochastic_geometry.shader"))
-		self.shading_shader = Shader(filepath=str(SHADERS / "stochastic_shade.shader"))
-		self.compose_shader = Shader(filepath=str(SHADERS / "stochastic_compose.shader"),
-			params={"srgb_surface": getattr(RenderContext, "presentation_format", "").endswith("-srgb")})
-		self.uniforms = self.shader.UniformBuffer("frame")
-		self.bilateral_uniforms = self.compose_shader.UniformBuffer("bilateral")
-		self.debug_view = "final"
-		self.set_bilateral_filter(bilateral_filter if bilateral_filter is not None else
-			BilateralFilter(filter_near=self.radius, filter_far=self.radius*4))
-		self.shade = ComputePipeline(self.shading_shader, entry="shade_winner")
-		self.compose = RenderPipeline(self.compose_shader, vertex_entry="fullscreen",
-			fragment_entry="compose", depth_test=None, depth_write=False, cull_mode="none")
-		material_buffer = GpuBuffer(materials, BufferUsage.STORAGE | BufferUsage.COPY_DST)
-		self.vertices = GpuBuffer(vertices, BufferUsage.STORAGE | BufferUsage.COPY_DST)
-		textures = build_material_texture_array(images, materials, (TEXTURE_SIZE, TEXTURE_SIZE))
-		noise = load_blue_noise(blue_noise_path)
-		noise_size = (noise.shape[1], noise.shape[0])
-		self.noise = Texture(noise_size, format="r32float", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
-		RenderContext.device.queue.write_texture({"texture": self.noise.handle}, noise,
-			{"bytes_per_row": noise.shape[1]*4}, (*noise_size, 1))
-		self.shared = dict(materials=material_buffer, base_textures=textures.view(dimension="2d-array"),
-			material_sampler=Sampler(address_mode_u="repeat", address_mode_v="repeat",
-				mag_filter="linear", min_filter="linear", mipmap_filter="linear"))
-		self.opaque = GeometryBatches(primitives, materials, self.shader, self.uniforms, self.shared, False)
-		self.transparent = GeometryBatches(primitives, materials, self.shader, self.uniforms, self.shared, True)
-		self.shade_resources = self.shading_shader.bind_group(2, **self.shared,
-			metadata=self.transparent.metadata, vertices=self.vertices)
-		self.shade_frame = self.shading_shader.bind_group(0, frame=self.uniforms)
-		self.size = None
-		self.camera = Camera(tuple(self.center + (self.radius, self.radius*0.65, self.radius)),
-			tuple(self.center), (0, 1, 0), 55, near=max(0.01, self.radius/1000), far=self.radius*100)
+transparency: TransparencyPass
+opaque: GeometryBatches
+transparent: GeometryBatches
+camera: Camera
+center: np.ndarray
+radius: float
+angle = 0.65
+orbit = False
+distance = 0.0
 
-	def set_bilateral_filter(self, options):
-		"""Change reconstruction settings without recreating pipelines or targets."""
-		self.bilateral_uniforms.content["near_sigmas"] = (
-			options.spatial_sigma, options.depth_sigma, options.transmittance_sigma, options.min_depth_sigma,
-		)
-		self.bilateral_uniforms.content["far_sigmas"] = (
-			options.far_spatial_sigma, options.far_depth_sigma, options.far_transmittance_sigma, options.far_transmittance_weight,
-		)
-		self.bilateral_uniforms.content["distance_range"] = (options.filter_near, options.filter_far, 0, 0)
-		self.bilateral_uniforms.content["kernel"] = (options.kernel_size//2, DEBUG_VIEWS.index(self.debug_view), options.adaptive, 0)
-		self.bilateral_uniforms.upload()
-		self.bilateral_filter = options
 
-	def set_debug_view(self, view):
-		"""Inspect scalar transmittance, raw winners, or reconstructed contribution."""
-		if view not in DEBUG_VIEWS:
-			raise ValueError(f"Debug view must be one of {DEBUG_VIEWS}")
-		self.debug_view = view
-		self.set_bilateral_filter(self.bilateral_filter)
-
-	def resize(self, size):
-		if size == self.size:
-			return
-		attachment = TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING
-		self.main_color = Texture(size, format="rgba16float", usage=attachment, label="opaque_hdr")
-		self.depth = Texture(size, format="depth32float", usage=attachment, label="opaque_depth")
-		self.transparent_depth = Texture(size, format="depth32float", usage=attachment, label="transparent_guide_depth")
-		self.transmittance = Texture(size, format="rgba16float", usage=attachment, label="transmittance")
-		self.selection_depth = Texture(size, format="depth32float", usage=attachment, label="selection_depth")
-		self.winner = Texture(size, format="rgba32uint", usage=attachment, label="winner_payload")
-		self.winner_color = Texture(size, format="rgba16float",
-			usage=TextureUsage.STORAGE_BINDING | TextureUsage.TEXTURE_BINDING, label="winner_hdr")
-		self.transparent.last_pass.bindings = self.transparent.first_pass.bindings + (
-			self.shader.bind_group(3, opaque_depth=self.depth, blue_noise=self.noise),)
-		self.transparent.guide_pass.bindings = self.transparent.first_pass.bindings + (
-			self.shader.bind_group(3, opaque_depth=self.depth),)
-		self.shade_targets = self.shading_shader.bind_group(1, winners=self.winner, winner_color=self.winner_color)
-		self.compose_resources = self.compose_shader.bind_group(0, main_color=self.main_color,
-			transmittance=self.transmittance, winner_color=self.winner_color, opaque_depth=self.depth,
-			transparent_depth=self.transparent_depth, frame=self.uniforms, bilateral=self.bilateral_uniforms)
-		# Only frustum culling is dispatched; refresh_bindings still needs a valid
-		# float texture for its unused Hi-Z binding.
-		self.dummy_hzb = Texture((1, 1), format="r32float", usage=TextureUsage.TEXTURE_BINDING).view()
-		self.size = size
-
-	def render(self):
-		width, height = RenderContext.windowDimensions
-		if width <= 0 or height <= 0:
-			return
-		self.resize((width, height))
-		camera = self.camera
-		view, projection = camera.view(), camera.projection(width/height)
-		for name, value in dict(view=view, proj=projection, light_dir=(0.4, 0.8, 0.3, 0),
-			camera_position=(*camera.position, 1), clip=(camera.near, camera.far, 0, 0)).items():
-			self.uniforms.content[name] = value
-		self.uniforms.upload()
-		commands = RenderContext.commands("stochastic_transparency")
-		for geometry in (self.opaque, self.transparent):
-			geometry.prepare(commands, camera, view @ projection, self.dummy_hzb)
-		with commands.render_pass(color=self.main_color.color_attachment(clear=(0.035, 0.05, 0.08, 1)),
-			depth=self.depth.depth_attachment(clear=1), label="1_opaque") as render:
-			self.opaque.data.draw(render, "prepass")
-		# This deterministic guide includes low-alpha fragments and pixels with no
-		# stochastic winner. It never writes opaque depth or selection depth.
-		with commands.render_pass(depth=self.transparent_depth.depth_attachment(clear=1),
-			label="2a_transparent_depth_guide") as render:
-			self.transparent.data.draw(render, "main", pass_override=self.transparent.guide_pass)
-		with commands.render_pass(color=self.transmittance.color_attachment(clear=(1, 1, 1, 1)),
-			depth=self.depth.depth_attachment(), label="2_transmittance") as render:
-			self.transparent.data.draw(render, "prepass")
-		with commands.render_pass(color=self.winner.color_attachment(clear=(0, 0, 0, 0)),
-			depth=self.selection_depth.depth_attachment(clear=1), label="3_select_winner") as render:
-			self.transparent.data.draw(render, "main")
-		with commands.compute_pass(label="4_shade_winner") as compute:
-			compute.set_pipeline(self.shade)
-			for bindings in (self.shade_frame, self.shade_targets, self.shade_resources):
-				compute.set_bind_group(bindings)
-			compute.dispatch((width+7)//8, (height+7)//8)
-		with commands.render_pass(color=RenderContext.screen(), label="5_reconstruct_compose") as render:
-			render.set_pipeline(self.compose)
-			render.set_bind_groups(self.compose_resources)
-			render.draw(3)
-		RenderContext.submit(commands.finish())
+def init_scene(path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_PATH):
+	"""Initialize the example's global render data after device setup."""
+	global transparency, opaque, transparent, camera, center, radius, angle, orbit, distance
+	primitives, materials, images, vertices = load_scene(path)
+	# Ignore a large flat ground plane when framing the example.
+	objects = [p.vertices["position"] for p in primitives if np.ptp(p.vertices["position"][:, 1]) > 0.01]
+	positions = np.concatenate(objects or [p.vertices["position"] for p in primitives])
+	center = (positions.min(axis=0) + positions.max(axis=0)) * 0.5
+	radius = max(float(np.linalg.norm(np.ptp(positions, axis=0))) * 0.8, 1.0)
+	textures = build_material_texture_array(images, materials, (TEXTURE_SIZE, TEXTURE_SIZE))
+	noise = load_blue_noise(blue_noise_path)
+	noise_size = (noise.shape[1], noise.shape[0])
+	blue_noise = Texture(noise_size, format="r32float", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
+	RenderContext.device.queue.write_texture({"texture": blue_noise.handle}, noise,
+		{"bytes_per_row": noise.shape[1]*4}, (*noise_size, 1))
+	transparency = TransparencyPass(
+		materials=GpuBuffer(materials, BufferUsage.STORAGE | BufferUsage.COPY_DST),
+		base_textures=textures.view(dimension="2d-array"),
+		vertices=GpuBuffer(vertices, BufferUsage.STORAGE | BufferUsage.COPY_DST), blue_noise=blue_noise,
+		bilateral_filter=bilateral_filter if bilateral_filter is not None else
+			BilateralFilter(filter_near=radius, filter_far=radius*4))
+	opaque = GeometryBatches(primitives, materials, transparency, False)
+	transparent = GeometryBatches(primitives, materials, transparency, True)
+	camera = Camera(tuple(center + (radius, radius*0.65, radius)), tuple(center), (0, 1, 0), 55,
+		near=max(0.01, radius/1000), far=radius*100)
+	angle, orbit, distance = 0.65, False, radius*1.4
 
 
 # name, displayed label, increment, minimum, maximum
@@ -558,6 +152,62 @@ SETTINGS = (
 	("min_depth_sigma", "Minimum depth tolerance", 0.001, 0.000001, None),
 	("far_transmittance_weight", "Far transmittance weight", 0.05, 0.0, 1.0),
 )
+
+
+SETTING_HELP = {
+	"adaptive": "Blend between the near and far filter settings as surfaces get farther from the camera. "
+		"When off, only the near settings are used; the distance range and far settings have no effect.",
+	"kernel_size": "Width of the reconstruction neighborhood: 3 x 3 uses up to 9 pixels; 5 x 5 uses up to 25. "
+		"A larger neighborhood can smooth stochastic noise more, but costs more work and can soften fine detail.",
+	"filter_near": "View depth, in scene units, where adaptation starts. Closer surfaces use the near settings. "
+		"Depth is measured along the camera's viewing direction. Requires distance adaptation.",
+	"filter_far": "View depth, in scene units, where adaptation reaches the far settings. "
+		"Between the near and far distances, settings blend smoothly. Must exceed near distance. Requires distance adaptation.",
+	"spatial_sigma": "Spatial spread in pixels for nearby surfaces. Larger values give neighboring pixels more influence, "
+		"smoothing more noise; smaller values favor the center and preserve detail. The kernel size still limits the footprint.",
+	"far_spatial_sigma": "Spatial spread in pixels at and beyond the far distance. Increase to smooth distant noise more; "
+		"decrease to preserve finer detail. The kernel size still limits the footprint. Requires distance adaptation.",
+	"depth_sigma": "Relative depth tolerance for nearby surfaces. For example, 0.02 is a 2% depth scale. "
+		"Larger values blend more across depth changes; smaller values protect edges but leave fewer useful samples. "
+		"Both opaque and transparent surface depths constrain the filter.",
+	"far_depth_sigma": "Relative depth tolerance at and beyond the far distance. Larger values admit more neighbors "
+		"across depth changes, reducing noise but risking color bleeding between surfaces. Requires distance adaptation.",
+	"transmittance_sigma": "Tolerance for differences in RGB and scalar transmittance (the fraction of light passing through). "
+		"Larger values blend more across opacity changes; smaller values protect opacity edges but can leave noisy gaps.",
+	"far_transmittance_sigma": "Transmittance tolerance at and beyond the far distance. Larger values relax opacity edges. "
+		"Has no effect at the far distance when far transmittance weight is zero. Requires distance adaptation.",
+	"min_depth_sigma": "Minimum absolute depth tolerance, in scene units, used at every distance. "
+		"The filter uses the larger of this value and depth times relative depth sigma. "
+		"Increase to avoid overly strict filtering close to the camera; too much can blur nearby depth edges.",
+	"far_transmittance_weight": "Strength of opacity-edge rejection at and beyond the far distance: "
+		"0 ignores transmittance differences; 1 keeps their full influence. "
+		"Depth edges still constrain the filter at zero. Requires distance adaptation.",
+}
+
+DEBUG_VIEW_HELP = {
+	"final": "Final image: opaque color seen through the transparent surfaces, plus reconstructed transparent color.",
+	"transmittance": "Scalar light transmission: white means fully transparent and black means fully opaque. "
+		"Use this to check opacity independently of winner selection and reconstruction.",
+	"winner": "Raw color of the selected transparent fragment at each pixel. "
+		"Black pixels have no winner. This view reveals the stochastic pattern before filtering.",
+	"reconstruction": "Filtered transparent contribution without the opaque background. "
+		"Use this to compare smoothing and edge preservation while tuning.",
+	"filter_support": "Effective filter support as a fraction of the kernel area. Brighter pixels have more useful "
+		"filter weight spread across neighbors. This includes samples without a winner; brightness does not count surviving fragments.",
+}
+
+
+def _item_tooltip(text):
+	from imgui_bundle import imgui
+
+	if imgui.is_item_hovered():
+		imgui.begin_tooltip()
+		imgui.push_text_wrap_pos(imgui.get_font_size()*30)
+		try:
+			imgui.text_unformatted(text)
+		finally:
+			imgui.pop_text_wrap_pos()
+			imgui.end_tooltip()
 
 
 class FilterSettings:
@@ -656,7 +306,16 @@ class FilterSettings:
 		try:
 			if not expanded:
 				return
+			imgui.text_disabled("Hover a setting or diagnostic view for an explanation.")
+			if imgui.collapsing_header("Tuning guide"):
+				imgui.text_wrapped("Start with the reconstruction view. Increase spatial spread or kernel size to smooth noise; "
+					"reduce depth and transmittance tolerances if colors bleed across edges.")
+				imgui.text_wrapped("Distance adaptation blends near and far settings using surface depth. "
+					"With adaptation off, tune the near settings only. Filter support shows whether edge rejection leaves too few neighbors.")
+				imgui.text_wrapped("These settings change reconstruction, not opacity or the stochastic winner pattern. "
+					"There is no smoothing across frames, so some noise can remain during camera movement.")
 			changed, index = imgui.combo("Diagnostic view", DEBUG_VIEWS.index(self.renderer.debug_view), DEBUG_VIEWS)
+			_item_tooltip(DEBUG_VIEW_HELP[DEBUG_VIEWS[index]])
 			if changed:
 				self.renderer.set_debug_view(DEBUG_VIEWS[index])
 			imgui.separator()
@@ -670,6 +329,7 @@ class FilterSettings:
 					value = (3, 5)[selection]
 				else:
 					changed, value = imgui.drag_float(label, value, step, minimum, maximum or 0.0, "%.6g")
+				_item_tooltip(SETTING_HELP[name])
 				if changed:
 					self.selected = index
 					self.set_value(name, value)
@@ -690,54 +350,70 @@ class FilterSettings:
 			imgui.end()
 
 
-def run_scene():
-	from Imgui import Imgui
-
-	RenderContext.init_window(1200, 900, "Stochastic transparency | F: settings | D: debug | Space: orbit",
-		required_gpu_features=["indirect-first-instance"])
-	renderer = TransparencyRenderer()
-	settings = FilterSettings(renderer)
-	angle, orbit = 0.65, False
-	distance = renderer.radius * 1.4
-	def scroll(x, y):
-		nonlocal distance
-		distance = np.clip(distance * np.exp(-0.1*y), renderer.radius*0.15, renderer.radius*8)
-		return True
-	def character(code):
-		nonlocal orbit
-		if chr(code) == " ":
-			orbit = not orbit
-		elif chr(code).lower() == "r":
-			renderer.transparent.data.draw_batches.reverse()
-		elif chr(code) in ("3", "5"):
-			size = int(chr(code))
-			renderer.set_bilateral_filter(replace(renderer.bilateral_filter, kernel_size=size))
-			print(f"Bilateral filter: {size}x{size}")
-		elif chr(code).lower() == "d":
-			index = (DEBUG_VIEWS.index(renderer.debug_view)+1) % len(DEBUG_VIEWS)
-			renderer.set_debug_view(DEBUG_VIEWS[index])
-			print(f"View: {renderer.debug_view}")
-		elif chr(code).lower() == "a":
-			options = renderer.bilateral_filter
-			renderer.set_bilateral_filter(replace(options, adaptive=not options.adaptive))
-			print(f"Distance-adaptive filter: {renderer.bilateral_filter.adaptive}")
-		return True
-	RenderContext.event_handlers["mouse_scroll"].append(scroll)
-	RenderContext.event_handlers["char"].append(character)
-	RenderContext.event_handlers["key"].append(settings.handle_key)
-	try:
-		with Imgui() as gui:
-			while RenderContext.window_loop():
-				if orbit:
-					angle += RenderContext.frame_time * 0.2
-				renderer.camera.position = Vec3(renderer.center + distance * np.array([cos(angle), 0.5, sin(angle)]))
-				renderer.render()
-				gui.render(settings.draw)
-	finally:
-		RenderContext.event_handlers["mouse_scroll"].remove(scroll)
-		RenderContext.event_handlers["char"].remove(character)
-		RenderContext.event_handlers["key"].remove(settings.handle_key)
+def scroll_callback(x, y):
+	global distance
+	distance = np.clip(distance * np.exp(-0.1*y), radius*0.15, radius*8)
+	return True
 
 
-if __name__ == "__main__":
-	run_scene()
+def on_char(code):
+	global orbit
+	if chr(code) == " ":
+		orbit = not orbit
+	elif chr(code).lower() == "r":
+		transparent.data.draw_batches.reverse()
+	elif chr(code) in ("3", "5"):
+		size = int(chr(code))
+		transparency.set_bilateral_filter(replace(transparency.bilateral_filter, kernel_size=size))
+		print(f"Bilateral filter: {size}x{size}")
+	elif chr(code).lower() == "d":
+		index = (DEBUG_VIEWS.index(transparency.debug_view)+1) % len(DEBUG_VIEWS)
+		transparency.set_debug_view(DEBUG_VIEWS[index])
+		print(f"View: {transparency.debug_view}")
+	elif chr(code).lower() == "a":
+		options = transparency.bilateral_filter
+		transparency.set_bilateral_filter(replace(options, adaptive=not options.adaptive))
+		print(f"Distance-adaptive filter: {transparency.bilateral_filter.adaptive}")
+	return True
+
+
+from Imgui import Imgui
+
+RenderContext.init_window(1200, 900, "Stochastic transparency | F: settings | D: debug | Space: orbit",
+	required_gpu_features=["indirect-first-instance"])
+init_scene()
+settings = FilterSettings(transparency)
+RenderContext.event_handlers["mouse_scroll"].append(scroll_callback)
+RenderContext.event_handlers["char"].append(on_char)
+RenderContext.event_handlers["key"].append(settings.handle_key)
+try:
+	with Imgui() as gui:
+		while RenderContext.window_loop():
+			if orbit:
+				angle += RenderContext.frame_time * 0.2
+			camera.position = Vec3(center + distance * np.array([cos(angle), 0.5, sin(angle)]))
+			width, height = RenderContext.windowDimensions
+			if width <= 0 or height <= 0:
+				continue
+			transparency.resize((width, height))
+			view_projection = transparency.update_camera(camera)
+			commands = RenderContext.commands("stochastic_renderer")
+			for geometry in (opaque, transparent):
+				geometry.prepare(commands, camera, view_projection, transparency.dummy_hzb)
+			with transparency.opaque_pass(commands) as render:
+				opaque.data.draw(render, "prepass")
+			with transparency.guide_pass(commands) as render:
+				transparent.data.draw(render, "main", pass_override=transparent.passes.guide)
+			with transparency.transmittance_pass(commands) as render:
+				transparent.data.draw(render, "prepass")
+			with transparency.selection_pass(commands) as render:
+				transparent.data.draw(render, "main")
+			transparency.shade_winner(commands, transparent.passes)
+			transparency.compose(commands, RenderContext.screen())
+			RenderContext.submit(commands.finish())
+
+			gui.render(settings.draw)
+finally:
+	RenderContext.event_handlers["mouse_scroll"].remove(scroll_callback)
+	RenderContext.event_handlers["char"].remove(on_char)
+	RenderContext.event_handlers["key"].remove(settings.handle_key)

@@ -4,6 +4,10 @@ from RenderContext import *
 from RenderContext import Mesh, RenderContext
 
 import gc, os
+import base64
+import io
+from dataclasses import dataclass
+from pathlib import Path
 from time import perf_counter as get_time
 
 from functools import wraps
@@ -12,7 +16,7 @@ from typing import Any, Type, Sequence, Iterator, Iterable, List, Dict, Tuple, C
 
 import numpy as np
 from pyrr import Matrix44 as Mat4, Quaternion  # type: ignore[import-untyped]
-from pygltflib import GLTF2, BufferView, Accessor  # type: ignore[import-untyped]
+from pygltflib import GLTF2, Material  # type: ignore[import-untyped]
 
 
 # pyrr-style Vector classes
@@ -169,73 +173,320 @@ def extract_frustum_planes(viewProjectionMatrix):
 
 
 
-def _get_data_from_accessor(gltf: GLTF2, accessor_index: int) -> np.ndarray:
-	acc: Accessor = gltf.accessors[accessor_index]
-	bv: BufferView = gltf.bufferViews[acc.bufferView]
-	buf = gltf.buffers[bv.buffer]
+def gltf_buffer_bytes(gltf: GLTF2, index: int, base_dir=".") -> bytes:
+	"""Read a GLB, base64 data URI, or external buffer relative to the asset."""
+	buffer = gltf.buffers[index]
+	if buffer.uri is None:
+		return gltf.binary_blob()
+	if buffer.uri.startswith("data:"):
+		return base64.b64decode(buffer.uri.split(",", 1)[1])
+	return (Path(base_dir) / buffer.uri).read_bytes()
 
-	if buf.uri is None:  # GLB
-		bin_chunk = gltf.binary_blob()
+
+def gltf_image_bytes(gltf: GLTF2, image, base_dir=".") -> bytes | None:
+	"""Read encoded image bytes from a URI or buffer view, without decoding."""
+	if image.uri:
+		if image.uri.startswith("data:"):
+			return base64.b64decode(image.uri.split(",", 1)[1])
+		return (Path(base_dir) / image.uri).read_bytes()
+	if image.bufferView is not None:
+		view = gltf.bufferViews[image.bufferView]
+		start = view.byteOffset or 0
+		return gltf_buffer_bytes(gltf, view.buffer, base_dir)[start:start + view.byteLength]
+	return None
+
+
+def read_gltf_accessor(gltf: GLTF2, index: int, base_dir=".") -> np.ndarray:
+	"""Read interleaved/normalized glTF attributes without opening a GPU device."""
+	accessor = gltf.accessors[index]
+	if accessor.sparse is not None:
+		raise ValueError("Sparse glTF accessors are not supported")
+	dtype = np.dtype({5120: "i1", 5121: "u1", 5122: "<i2", 5123: "<u2",
+		5125: "<u4", 5126: "<f4"}[accessor.componentType])
+	components = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4, "MAT3": 9, "MAT4": 16}[accessor.type]
+	if accessor.bufferView is None:
+		values = np.zeros((accessor.count, components), dtype=dtype)
 	else:
-		raise NotImplementedError("External buffers not handled")
+		view = gltf.bufferViews[accessor.bufferView]
+		# Matrix columns are padded to four bytes, including byte/short matrices.
+		columns = int(accessor.type[-1]) if accessor.type.startswith("MAT") else 1
+		rows = components//columns
+		column_stride = ((rows*dtype.itemsize + 3)//4)*4 if columns > 1 else rows*dtype.itemsize
+		values = np.ndarray(
+			(accessor.count, columns, rows), dtype=dtype,
+			buffer=gltf_buffer_bytes(gltf, view.buffer, base_dir),
+			offset=(view.byteOffset or 0) + (accessor.byteOffset or 0),
+			strides=(view.byteStride or columns*column_stride, column_stride, dtype.itemsize),
+		).reshape(accessor.count, components).copy()
+	if accessor.normalized and dtype.kind in "iu":
+		values = values.astype(np.float32) / np.iinfo(dtype).max
+		if dtype.kind == "i":
+			values = np.maximum(values, -1.0)
+	return values
 
-	b = bv.byteOffset or 0
-	e = b + (bv.byteLength or 0)
-	view_bytes = memoryview(bin_chunk)[b:e]
 
-	type_num_comps = {
-		"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4, "MAT3": 9, "MAT4": 16
-	}[acc.type]
+def gltf_node_matrix(node) -> np.ndarray:
+	"""Column-vector glTF local transform (including nonuniform/mirrored scale)."""
+	if node.matrix is not None:
+		return np.asarray(node.matrix, dtype=np.float64).reshape(4, 4).T
+	x, y, z, w = node.rotation or (0, 0, 0, 1)
+	rotation = np.array([
+		[1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)],
+		[2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w)],
+		[2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)],
+	])
+	matrix = np.eye(4)
+	matrix[:3, :3] = rotation @ np.diag(node.scale or (1, 1, 1))
+	matrix[:3, 3] = node.translation or (0, 0, 0)
+	return matrix
 
-	np_dtype = {
-		5120: np.int8,
-		5121: np.uint8,
-		5122: np.int16,
-		5123: np.uint16,
-		5125: np.uint32,
-		5126: np.float32
-	}[acc.componentType]
 
-	stride = bv.byteStride or (np.dtype(np_dtype).itemsize * type_num_comps)
-	count = acc.count
-	offset = acc.byteOffset or 0
-	tight = np.dtype(np_dtype).itemsize * type_num_comps
+gltf_vertex_dtype = np.dtype([
+	("position", "<f4", 3), ("normal", "<f4", 3), ("uv", "<f4", 2),
+])
 
-	arr = np.frombuffer(view_bytes, dtype=np_dtype, count=count * type_num_comps, offset=offset)
-	if stride != tight:
-		rec = np.empty((count, type_num_comps), dtype=np_dtype)
-		base = offset
-		for i in range(count):
-			start = base + i * stride
-			rec[i] = np.frombuffer(view_bytes, dtype=np_dtype, count=type_num_comps, offset=start)
-		return rec
+
+@dataclass
+class GltfPrimitive:
+	"""World-space triangle-list vertices and an index into the scene materials."""
+	vertices: np.ndarray
+	material_id: int
+
+
+def load_gltf_scene(path: str | Path) -> tuple[list[GltfPrimitive], list[Material | None], list[np.ndarray]]:
+	"""Load a static glTF hierarchy as CPU triangle lists, materials and RGBA images.
+
+	Bake node transforms, fix reflected winding, transform/normalize normals,
+	and generate flat normals or zero UVs when absent. Each material gets a
+	base-color image (white when absent); a final None slot represents glTF's
+	default material. Material objects retain their original PBR/alpha settings.
+	No renderer-specific fields, GPU resources, or scene paths are required.
+	"""
+	from PIL import Image
+
+	path = Path(path)
+	gltf = GLTF2().load(str(path))
+	materials = [*gltf.materials, None]
+	images = []
+	for material in materials:
+		pbr = material.pbrMetallicRoughness if material else None
+		if pbr and pbr.baseColorTexture:
+			info = pbr.baseColorTexture
+			if info.texCoord != 0 or info.extensions:
+				raise ValueError("Base-color textures require TEXCOORD_0 without transforms")
+			texture = gltf.textures[info.index]
+			data = gltf_image_bytes(gltf, gltf.images[texture.source], path.parent)
+			if data is None:
+				raise ValueError("Base-color texture has no image data")
+			with Image.open(io.BytesIO(data)) as image:
+				images.append(np.array(image.convert("RGBA")))
+		else:
+			images.append(np.full((1, 1, 4), 255, dtype=np.uint8))
+
+	primitives = []
+	def visit(node_id, parent):
+		node = gltf.nodes[node_id]
+		if node.skin is not None:
+			raise ValueError("Static glTF loading does not support skinned nodes")
+		matrix = parent @ gltf_node_matrix(node)
+		if node.mesh is not None:
+			for primitive in gltf.meshes[node.mesh].primitives:
+				if primitive.mode not in (None, 4):
+					raise ValueError("Static glTF loading requires triangle-list primitives")
+				attributes = primitive.attributes
+				positions = read_gltf_accessor(gltf, attributes.POSITION, path.parent)
+				indices = (read_gltf_accessor(gltf, primitive.indices, path.parent).reshape(-1)
+					if primitive.indices is not None else np.arange(len(positions)))
+				if len(indices) % 3:
+					raise ValueError("Triangle index count must be divisible by three")
+				if not len(indices):
+					continue
+				if np.linalg.det(matrix[:3, :3]) < 0:
+					indices = indices.reshape(-1, 3)[:, [0, 2, 1]].reshape(-1)
+				vertices = np.zeros(len(indices), dtype=gltf_vertex_dtype)
+				vertices["position"] = (positions @ matrix[:3, :3].T + matrix[:3, 3])[indices]
+				if attributes.NORMAL is not None:
+					normals = read_gltf_accessor(gltf, attributes.NORMAL, path.parent)
+					vertices["normal"] = (normals @ np.linalg.inv(matrix[:3, :3]))[indices]
+				else:
+					triangles = vertices["position"].reshape(-1, 3, 3)
+					vertices["normal"] = np.repeat(np.cross(
+						triangles[:, 1]-triangles[:, 0], triangles[:, 2]-triangles[:, 0]), 3, axis=0)
+				vertices["normal"] /= np.maximum(np.linalg.norm(vertices["normal"], axis=1, keepdims=True), 1e-8)
+				if attributes.TEXCOORD_0 is not None:
+					vertices["uv"] = read_gltf_accessor(gltf, attributes.TEXCOORD_0, path.parent)[indices]
+				material_id = primitive.material if primitive.material is not None else len(materials)-1
+				primitives.append(GltfPrimitive(vertices, material_id))
+		for child in node.children or ():
+			visit(child, matrix)
+
+	if gltf.scenes:
+		roots = gltf.scenes[gltf.scene if gltf.scene is not None else 0].nodes
 	else:
-		return arr.reshape(count, type_num_comps)
+		children = {child for node in gltf.nodes for child in node.children or ()}
+		roots = [i for i in range(len(gltf.nodes)) if i not in children]
+	for root in roots:
+		visit(root, np.eye(4))
+	if not primitives:
+		raise ValueError("The glTF scene has no triangles")
+	return primitives, materials, images
 
 
+@dataclass
+class Primitive:
+	"""Packed raster geometry with a material, global triangle offset and stable ID."""
+	vertices: np.ndarray
+	material_id: int
+	triangle_offset: int
+	stable_id: int
 
-def load_gltf_first_mesh(glb_path: str) -> Tuple[np.ndarray,np.ndarray,np.ndarray,np.ndarray]:
-	gltf = GLTF2().load(glb_path)
-	mesh = gltf.meshes[0]
-	prim = mesh.primitives[0]
-	
-	#print(f'{mesh=}')
 
-	pos =   _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
-	pos_count = pos.shape[0]
-	idx =   _get_data_from_accessor(gltf, prim.indices).astype(
-		np.uint32 if pos_count.bit_length() > 16 else np.uint16
-	)
-	nor = ( _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32)
-		if prim.attributes.NORMAL is not None
-		else np.zeros_like( pos.shape, dtype=np.float32)
-	)
-	uv  = ( _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float16)
-		if prim.attributes.TEXCOORD_0 is not None
-		else np.zeros( (pos_count, 2), dtype=np.float16)
-	)
+def load_scene(path: str | Path):
+	"""Load static glTF into raster primitives, GPU material records and images.
 
-	return pos, nor, uv, idx
+	Returns (primitives, materials, images, shading_vertices), packed for the
+	transparency shaders. This prepares CPU arrays only; no device is needed.
+	Use load_gltf_scene() for plain geometry and original glTF materials.
+	"""
+	# Resolve shared shader layouts at call time to avoid an import cycle through DrawBatches.
+	from tranparency_pass import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE
+	loaded, materials, images = load_gltf_scene(path)
+	records = np.zeros(len(materials), dtype=MATERIAL_DTYPE)
+	for i, material in enumerate(materials):
+		pbr = material.pbrMetallicRoughness if material else None
+		records[i]["base_color"] = (pbr.baseColorFactor if pbr else None) or (1, 1, 1, 1)
+		records[i]["emission"][:3] = (material.emissiveFactor if material else None) or (0, 0, 0)
+		records[i]["surface"] = (
+			pbr.roughnessFactor if pbr and pbr.roughnessFactor is not None else 1,
+			pbr.metallicFactor if pbr and pbr.metallicFactor is not None else 1,
+			{"OPAQUE": 0, "MASK": 1, "BLEND": 2}[(material.alphaMode or "OPAQUE") if material else "OPAQUE"],
+			material.alphaCutoff if material and material.alphaCutoff is not None else 0.5,
+		)
+		# RGB opacity is separate from color; scalar glTF alpha uses (1,1,1).
+		records[i]["opacity_rgb"] = (1, 1, 1, 1)
+		records[i]["flags"] = (i, bool(material and material.doubleSided), 0, 0)
+
+	primitives, shading_vertices = [], []
+	triangle_offset = 0
+	for stable_id, primitive in enumerate(loaded):
+		vertices = np.zeros(len(primitive.vertices), dtype=VERTEX_DTYPE)
+		stored = np.zeros(len(vertices), dtype=SHADING_VERTEX_DTYPE)
+		for name, width in (("position", 3), ("normal", 3), ("uv", 2)):
+			vertices[name] = primitive.vertices[name]
+			stored[name][:, :width] = vertices[name]
+		triangle_count = len(vertices)//3
+		vertices["barycentric"] = np.tile(((1, 0), (0, 1), (0, 0)), (triangle_count, 1))
+		vertices["triangle"] = np.repeat(np.arange(triangle_count), 3)
+		primitives.append(Primitive(vertices, primitive.material_id, triangle_offset, stable_id))
+		shading_vertices.append(stored)
+		triangle_offset += triangle_count
+	return primitives, records, images, np.concatenate(shading_vertices)
+
+
+def build_material_texture_array(images, materials, size):
+	"""Upload source images, then resample/filter/correct/encode mips on the GPU.
+
+	Uncorrected premultiplied linear RGBA32F scratch mips retain tiny alpha values.
+	MASK coverage search uses GPU reductions; no CPU filtering or read-back occurs.
+	Encoded bytes are copied from a storage texture into the sRGB sampling array.
+	This also works with WGPU backends that do not support mutable texture views.
+	"""
+	width, height = size
+	levels = max(width, height).bit_length()
+	result = Texture((*size, len(images)), format="rgba8unorm-srgb", mip_level_count=levels,
+		usage=TextureUsage.COPY_DST | TextureUsage.TEXTURE_BINDING, label="material_mip_array")
+	encoded = Texture((*size, 1), format="rgba8unorm", mip_level_count=levels,
+		usage=TextureUsage.STORAGE_BINDING | TextureUsage.COPY_SRC, label="encoded_mip_scratch")
+	shader = Shader(filepath=str(Path(__file__).with_name("shaders") / "material_mipmaps.shader"))
+	pipelines = {entry: ComputePipeline(shader, entry=entry) for entry in (
+		"decode", "resample", "init_source", "measure_source", "begin_search", "measure_candidate", "update_search", "encode")}
+	def dispatch(compute, entry, resources, x=1, y=1):
+		compute.set_pipeline(pipelines[entry])
+		compute.set_bind_group(shader.bind_group(0, **resources))
+		compute.dispatch(x, y)
+
+	for layer, (image, material) in enumerate(zip(images, materials)):
+		source_height, source_width, _ = image.shape
+		source_size = (source_width, source_height)
+		upload = Texture(source_size, format="rgba8unorm-srgb",
+			usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
+		RenderContext.device.queue.write_texture({"texture": upload.handle}, np.ascontiguousarray(image),
+			{"bytes_per_row": source_width*4, "rows_per_image": source_height}, (*source_size, 1))
+		scratch_usage = TextureUsage.TEXTURE_BINDING | TextureUsage.STORAGE_BINDING
+		original = Texture(source_size, format="rgba32float", usage=scratch_usage)
+		working = Texture(size, format="rgba32float", usage=scratch_usage, mip_level_count=levels)
+		mode, factor = int(material["surface"][2]), float(material["base_color"][3])
+		cutoff = float(material["surface"][3])/factor if factor > 0 else 0
+		preserve = mode == 1 and 0 < cutoff <= 1
+		params = shader.UniformBuffer("params")
+		params.content["info"] = (0, mode, preserve, 0)
+		params.content["cutoff"] = (cutoff, 0, 0, 0)
+		params.upload()
+		state = GpuBuffer(np.zeros(12, dtype=np.uint32), BufferUsage.STORAGE | BufferUsage.COPY_DST)
+		cmd = RenderContext.commands(f"material_mips_{layer}")
+		with cmd.compute_pass(label="decode_and_source_coverage") as compute:
+			dispatch(compute, "decode", dict(params=params, source=upload, linear_destination=original),
+				(source_width+7)//8, (source_height+7)//8)
+			if preserve:
+				dispatch(compute, "init_source", dict(source=original, coverage=state))
+				dispatch(compute, "measure_source", dict(params=params, source=original, coverage=state),
+					(source_width+7)//8, (source_height+7)//8)
+		previous = original.view()
+		for level in range(levels):
+			mip_width, mip_height = max(1, width >> level), max(1, height >> level)
+			current = working.view(base_mip_level=level, mip_level_count=1, dimension="2d")
+			destination = encoded.view(base_mip_level=level, mip_level_count=1, dimension="2d-array")
+			groups = ((mip_width+7)//8, (mip_height+7)//8)
+			with cmd.compute_pass(label=f"generate_mip_{level}") as compute:
+				dispatch(compute, "resample", dict(source=previous, linear_destination=current), *groups)
+				if preserve:
+					dispatch(compute, "begin_search", dict(source=current, coverage=state))
+					# Bracket by doubling, then bisect. Converged searches skip sample
+					# work; fixed bounds cover RGBA8 source alpha through tiny mips.
+					for _ in range(56):
+						dispatch(compute, "measure_candidate", dict(params=params, source=current, coverage=state), *groups)
+						dispatch(compute, "update_search", dict(params=params, coverage=state))
+				dispatch(compute, "encode", dict(params=params, source=current,
+					encoded_destination=destination, coverage=state), *groups)
+			cmd.handle.copy_texture_to_texture(
+				{"texture": encoded.handle, "mip_level": level},
+				{"texture": result.handle, "mip_level": level, "origin": (0, 0, layer)},
+				(mip_width, mip_height, 1))
+			previous = current
+		RenderContext.submit(cmd.finish())
+	return result
+
+
+def load_blue_noise(path: str | Path) -> np.ndarray:
+	"""Load single-channel 16-bit PNG thresholds without sRGB conversion.
+
+	Use quantization-bin midpoints so thresholds stay strictly inside (0, 1).
+	"""
+	from PIL import Image
+
+	with Image.open(path) as image:
+		samples = np.asarray(image)
+		if samples.ndim != 2 or samples.dtype != np.uint16:
+			raise ValueError("Blue noise must be a single-channel 16-bit PNG")
+		return np.ascontiguousarray((samples.astype(np.float32) + 0.5) / 65536)
+
+
+def load_gltf_first_mesh(glb_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+	"""Read the first primitive in local space, without hierarchy/material baking."""
+	path = Path(glb_path)
+	gltf = GLTF2().load(str(path))
+	primitive = gltf.meshes[0].primitives[0]
+	attributes = primitive.attributes
+	positions = read_gltf_accessor(gltf, attributes.POSITION, path.parent).astype(np.float32)
+	count = len(positions)
+	indices = (read_gltf_accessor(gltf, primitive.indices, path.parent)
+		if primitive.indices is not None else np.arange(count)).astype(
+			np.uint32 if count > 65536 else np.uint16)
+	normals = (read_gltf_accessor(gltf, attributes.NORMAL, path.parent).astype(np.float32)
+		if attributes.NORMAL is not None else np.zeros_like(positions))
+	uvs = (read_gltf_accessor(gltf, attributes.TEXCOORD_0, path.parent).astype(np.float16)
+		if attributes.TEXCOORD_0 is not None else np.zeros((count, 2), dtype=np.float16))
+	return positions, normals, uvs, indices
 
 
 def load_gltf_first_mesh_interleaved(glb_path: str) -> Tuple[np.ndarray,np.ndarray]:
@@ -259,26 +510,6 @@ def interleave_mesh_position_normal_uv(positions, normals, uvs):
 	verts["uv"]		  = uvs
 	return verts
 
-
-""" # not perfect
-def load_gltf_meshes(program : Program, glb_path: str)-> IndexedVertexList:
-	gltf = GLTF2().load(glb_path)
-
-	meshes = []
-	for mesh in gltf.meshes:
-		for prim in mesh.primitives:
-			pos = _get_data_from_accessor(gltf, prim.attributes.POSITION).astype(np.float32)
-			nor = _get_data_from_accessor(gltf, prim.attributes.NORMAL).astype(np.float32) if prim.attributes.NORMAL is not None else np.zeros_like(pos)
-			uv  = _get_data_from_accessor(gltf, prim.attributes.TEXCOORD_0).astype(np.float32) if prim.attributes.TEXCOORD_0 is not None else np.zeros((pos.shape[0],2), dtype=np.float32)
-			idx = _get_data_from_accessor(gltf, prim.indices)
-			if idx.dtype != np.uint32:
-				idx = idx.astype(np.uint32)
-
-		model = Mesh(program, pos, nor, uv, idx)
-		meshes.append(model)
-
-	return meshes
-"""
 
 class WatchTimer:
 	nesting : ClassVar[int] = 0

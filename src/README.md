@@ -24,6 +24,91 @@ responsibility:
 supporting utilities. Generated compiler output belongs under `build/`; recorded
 benchmark observations belong under `scenes/benchmarks/results/`.
 
+`Utils.load_gltf_scene(path)` loads static glTF/GLB scenes on the CPU and returns
+`(primitives, materials, images)`. Each `GltfPrimitive` has world-space,
+triangle-list `position`, `normal`, and `uv` vertices plus a material index.
+Node transforms and reflected winding are baked; missing normals are generated
+and missing UVs become zero. Materials retain their glTF PBR/alpha properties;
+images are RGBA NumPy arrays indexed by material. A final `None` material and
+white image provide glTF's default material. The loader has no GPU layouts or
+example paths. Skinning, sparse accessors, non-triangle primitives, and texture
+coordinate transforms are unsupported.
+
+`read_gltf_accessor`, `gltf_buffer_bytes`, `gltf_image_bytes`, and
+`gltf_node_matrix` expose the underlying loading helpers. Buffer/image resources
+can be embedded or external relative to the asset directory. The first-mesh
+loaders share the accessor reader while preserving their local-space outputs.
+`load_blue_noise(path)` reads single-channel 16-bit PNGs as linear thresholds.
+
+`Utils.load_scene(path)` builds on `load_gltf_scene()` to return
+`(primitives, materials, images, shading_vertices)` in the transparency shader
+layouts. Its `Primitive` records include per-mesh triangle offsets and stable
+surface IDs. It adds barycentrics, packs PBR/opacity records, and prepares the
+deferred shading vertex buffer, all on the CPU. The asset path is explicit.
+
+`Utils.build_material_texture_array(images, materials, size)` uploads base-color
+images and generates their texture-array mip chains on the GPU. It preserves
+MASK alpha coverage and BLEND mean opacity while filtering color in linear
+space. It requires an initialized rendering device and material records with
+`base_color` and `surface` fields; it is independent of the transparency passes.
+
+`tranparency_pass.py` owns the reusable stochastic transparency pipelines,
+filter settings, and render targets. It accepts
+caller-owned material/vertex buffers, a texture array view and a linear noise
+texture. It does not load glTF, create a camera or window, manage an ECS world,
+or submit frame commands. Scene loading and material preparation live in `Utils`;
+the example's ImGui controls remain in `scenes/transparency_example.py`, and its
+main loop records the pass sequence directly with DrawBatches. `init_scene()`
+sets up module-level render data and camera state; it creates no scene container.
+
+Create `TransparencyPass(materials=..., base_textures=..., vertices=...,
+blue_noise=..., target_format=...)` after device setup, then call
+`create_geometry_passes(metadata, transparent=True/False)` for each instance
+metadata buffer. Register the returned `render_shader` with DrawBatches.
+Metadata records are four `uint32`s: deferred triangle offset, material index,
+stable surface ID, reserved. Metadata follows compact DrawBatches instance
+order. All transparent draws in a winner-selection pass must share one metadata
+address space; pass that geometry's bindings to `shade_winner`.
+
+The frame can be recorded procedurally with an existing command context:
+
+```python
+oit.resize((width, height))
+view_projection = oit.update_camera(camera, light_dir=(0.4, 0.8, 0.3))
+cmd = RenderContext.commands("frame")
+# Prepare/cull DrawBatches using view_projection before drawing.
+with oit.opaque_pass(cmd) as rp:
+    opaque.draw(rp, "prepass")
+with oit.guide_pass(cmd) as rp:
+    transparent.draw(rp, "main", pass_override=transparent_passes.guide)
+with oit.transmittance_pass(cmd) as rp:
+    transparent.draw(rp, "prepass")
+with oit.selection_pass(cmd) as rp:
+    transparent.draw(rp, "main")
+oit.shade_winner(cmd, transparent_passes)
+oit.compose(cmd, output.color_attachment())  # Or RenderContext.screen().
+RenderContext.submit(cmd.finish())
+```
+
+Skip frames with nonpositive dimensions. `resize` retains valid targets for
+minimized sizes and rebuilds dependent bindings only when dimensions change.
+The example copies frustum visibility/commands from prepass to main, enabling
+`COPY_SRC` on those two DrawBatches buffers. Other callers can supply their own
+culling and visibility preparation. Direct drawing works with the same passes
+when group 1 supplies instance and visibility buffers.
+
+`VERTEX_DTYPE`, `SHADING_VERTEX_DTYPE`, and `MATERIAL_DTYPE` describe the current
+shader layouts. The material shaders expect baked world-space vertices/normals;
+packed rotation/scale are not applied. If raster instances use `iPosition`, the
+deferred vertex data must include the same translation. The sampler defaults to
+repeat/trilinear filtering. Supply `target_format` for offscreen output so
+composition selects the correct sRGB encoding. Live `set_bilateral_filter()`
+and `set_debug_view()` calls update uniforms without rebuilding targets.
+
+Renderer shaders and shared shader libraries live under `src/shaders`.
+File-backed `Shader` instances resolve includes beside the shader first, then
+in that engine directory; an explicit `basedir` retains its supplied search path.
+
 `Imgui.py` provides an optional Dear ImGui plugin backed by WGPU's
 `ImguiWgpuBackend`, inspired by its
 [canvas renderer](https://github.com/pygfx/wgpu-py/blob/main/wgpu/utils/imgui/imgui_renderer.py).
