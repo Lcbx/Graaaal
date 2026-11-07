@@ -1,6 +1,7 @@
 #include "draw_common.shaderlib"
 #include "stochastic_common.shaderlib"
 #include "utils.shaderlib"
+#include "instance_transform.shaderlib"
 
 @group(1) @binding(0) var<storage, read> instances: array<MeshInstance>;
 @group(1) @binding(1) var<storage, read> visible_instances: array<u32>;
@@ -24,11 +25,12 @@
 @vertex
 fn vertex(input: VertexInput, @builtin(instance_index) instance_index: u32) -> VertexOutput {
 	let id = visible_instances[instance_index];
-	let world = input.position + instances[id].iPosition;
+	let world = instance_position(instances[id], input.position);
 	var output: VertexOutput;
 	output.position = frame.proj * frame.view * vec4f(world, 1.0);
 	output.world = world;
-	output.normal = input.normal;
+	// Keep inverse-transformed normals unnormalized until after interpolation.
+	output.normal = instance_normal_vector(instances[id], input.normal);
 	output.uv = input.uv;
 	output.barycentric = input.barycentric;
 	output.triangle = input.triangle;
@@ -42,7 +44,8 @@ fn opaque(input: VertexOutput, @builtin(front_facing) front: bool) -> @location(
 	let material = materials[metadata[input.instance].y];
 	if !front && material.flags.y == 0u { discard; }
 	if material.surface.z == 1.0 && base_color(material, input.uv, lod).a < material.surface.w { discard; }
-	let normal = select(-input.normal, input.normal, front);
+	let signed_normal = select(-input.normal, input.normal, front);
+	let normal = signed_normal / max(length(signed_normal), 1e-8);
 	return vec4f(shade(material, input.uv, input.world, normal, lod), 1.0);
 }
 

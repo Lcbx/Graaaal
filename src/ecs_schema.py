@@ -3,8 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
+
 import numpy as np
-from ecs_types import EntityArray, FieldArray, OBJECT_DTYPE, _component_fields, _dtype_for, _ENTITY_STR, _COUNT_STR
+
+from .ecs_types import (
+    EntityArray,
+    FieldArray,
+    OBJECT_DTYPE,
+    _COUNT_STR,
+    _ENTITY_STR,
+    _component_fields,
+    _dtype_for,
+)
 
 
 @dataclass(frozen=True)

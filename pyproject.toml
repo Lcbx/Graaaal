@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "numpyecs"
+version = "0.1.0"
+description = "NumPy-based ECS and procedural game rendering"
+requires-python = ">=3.11"
+dependencies = ["numpy>=2.2"]
+
+[project.optional-dependencies]
+render = ["wgpu==0.31.0", "glfw>=2.8", "Jinja2>=3.1"]
+assets = ["pygltflib>=1.16", "Pillow>=10"]
+ui = ["imgui-bundle==1.92.5"]
+examples = ["pyrr>=0.10"]
+test = ["pytest>=8.3"]
+
+[tool.setuptools]
+packages = ["numpyecs"]
+package-dir = {numpyecs = "src"}
+
+[tool.setuptools.package-data]
+numpyecs = ["shaders/*.shader", "shaders/*.shaderlib"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "src/tests"]

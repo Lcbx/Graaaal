@@ -3,6 +3,7 @@
 The caller owns geometry, camera, command recording, output and submission.
 No window, asset file, ECS world, or ImGui context is created by this module.
 """
+
 from dataclasses import dataclass
 from operator import index
 from pathlib import Path
@@ -10,25 +11,22 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from DrawBatches import RenderShader, ShaderPass
-from RenderContext import (
-	BindGroup, ComputePipeline, RenderContext,
-	RenderPipeline, Sampler, Shader, Texture, TextureUsage,
+from .DrawBatches import RenderShader, ShaderPass
+from .RenderContext import (
+    BindGroup,
+    ComputePipeline,
+    RenderContext,
+    RenderPipeline,
+    Sampler,
+    Shader,
+    Texture,
+    TextureUsage,
 )
+from .TransparencyData import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE
+
 
 SHADERS = Path(__file__).with_name("shaders")
 DEBUG_VIEWS = ("final", "transmittance", "winner", "reconstruction", "filter_support")
-VERTEX_DTYPE = np.dtype([
-	("position", "<f4", 3), ("normal", "<f4", 3), ("uv", "<f4", 2),
-	("barycentric", "<f4", 2), ("triangle", "<u4"),
-])
-SHADING_VERTEX_DTYPE = np.dtype([
-	("position", "<f4", 4), ("normal", "<f4", 4), ("uv", "<f4", 4),
-])
-MATERIAL_DTYPE = np.dtype([
-	("base_color", "<f4", 4), ("emission", "<f4", 4),
-	("surface", "<f4", 4), ("opacity_rgb", "<f4", 4), ("flags", "<u4", 4),
-])
 
 
 @dataclass(frozen=True)
@@ -81,23 +79,42 @@ class GeometryPasses:
 	render_shader: RenderShader
 	guide: ShaderPass | None
 	shading: BindGroup
+	owner: object
+	shading_bindings: tuple[BindGroup, ...] = ()
+
+
+@dataclass(frozen=True)
+class TransparencyTargets:
+	main_color: Texture
+	depth: Texture
+	transparent_depth: Texture
+	transmittance: Texture
+	selection_depth: Texture
+	winner: Texture
+	winner_color: Texture
 
 
 class TransparencyPass:
 	"""Persistent pipelines, bindings and size-dependent OIT targets.
 
 	Inputs are GPU resources, independent of their source (glTF or procedural).
-	Geometry uses VERTEX_DTYPE and mesh_instance_dtype. Supply baked world-space
-	positions/normals in raster and SHADING_VERTEX_DTYPE deferred vertex buffers.
-	The raster shader adds iPosition; deferred positions must include that same
-	translation. Packed rotation/scale are not applied by these material shaders.
+	Geometry uses VERTEX_DTYPE and MESH_INSTANCE_DTYPE. Raster and deferred vertex
+	buffers share local coordinates; both use the same packed instance transforms.
+	Custom deformation uses a matched geometry_shader/shading_shader pair with
+	the documented winner/metadata ABI. Animation data preparation is caller-owned.
 	"""
 	def __init__(self, *, materials, base_textures, vertices, blue_noise,
-		material_sampler=None, bilateral_filter=None, target_format=None):
-		self.shader = Shader(filepath=str(SHADERS / "stochastic_geometry.shader"))
-		self.shading_shader = Shader(filepath=str(SHADERS / "stochastic_shade.shader"))
+		material_sampler=None, bilateral_filter=None, target_format=None,
+		opaque_color=None, opaque_depth=None, material_source=None,
+		geometry_shader=None, shading_shader=None, compose_shader=None):
+		if (geometry_shader is None) != (shading_shader is None):
+			raise ValueError("Custom deformation requires matched geometry and shading shaders")
+		params = {"material_source": material_source}
+		self.shader = geometry_shader or Shader(filepath=str(SHADERS / "stochastic_geometry.shader"), params=params)
+		self.shading_shader = shading_shader or Shader(filepath=str(SHADERS / "stochastic_shade.shader"), params=params)
 		target_format = target_format or getattr(RenderContext, "presentation_format", "rgba8unorm")
-		self.compose_shader = Shader(filepath=str(SHADERS / "stochastic_compose.shader"),
+		self.target_format = target_format
+		self.compose_shader = compose_shader or Shader(filepath=str(SHADERS / "stochastic_compose.shader"),
 			params={"srgb_surface": target_format.endswith("-srgb")})
 		self.uniforms = self.shader.uniform_buffer("frame")
 		self.bilateral_uniforms = self.compose_shader.uniform_buffer("bilateral")
@@ -114,13 +131,25 @@ class TransparencyPass:
 		self.shade_frame = self.shading_shader.bind_group(0, frame=self.uniforms)
 		self._transparent_geometries = []
 		self.size = None
-		# DrawBatches requires a float texture even when only frustum culling runs.
-		self.dummy_hzb = Texture((1, 1), format="r32float", usage=TextureUsage.TEXTURE_BINDING).view()
+		self._opaque_inputs = None
+		self._targets = None
+		if opaque_color is not None or opaque_depth is not None:
+			self.set_opaque_inputs(opaque_color, opaque_depth)
 
-	def create_geometry_passes(self, metadata, *, transparent):
+	def create_geometry_passes(self, metadata, *, transparent, instances,
+		geometry_resources=None, shading_resources=None, geometry_bindings=(), shading_bindings=()):
 		"""Build DrawBatches passes bound to caller-owned per-instance metadata."""
+		if metadata.binding_size % 16 or not metadata.binding_size:
+			raise ValueError("Metadata must contain nonempty vec4u records")
+		if instances.binding_size % 32 or instances.binding_size // 32 < metadata.binding_size // 16:
+			raise ValueError("Supply an instance transform for every metadata record")
+		geometry_resources, shading_resources = dict(geometry_resources or {}), dict(shading_resources or {})
+		if set(geometry_resources) & (set(self.shared) | {"metadata"}) or set(shading_resources) & (set(self.shared) | {"metadata", "vertices", "shading_instances"}):
+			raise ValueError("Additional resources must not replace the geometry addressing resources")
+		if any(group.group < 4 for group in geometry_bindings) or any(group.group < 3 for group in shading_bindings):
+			raise ValueError("Extra geometry groups start at 4; extra shading groups start at 3")
 		bindings = (self.shader.bind_group(0, frame=self.uniforms),
-			self.shader.bind_group(2, **self.shared, metadata=metadata))
+			self.shader.bind_group(2, **self.shared, metadata=metadata, **geometry_resources), *geometry_bindings)
 		if transparent:
 			multiply = {"color": {"src_factor": "zero", "dst_factor": "src", "operation": "add"},
 				"alpha": {"src_factor": "zero", "dst_factor": "src-alpha", "operation": "add"}}
@@ -134,8 +163,9 @@ class TransparencyPass:
 			first = last = RenderPipeline(self.shader, vertex_entry="vertex", fragment_entry="opaque",
 				cull_mode="none", label="opaque")
 			guide = None
-		geometry = GeometryPasses(RenderShader(ShaderPass(last, bindings), ShaderPass(first, bindings)),
-			guide, self.shading_shader.bind_group(2, **self.shared, metadata=metadata, vertices=self.vertices))
+		geometry = GeometryPasses(RenderShader({"main": ShaderPass(last, bindings), "prepass": ShaderPass(first, bindings)}),
+			guide, self.shading_shader.bind_group(2, **self.shared, metadata=metadata, vertices=self.vertices,
+				shading_instances=instances, **shading_resources), self, tuple(shading_bindings))
 		if transparent:
 			self._transparent_geometries.append(geometry)
 			if self.size is not None:
@@ -143,8 +173,8 @@ class TransparencyPass:
 		return geometry
 
 	def _bind_targets(self, geometry):
-		bindings = geometry.render_shader.prepass.bindings
-		geometry.render_shader.main.bindings = bindings + (
+		bindings = geometry.render_shader['prepass'].bindings
+		geometry.render_shader['main'].bindings = bindings + (
 			self.shader.bind_group(3, opaque_depth=self.depth, blue_noise=self.noise),)
 		geometry.guide.bindings = bindings + (self.shader.bind_group(3, opaque_depth=self.depth),)
 
@@ -168,7 +198,19 @@ class TransparencyPass:
 		self.debug_view = view
 		self.set_bilateral_filter(self.bilateral_filter)
 
-	def resize(self, size: tuple[int, int]) -> bool:
+	def set_opaque_inputs(self, color, depth):
+		"""Use another renderer's color/depth; pass both as None to restore defaults."""
+		if (color is None) != (depth is None): raise ValueError("Supply both opaque color and depth")
+		if color is not None:
+			if color.size != depth.size or not depth.format.startswith("depth"):
+				raise ValueError("Opaque inputs require matching dimensions and a depth format")
+			for texture in (color, depth):
+				if texture.sample_count != 1 or not texture.usage & TextureUsage.TEXTURE_BINDING:
+					raise ValueError("Opaque inputs must be single-sample textures with TEXTURE_BINDING")
+		self._opaque_inputs = None if color is None else (color, depth)
+		self.size = None
+
+	def resize(self, size: tuple[int, int], *, targets: TransparencyTargets | None = None) -> bool:
 		"""Return whether targets changed; retain targets for minimized sizes."""
 		if len(size) != 2:
 			raise ValueError("Expected transparency target width and height")
@@ -178,17 +220,30 @@ class TransparencyPass:
 			raise ValueError("Expected integer transparency target dimensions") from None
 		if size[0] <= 0 or size[1] <= 0:
 			return False
-		if size == self.size:
+		if size == self.size and (targets is None or targets is getattr(self, "_targets", None)):
 			return False
 		attachment = TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING
-		self.main_color = Texture(size, format="rgba16float", usage=attachment, label="opaque_hdr")
-		self.depth = Texture(size, format="depth32float", usage=attachment, label="opaque_depth")
-		self.transparent_depth = Texture(size, format="depth32float", usage=attachment, label="transparent_guide_depth")
-		self.transmittance = Texture(size, format="rgba16float", usage=attachment, label="transmittance")
-		self.selection_depth = Texture(size, format="depth32float", usage=attachment, label="selection_depth")
-		self.winner = Texture(size, format="rgba32uint", usage=attachment, label="winner_payload")
-		self.winner_color = Texture(size, format="rgba16float",
-			usage=TextureUsage.STORAGE_BINDING | TextureUsage.TEXTURE_BINDING, label="winner_hdr")
+		inputs = getattr(self, "_opaque_inputs", None)
+		if inputs and inputs[0].size[:2] != size: raise ValueError("Opaque input dimensions do not match transparency targets")
+		formats = {"main_color": "rgba16float", "depth": "depth32float", "transparent_depth": "depth32float",
+			"transmittance": "rgba16float", "selection_depth": "depth32float", "winner": "rgba32uint", "winner_color": "rgba16float"}
+		if targets is not None:
+			for name, format in formats.items():
+				texture = getattr(targets, name)
+				usage = TextureUsage.TEXTURE_BINDING | (TextureUsage.STORAGE_BINDING if name == "winner_color" else TextureUsage.RENDER_ATTACHMENT)
+				if texture.size[:2] != size or texture.format != format or texture.sample_count != 1 or texture.usage & usage != usage:
+					raise ValueError(f"Invalid transparency target {name}: expected {size}, {format}, single sample, usage {usage}")
+		else:
+			values = {}
+			for name, format in formats.items():
+				if inputs and name in ("main_color", "depth"):
+					values[name] = inputs[0 if name == "main_color" else 1]
+				else:
+					usage = TextureUsage.TEXTURE_BINDING | (TextureUsage.STORAGE_BINDING if name == "winner_color" else TextureUsage.RENDER_ATTACHMENT)
+					values[name] = Texture(size, format=format, usage=usage, label=name)
+			targets = TransparencyTargets(**values)
+		for name in formats: setattr(self, name, getattr(targets, name))
+		self._targets = targets
 		for geometry in self._transparent_geometries:
 			self._bind_targets(geometry)
 		self.shade_targets = self.shading_shader.bind_group(1, winners=self.winner, winner_color=self.winner_color)
@@ -256,15 +311,17 @@ class TransparencyPass:
 	def shade_winner(self, commands, geometry):
 		"""Record deferred shading for the metadata used during winner selection."""
 		width, height = self._require_targets()
+		if geometry.owner is not self: raise ValueError("Geometry passes belong to another transparency pass")
 		with commands.compute_pass(label="4_shade_winner") as compute:
 			compute.set_pipeline(self.shade_pipeline)
-			for bindings in (self.shade_frame, self.shade_targets, geometry.shading):
+			for bindings in (self.shade_frame, self.shade_targets, geometry.shading, *geometry.shading_bindings):
 				compute.set_bind_group(bindings)
 			compute.dispatch((width+7)//8, (height+7)//8)
 
 	def compose(self, commands, output):
 		"""Reconstruct into a caller-provided ColorAttachment; does not submit."""
 		self._require_targets()
+		if output.format != self.target_format: raise ValueError("Output format must match the configured transparency target_format")
 		with commands.render_pass(color=output, label="5_reconstruct_compose") as render:
 			render.set_pipeline(self.compose_pipeline)
 			render.set_bind_groups(self.compose_resources)

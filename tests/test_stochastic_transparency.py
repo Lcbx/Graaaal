@@ -7,11 +7,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from RenderContext import RenderContext, Texture, TextureUsage
-from Utils import gltf_node_matrix, load_blue_noise
-import Utils as utils
+from numpyecs.RenderContext import RenderContext, Texture, TextureUsage
+from numpyecs.Assets import gltf_node_matrix, load_blue_noise
+from numpyecs import TransparencyData as transparency_data
+from numpyecs import TextureProcessing as texture_processing
 from scenes import transparency_example as scene
-import TransparencyPass as transparency
+from numpyecs import TransparencyPass as transparency
 
 
 def test_bundled_blue_noise_loads_as_deterministic_linear_thresholds():
@@ -62,7 +63,7 @@ def test_loader_bakes_hierarchy_reflection_and_default_material(tmp_path):
 	}
 	path = tmp_path / "triangle.gltf"
 	path.write_text(json.dumps(gltf))
-	primitives, materials, images, stored = utils.load_scene(path)
+	primitives, materials, images, stored = transparency_data.load_transparency_scene(path)
 	vertices = primitives[0].vertices
 	np.testing.assert_allclose(vertices["position"], [[2, 3, 4], [2, 4, 4], [0, 3, 4]])
 	np.testing.assert_allclose(vertices["normal"], [[0, 0, 1]]*3)
@@ -73,7 +74,7 @@ def test_loader_bakes_hierarchy_reflection_and_default_material(tmp_path):
 
 
 def test_real_scene_has_opaque_mask_and_blended_geometry():
-	primitives, materials, images, vertices = utils.load_scene(scene.PATH)
+	primitives, materials, images, vertices = transparency_data.load_transparency_scene(scene.PATH)
 	assert {int(materials[p.material_id]["surface"][2]) for p in primitives} == {0, 1, 2}
 	assert len(images) == len(materials)
 	for primitive in primitives:
@@ -104,10 +105,10 @@ def alpha_coverage(alpha, cutoff):
 @pytest.fixture
 def gpu_mips(monkeypatch):
 	RenderContext.setup_graphics_backend(True)
-	monkeypatch.setattr(utils, "Texture", lambda *args, usage, **kwargs: Texture(*args, usage=usage | TextureUsage.COPY_SRC, **kwargs))
+	monkeypatch.setattr(texture_processing, "Texture", lambda *args, usage, **kwargs: Texture(*args, usage=usage | TextureUsage.COPY_SRC, **kwargs))
 	def generate(image, material, size=None):
 		size = size or (image.shape[1], image.shape[0])
-		texture = utils.build_material_texture_array([image], np.array([material], dtype=transparency.MATERIAL_DTYPE), size)
+		texture = texture_processing.build_material_texture_array([image], np.array([material], dtype=transparency.MATERIAL_DTYPE), size)
 		mips = []
 		for level in range(max(size).bit_length()):
 			width, height = max(1, size[0] >> level), max(1, size[1] >> level)
@@ -223,7 +224,7 @@ def make_layers():
 		vertices["normal"] = (0, 0, 1)
 		vertices["barycentric"] = [(1, 0), (0, 1), (0, 0)]*2
 		vertices["triangle"] = [0, 0, 0, 1, 1, 1]
-		primitives.append(utils.Primitive(vertices, i, i*2, i))
+		primitives.append(transparency_data.Primitive(vertices, i, i*2, i))
 		stored = np.zeros(6, dtype=transparency.SHADING_VERTEX_DTYPE)
 		stored["position"][:, :3] = vertices["position"]
 		stored["normal"][:, :3] = vertices["normal"]
@@ -235,11 +236,11 @@ def make_layers():
 @pytest.fixture(params=[3, 5])
 def gpu_scene(monkeypatch, request):
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
-	monkeypatch.setattr(scene, "load_scene", lambda path: make_layers())
+	monkeypatch.setattr(scene, "load_transparency_scene", lambda path: make_layers())
 	monkeypatch.setattr(scene, "TEXTURE_SIZE", 1)
 	# Read-back usage is confined to tests; normal rendering needs none of it.
 	monkeypatch.setattr(transparency, "Texture", lambda *args, usage, **kwargs: Texture(*args, usage=usage | TextureUsage.COPY_SRC, **kwargs))
-	monkeypatch.setattr(RenderContext, "windowDimensions", (64, 64))
+	monkeypatch.setattr(RenderContext, "window_dimensions", (64, 64))
 	monkeypatch.setattr(RenderContext, "presentation_format", "rgba8unorm", raising=False)
 	output = Texture((64, 64), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	monkeypatch.setattr(RenderContext, "screen", lambda **kwargs: output.color_attachment())
@@ -252,7 +253,7 @@ def gpu_scene(monkeypatch, request):
 
 def render_frame(render_scene):
 	"""Exercise the public procedural passes with the example's geometry."""
-	width, height = RenderContext.windowDimensions
+	width, height = RenderContext.window_dimensions
 	if width <= 0 or height <= 0:
 		return
 	oit = render_scene.transparency
@@ -260,15 +261,15 @@ def render_frame(render_scene):
 	view_projection = oit.update_camera(render_scene.camera)
 	commands = RenderContext.commands("test_transparency_frame")
 	for geometry in (render_scene.opaque, render_scene.transparent):
-		geometry.prepare(commands, render_scene.camera, view_projection, oit.dummy_hzb)
+		geometry.prepare(commands, render_scene.camera, view_projection)
 	with oit.opaque_pass(commands) as render:
-		render_scene.opaque.data.draw(render, "prepass")
+		render_scene.opaque.draw(render, "prepass")
 	with oit.guide_pass(commands) as render:
-		render_scene.transparent.data.draw(render, "main", pass_override=render_scene.transparent.passes.guide)
+		render_scene.transparent.draw(render, "main", pass_override=render_scene.transparent.passes.guide)
 	with oit.transmittance_pass(commands) as render:
-		render_scene.transparent.data.draw(render, "prepass")
+		render_scene.transparent.draw(render, "prepass")
 	with oit.selection_pass(commands) as render:
-		render_scene.transparent.data.draw(render, "main")
+		render_scene.transparent.draw(render, "main")
 	oit.shade_winner(commands, render_scene.transparent.passes)
 	oit.compose(commands, RenderContext.screen())
 	RenderContext.submit(commands.finish())
@@ -345,7 +346,7 @@ def test_gpu_resize_rebuilds_targets_and_bindings(gpu_scene, monkeypatch):
 	render_frame(renderer)
 	previous = renderer.transparency.winner
 	output = Texture((48, 32), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
-	monkeypatch.setattr(RenderContext, "windowDimensions", (48, 32))
+	monkeypatch.setattr(RenderContext, "window_dimensions", (48, 32))
 	monkeypatch.setattr(RenderContext, "screen", lambda **kwargs: output.color_attachment())
 	render_frame(renderer)
 	assert renderer.transparency.winner is not previous
@@ -354,7 +355,7 @@ def test_gpu_resize_rebuilds_targets_and_bindings(gpu_scene, monkeypatch):
 	assert np.any(read_texture(output, np.uint8, 4)[:, :, :3] != 0)
 	# Minimized windows leave valid resources alone and submit no new work.
 	previous = renderer.transparency.winner
-	monkeypatch.setattr(RenderContext, "windowDimensions", (0, 0))
+	monkeypatch.setattr(RenderContext, "window_dimensions", (0, 0))
 	render_frame(renderer)
 	assert renderer.transparency.winner is previous
 
@@ -395,10 +396,10 @@ def create_textured_gpu_scene(monkeypatch, uv_scale=2):
 		primitive.vertices["uv"] = primitive.vertices["position"][:, :2]*uv_scale
 		start = primitive.triangle_offset*3
 		vertices["uv"][start:start+len(primitive.vertices), :2] = primitive.vertices["uv"]
-	monkeypatch.setattr(scene, "load_scene", lambda path: (primitives, materials, images, vertices))
+	monkeypatch.setattr(scene, "load_transparency_scene", lambda path: (primitives, materials, images, vertices))
 	monkeypatch.setattr(scene, "TEXTURE_SIZE", 64)
 	monkeypatch.setattr(transparency, "Texture", lambda *args, usage, **kwargs: Texture(*args, usage=usage | TextureUsage.COPY_SRC, **kwargs))
-	monkeypatch.setattr(RenderContext, "windowDimensions", (64, 64))
+	monkeypatch.setattr(RenderContext, "window_dimensions", (64, 64))
 	monkeypatch.setattr(RenderContext, "presentation_format", "rgba8unorm", raising=False)
 	output = Texture((64, 64), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	monkeypatch.setattr(RenderContext, "screen", lambda **kwargs: output.color_attachment())
@@ -422,10 +423,10 @@ def test_gpu_cutout_sampling_has_no_black_bilinear_fringe(monkeypatch):
 		primitive.vertices["uv"] = primitive.vertices["position"][:, :2]*0.05
 		start = primitive.triangle_offset*3
 		vertices["uv"][start:start+len(primitive.vertices), :2] = primitive.vertices["uv"]
-	monkeypatch.setattr(scene, "load_scene", lambda path: (primitives, materials, images, vertices))
+	monkeypatch.setattr(scene, "load_transparency_scene", lambda path: (primitives, materials, images, vertices))
 	monkeypatch.setattr(scene, "TEXTURE_SIZE", 16)
 	monkeypatch.setattr(transparency, "Texture", lambda *args, usage, **kwargs: Texture(*args, usage=usage | TextureUsage.COPY_SRC, **kwargs))
-	monkeypatch.setattr(RenderContext, "windowDimensions", (64, 64))
+	monkeypatch.setattr(RenderContext, "window_dimensions", (64, 64))
 	monkeypatch.setattr(RenderContext, "presentation_format", "rgba8unorm", raising=False)
 	output = Texture((64, 64), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT)
 	monkeypatch.setattr(RenderContext, "screen", lambda **kwargs: output.color_attachment())
@@ -589,7 +590,7 @@ def test_gpu_adaptive_filter_uses_transparent_distance_and_reduces_variance(gpu_
 def test_gpu_relative_depth_edges_and_distant_transmittance_relaxation(monkeypatch, edge):
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	monkeypatch.setattr(scene, "TEXTURE_SIZE", 1)
-	monkeypatch.setattr(RenderContext, "windowDimensions", (64, 64))
+	monkeypatch.setattr(RenderContext, "window_dimensions", (64, 64))
 	monkeypatch.setattr(RenderContext, "presentation_format", "rgba8unorm", raising=False)
 	output = Texture((64, 64), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	monkeypatch.setattr(RenderContext, "screen", lambda **kwargs: output.color_attachment())
@@ -607,7 +608,7 @@ def test_gpu_relative_depth_edges_and_distant_transmittance_relaxation(monkeypat
 			primitive.vertices["position"] *= scale
 			start = primitive.triangle_offset*3
 			vertices["position"][start:start+len(primitive.vertices), :3] = primitive.vertices["position"]
-		monkeypatch.setattr(scene, "load_scene", lambda path: (primitives, materials, images, vertices))
+		monkeypatch.setattr(scene, "load_transparency_scene", lambda path: (primitives, materials, images, vertices))
 		options = scene.BilateralFilter(spatial_sigma=2, far_spatial_sigma=2,
 			adaptive=edge == "transmittance", filter_near=3, filter_far=5)
 		scene.init_scene(bilateral_filter=options)
@@ -644,7 +645,7 @@ def test_default_filter_restores_canopy_boundary_support_and_reduces_grain(monke
 	"""
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	monkeypatch.setattr(transparency, "Texture", lambda *args, usage, **kwargs: Texture(*args, usage=usage | TextureUsage.COPY_SRC, **kwargs))
-	monkeypatch.setattr(RenderContext, "windowDimensions", (320, 240))
+	monkeypatch.setattr(RenderContext, "window_dimensions", (320, 240))
 	monkeypatch.setattr(RenderContext, "presentation_format", "rgba8unorm", raising=False)
 	output = Texture((320, 240), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	monkeypatch.setattr(RenderContext, "screen", lambda **kwargs: output.color_attachment())

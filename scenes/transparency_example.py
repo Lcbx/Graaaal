@@ -8,26 +8,31 @@ Drag settings or Ctrl+click to type; Up/Down and Left/Right also select/edit.
 Imports only prepare CPU helpers; graphics are initialized by run_scene().
 """
 
-from dataclasses import asdict, replace
 import json
+from dataclasses import asdict, replace
 from math import cos, sin
 from pathlib import Path
 
-import numpy as np
 import glfw
+import numpy as np
 
-from ECS import ECS, component
-from DrawBatches import DrawBatches
-from RenderContext import (
-	BufferUsage, GpuBuffer, Mesh, RenderContext, Texture, TextureUsage,
+from numpyecs.Assets import load_blue_noise
+from numpyecs.DrawBatches import DrawBatches, FrustumCuller
+from numpyecs.ECS import ECS, component
+from numpyecs.EcsDrawing import EcsDrawAdapter
+from numpyecs.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
+from numpyecs.Math import Camera, Vec3, Vec4
+from numpyecs.RenderContext import (
+    BufferUsage,
+    GpuBuffer,
+    Mesh,
+    RenderContext,
+    Texture,
+    TextureUsage,
 )
-from Utils import (
-	Camera, Vec3, Vec4, build_material_texture_array, load_blue_noise, load_scene,
-	mesh_instance_dtype, pack_quaternion, pack_scale,
-)
-from TransparencyPass import (
-	BilateralFilter, DEBUG_VIEWS, TransparencyPass,
-)
+from numpyecs.TextureProcessing import build_material_texture_array
+from numpyecs.TransparencyData import load_transparency_scene
+from numpyecs.TransparencyPass import BilateralFilter, DEBUG_VIEWS, TransparencyPass
 
 
 PATH = Path(__file__).parent / "resources/small_scene.glb"
@@ -55,15 +60,9 @@ class GeometryBatches:
 	def __init__(self, primitives, materials, transparency, transparent):
 		self.world = ECS()
 		transforms, refs = self.world.register(Transform, MeshRef)
-		self.data = DrawBatches(mesh_instance_dtype)
-		# This scene copies frustum results into the second pass's destinations.
-		# Give only the two copy sources the additional usage before registration.
-		for name in ("prepass_visible_instances", "prepass_draw_cmd"):
-			buffer = self.data.buffers[name]
-			self.data.buffers[name] = GpuBuffer(buffer.content,
-				buffer.usage | BufferUsage.COPY_SRC, upload=False, label=name)
+		self.data = DrawBatches(MESH_INSTANCE_DTYPE)
 		self.metadata = GpuBuffer(np.zeros((1, 4), dtype=np.uint32), BufferUsage.STORAGE | BufferUsage.COPY_DST)
-		self.passes = transparency.create_geometry_passes(self.metadata, transparent=transparent)
+		self.passes = transparency.create_geometry_passes(self.metadata, transparent=transparent, instances=self.data.buffers["instances"])
 		self.data.register_shader(0, self.passes.render_shader)
 		for primitive in primitives:
 			if (materials[primitive.material_id]["surface"][2] == 2) != transparent:
@@ -75,27 +74,24 @@ class GeometryBatches:
 			[entity] = self.world.create()
 			self.world.add(entity, Transform(Vec3(0, 0, 0), Vec3(1, 1, 1), Vec4(0, 0, 0, 1)),
 				MeshRef(0, mesh_id, primitive.triangle_offset, primitive.material_id, primitive.stable_id))
-		self.data.sync_batches(self.world.query(Transform, MeshRef).entities(), transforms, refs)
+		self.extractor = EcsDrawAdapter(self.data, refs)
+		self.extractor.sync(self.world.query(Transform, MeshRef).entities())
+		self.visibility = self.data.create_visibility()
 		self.data.write_instance_fields(iPosition=(0, 0, 0), iTint=0,
 			iRotation=pack_quaternion(np.array([0, 0, 0, 1], dtype=np.float32)),
 			iScale=pack_scale(np.ones(3, dtype=np.float32)))
 		# Metadata follows compact DrawBatches instance order, never entity order.
 		metadata = np.zeros((max(1, len(self.data.entities)), 4), dtype=np.uint32)
 		for column, name in enumerate(("triangle_offset", "material_id", "stable_id")):
-			metadata[:len(self.data.entities), column] = self.data.mesh_field(name)
+			metadata[:len(self.data.entities), column] = self.extractor.mesh_field(name)
 		self.metadata.write(metadata)
 
-	def prepare(self, commands, camera, view_projection, dummy_hzb):
-		self.data.refresh_bindings(dummy_hzb)
-		self.data.update_cull_camera(camera.position, view_projection)
-		self.data.reset_draw_counts(commands)
-		self.data.cull_instances(commands, "frustum")
-		# All batches participate in the first pass. Reuse its visibility and
-		# indirect commands for selection; transparent culling never uses itself
-		# as an occluder. No Hi-Z pass or sorting is needed for this small scene.
-		for source, destination in (("prepass_visible_instances", "main_visible_instances"),
-			("prepass_draw_cmd", "main_draw_cmd")):
-			commands.copy_buffer(self.data.buffers[source], self.data.buffers[destination])
+	def prepare(self, commands, camera, view_projection):
+		FrustumCuller().record(commands, self.visibility, camera_position=camera.position,
+			view_projection=view_projection)
+
+	def draw(self, render, stage, **options):
+		self.data.draw(render, self.visibility, stage, **options)
 
 
 transparency: TransparencyPass
@@ -112,7 +108,7 @@ distance = 0.0
 def init_scene(path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_PATH):
 	"""Initialize the example's global render data after device setup."""
 	global transparency, opaque, transparent, camera, center, radius, angle, orbit, distance
-	primitives, materials, images, vertices = load_scene(path)
+	primitives, materials, images, vertices = load_transparency_scene(path)
 	# Ignore a large flat ground plane when framing the example.
 	objects = [p.vertices["position"] for p in primitives if np.ptp(p.vertices["position"][:, 1]) > 0.01]
 	positions = np.concatenate(objects or [p.vertices["position"] for p in primitives])
@@ -377,43 +373,48 @@ def on_char(code):
 	return True
 
 
-from Imgui import Imgui
+def run_scene():
+	global settings, angle
+	from numpyecs.Imgui import Imgui
 
-RenderContext.init_window(1200, 900, "Stochastic transparency | F: settings | D: debug | Space: orbit",
-	required_gpu_features=["indirect-first-instance"])
-init_scene()
-settings = FilterSettings(transparency)
-RenderContext.event_handlers["mouse_scroll"].append(scroll_callback)
-RenderContext.event_handlers["char"].append(on_char)
-RenderContext.event_handlers["key"].append(settings.handle_key)
-try:
-	with Imgui() as gui:
-		while RenderContext.window_loop():
-			if orbit:
-				angle += RenderContext.frame_time * 0.2
-			camera.position = Vec3(center + distance * np.array([cos(angle), 0.5, sin(angle)]))
-			width, height = RenderContext.windowDimensions
-			if width <= 0 or height <= 0:
-				continue
-			transparency.resize((width, height))
-			view_projection = transparency.update_camera(camera)
-			commands = RenderContext.commands("stochastic_renderer")
-			for geometry in (opaque, transparent):
-				geometry.prepare(commands, camera, view_projection, transparency.dummy_hzb)
-			with transparency.opaque_pass(commands) as render:
-				opaque.data.draw(render, "prepass")
-			with transparency.guide_pass(commands) as render:
-				transparent.data.draw(render, "main", pass_override=transparent.passes.guide)
-			with transparency.transmittance_pass(commands) as render:
-				transparent.data.draw(render, "prepass")
-			with transparency.selection_pass(commands) as render:
-				transparent.data.draw(render, "main")
-			transparency.shade_winner(commands, transparent.passes)
-			transparency.compose(commands, RenderContext.screen())
-			RenderContext.submit(commands.finish())
+	RenderContext.init_window(1200, 900, "Stochastic transparency | F: settings | D: debug | Space: orbit",
+		required_gpu_features=["indirect-first-instance"])
+	init_scene()
+	settings = FilterSettings(transparency)
+	RenderContext.event_handlers["mouse_scroll"].append(scroll_callback)
+	RenderContext.event_handlers["char"].append(on_char)
+	RenderContext.event_handlers["key"].append(settings.handle_key)
+	try:
+		with Imgui() as gui:
+			while RenderContext.window_loop():
+				if orbit:
+					angle += RenderContext.frame_time * 0.2
+				camera.position = Vec3(center + distance * np.array([cos(angle), 0.5, sin(angle)]))
+				width, height = RenderContext.window_dimensions
+				if width <= 0 or height <= 0:
+					continue
+				transparency.resize((width, height))
+				view_projection = transparency.update_camera(camera)
+				commands = RenderContext.commands("stochastic_renderer")
+				for geometry in (opaque, transparent):
+					geometry.prepare(commands, camera, view_projection)
+				with transparency.opaque_pass(commands) as render:
+					opaque.draw(render, "prepass")
+				with transparency.guide_pass(commands) as render:
+					transparent.draw(render, "main", pass_override=transparent.passes.guide)
+				with transparency.transmittance_pass(commands) as render:
+					transparent.draw(render, "prepass")
+				with transparency.selection_pass(commands) as render:
+					transparent.draw(render, "main")
+				transparency.shade_winner(commands, transparent.passes)
+				transparency.compose(commands, RenderContext.screen())
+				RenderContext.submit(commands.finish())
 
-			gui.render(settings.draw)
-finally:
-	RenderContext.event_handlers["mouse_scroll"].remove(scroll_callback)
-	RenderContext.event_handlers["char"].remove(on_char)
-	RenderContext.event_handlers["key"].remove(settings.handle_key)
+				gui.render(settings.draw)
+	finally:
+		RenderContext.event_handlers["mouse_scroll"].remove(scroll_callback)
+		RenderContext.event_handlers["char"].remove(on_char)
+		RenderContext.event_handlers["key"].remove(settings.handle_key)
+
+if __name__ == "__main__":
+	run_scene()

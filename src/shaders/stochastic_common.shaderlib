@@ -24,15 +24,8 @@ fn opacity(material: Material, uv: vec2f, lod: f32) -> vec3f {
 	return clamp(base_color(material, uv, lod).a * material.opacity_rgb.rgb, vec3f(0.0), vec3f(1.0));
 }
 
-fn shade(material: Material, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
-	let color = base_color(material, uv, lod).rgb;
-	let n = normal / max(length(normal), 1e-6);
-	let l = normalize(frame.light_dir.xyz);
-	let v = normalize(frame.camera_position.xyz - position);
-	let h = normalize(l + v);
-	let diffuse = 0.25 + 0.75 * max(dot(n, l), 0.0);
-	let exponent = mix(128.0, 4.0, clamp(material.surface.x, 0.0, 1.0));
-	let specular = pow(max(dot(n, h), 0.0), exponent) * max(dot(n, l), 0.0);
-	return color * diffuse * (1.0 - 0.6 * material.surface.y)
-		+ mix(vec3f(0.04), color, material.surface.y) * specular + material.emission.rgb;
-}
+#if PARAMS.get("material_source") is not none
+{{ PARAMS.material_source }}
+#else
+#include "stochastic_material.shaderlib"
+#endif

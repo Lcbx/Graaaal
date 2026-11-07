@@ -1,7 +1,7 @@
 # Running the scenes
 
 Run from the repository root with a Python environment containing the engine's
-NumPy, WGPU, GLFW, and supporting dependencies.
+the package and optional dependencies installed: `pip install -e ".[render,assets,ui,examples,test]"`.
 
 The prototype and transparency settings use `imgui-bundle==1.92.5` (listed in
 `requirements.txt`) through the shared [ImGui plugin](../src/Imgui.py).
@@ -65,7 +65,7 @@ with procedural recording documented in the [source guide](../src/README.md).
 The example keeps its render data, camera, and orbit controls in module globals,
 initialized by `init_scene()` after device setup. Its main loop records each
 pass and submits the completed commands. CPU glTF loading, shader
-data packing, material texture preparation, and blue-noise decoding live in `src/Utils.py`.
+data packing, material texture preparation, and blue-noise decoding live in `Assets`, `TransparencyData`, and `TextureProcessing`.
 The original tileable 64×64, 16-bit texture is bundled in
 [`resources/blue_noise`](resources/blue_noise/README.md), together with Christoph
 Peters' CC0 dedication. It is loaded as linear thresholds without resizing or
@@ -253,3 +253,5 @@ The current implementation checkpoint passed 266 ECS/follow-up/scene/draw-batch
 cases; the measured direct-draw check completed 120 frames. Earlier 120/180/1,500
 frame observations above describe separate historical smoke checks. No screenshot
 verification is claimed.
+
+All example imports are side-effect-free with respect to window/device creation. Run their `run_scene()` entry points through the launcher. See [the current API guide](../src/PROCEDURAL_API.md) for per-view visibility and custom shader interfaces.

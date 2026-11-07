@@ -3,7 +3,7 @@ from functools import partial
 import numpy as np
 import pytest
 
-from ECS import ECS, component
+from numpyecs.ECS import ECS, component
 
 
 @component

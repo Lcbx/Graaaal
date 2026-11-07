@@ -2,8 +2,7 @@
 
 This guide covers the application-facing API. Python examples can be executed in
 document order; later examples use the reusable setup below and reset their world
-explicitly. Run with NumPy installed and `src` on `PYTHONPATH`, or import through
-the repository's existing launcher.
+explicitly. Run after installing the package with `pip install -e .` from the repository root.
 
 Related documents: [implementation status](ECS_TODO.md),
 [benchmark report](ECS_BENCHMARKS.md), and [source guide](README.md).
@@ -35,7 +34,7 @@ together in `ECS.py` because they share row lifetime and cache contracts.
 
 ```python
 import numpy as np
-from ECS import ECS, component, columns
+from numpyecs.ECS import ECS, component, columns
 
 @component
 class Position:
@@ -146,7 +145,7 @@ These definitions are shared by the remaining examples. Every call to
 `example_world()` returns a new world with three moving entities.
 
 ```python
-from ECS import (
+from numpyecs.ECS import (
     ECS, Scheduler, CommandBuffer, CommandError, component, columns,
     Entity, Index, entity_index, entity_generation, as_entities, as_rows,
 )
@@ -806,3 +805,24 @@ request. They do not roll back arbitrary callback effects, allocation failures,
 earlier successful buffered commands, or earlier systems' work. The ECS provides
 no thread synchronization. Relationships, serialization, resource injection,
 automatic parallel scheduling, and more than 64 component types are outside this API.
+
+
+## Explicit arrays and reusable field reads
+
+Use `array_field(np.float32, shape=(3,))` as a dataclass field declaration when
+the annotation alone does not describe the storage shape. `object` explicitly
+selects Python-reference storage; unsupported annotations raise `TypeError`.
+
+`selection.read(name, out=array)` gathers into an exact dtype/shape output and
+retains the same output object. Storage aliases and read-only outputs are rejected.
+The selection caches its index conversion after the first reusable read.
+
+`with accessor.edit_dense(*fields) as columns:` borrows numeric columns in storage
+order. Structural edits to the store, nested writable scopes, and multi-store
+mutations affecting the borrowed store are rejected before applying changes.
+Fields are touched on exit even after exceptions; writes are not rolled back.
+Exported views must not escape the scope. Compact multicomponent holes first.
+Independent component stores still require joins/gathers to align their rows.
+
+See [the procedural guide](PROCEDURAL_API.md) for a complete shaped-field example
+and [array measurements](ARRAY_BENCHMARKS.md) for scratch-memory tradeoffs.

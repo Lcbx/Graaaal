@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from ECS import ECS, CommandError, INDEX_MAX, Scheduler, component
+from numpyecs.ECS import ECS, CommandError, INDEX_MAX, Scheduler, component
 
 
 @component

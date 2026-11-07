@@ -1,174 +1,210 @@
-# Procedural ECS and rendering API
+# Procedural engine API
 
-Keep persistent resources in explicit variables and pass them to ordinary
-functions. The application owns update order, command recording, submission,
-and presentation. Classes represent state and resource handles; procedural
-systems do not need a base class, scheduler, or scene container.
+Install the checkout from its repository root with `pip install -e .`.
+The Python package is `numpyecs`; core simulation needs only NumPy. GPU rendering,
+glTF/image loading, UI, and bundled scenes use the `render`, `assets`, `ui`, and
+`examples` extras. Install development dependencies with
+`pip install -e ".[render,assets,ui,examples,test]"`.
 
-## Review and refinements
+RenderContext remains the convenient window, event-loop, presentation, and GPU
+resource manager. There is one shared device; callers do not need to pass it
+through each API. Systems remain ordinary functions; command order is explicit.
+Import the manager with `from numpyecs.RenderContext import RenderContext`.
 
-| API | Finding | Supported workflow |
-| --- | --- | --- |
-| `ECS` | Already provides explicit worlds, array operations, and ordinary function systems. | Keep `world = ECS()`, pass accessors/queries into functions, and use `assign()` for writes. Scheduler and deferred commands remain optional. |
-| `RenderContext` | The exported CamelCase name is an instance, and some factories/fields have mixed names. Resource constructors share its device. | Use the `render_context` singleton, `window_dimensions`, `Shader.uniform_buffer()`, and the `GCManager` class. |
-| `DrawBatches` | ECS accessors were required even when the caller already had arrays. | Use `sync_arrays(entities, lod_ids, shader_ids)` and `instance_order` to pack instances and metadata. `sync_batches()` retains the ECS version-based path. |
-| `TransparencyPass` | Frame uniform updates required a camera object; the module name was misspelled. | Import `TransparencyPass` and use `update_frame()` with explicit matrices and values. Record each GPU pass with caller-owned commands. |
+Use PascalCase public modules/types, snake_case functions/attributes, and
+UPPER_SNAKE_CASE constants. RenderContext's singleton spelling is deliberate.
+Superseded spelling aliases and `Utils.py` are removed.
 
-Default culling and HZB shaders now live beside the renderer's other shaders;
-creating these resources does not depend on the working directory or scene files.
-Transparency pass recording raises a clear `RuntimeError` until targets have
-been allocated. `resize()` returns `True` when targets change and `False` for
-unchanged or minimized dimensions, matching `HZB.resize()`.
+## Module boundaries
 
-## Naming and compatibility
-
-Use PascalCase for classes/types, snake_case for functions, methods, parameters,
-and state variables, and UPPER_SNAKE_CASE for new constants. Acronyms remain
-readable in established type names such as `ECS` and `HZB`.
-
-| Preferred spelling | Compatibility spelling |
+| Module | Responsibility |
 | --- | --- |
-| `from RenderContext import render_context` | `from RenderContext import RenderContext` |
-| `render_context.window_dimensions` | `RenderContext.windowDimensions` |
-| `shader.uniform_buffer()` | `shader.UniformBuffer()` |
-| `GCManager` | `GC_Manager` |
-| `standard_render_shader(...)` | `standard_RenderShader(...)` |
-| `update_cull_camera(camera_position=..., view_projection=...)` | `cameraPosition=...`, `viewProjectionMatrix=...` |
+| `ECS`, `ecs_*` | Worlds, schemas, checked selections, queries, commands, scheduling |
+| `Math` | NumPy vectors, cameras, projection and frustum helpers |
+| `Assets` | CPU glTF/image loading; optional dependencies load when called |
+| `InstanceData` | Default instance dtype, quaternion/scale/color packing |
+| `TransparencyData` | Transparency layouts and `load_transparency_scene()` |
+| `DrawList` | Pure NumPy grouping and instance permutations |
+| `Geometry` | Geometry helpers; GPU construction imports the renderer when called |
+| `Diagnostics` | Optional timing and memory helpers |
+| `TextureProcessing` | GPU material mip generation |
+| `EcsDrawing` | Optional ECS-to-array drawing adapter |
 
-Aliases share the same resources and implementation; both window dimension
-spellings remain writable. Passing both spellings of a camera parameter raises
-`TypeError`. Existing module filenames (`ECS`, `RenderContext`, `DrawBatches`)
-remain stable; case-only renames cannot coexist portably on Windows. The
-transparency implementation lives directly in `TransparencyPass.py`, with no
-compatibility module. Existing lower-case dtype exports remain available.
+CPU modules can be imported without graphics dependencies or initialization.
+Engine shaders are included in the installed package.
 
-## Ordinary ECS systems
-
-```python
-from ECS import ECS, component, columns
-
-@component
-class Position:
-    x: float
-
-@component
-class Velocity:
-    x: float
-
-world = ECS()
-world.register(Position, Velocity)
-ids = world.create(3)
-world.add(ids, columns(Position, x=0), columns(Velocity, x=[1, 2, 3]))
-positions, velocities = world.get(Position), world.get(Velocity)
-moving = world.query(Position, Velocity)
-
-def move(positions, velocities, entities, dt):
-    selected = positions[entities]
-    selected.assign(x=selected.x + velocities[entities].x * dt)
-
-move(positions, velocities, moving.entities(), 1 / 60)
-```
-
-Numeric selection reads are copies. Assign changed arrays back using `assign()`
-or field assignment. Reacquire selections after structural edits. The complete
-[ECS reference](ECS_API.md) covers multicomponent selection and query joins.
-
-## Draw instances from arrays
-
-After device setup, register meshes, LoD groups, and render shaders as usual.
-Each input row represents exactly one draw instance; repeated entity labels do
-not expand the selection:
+## Arrays and ordinary systems
 
 ```python
 import numpy as np
-from DrawBatches import DrawBatches
-from Utils import mesh_instance_dtype
+from numpyecs.ECS import ECS, component, array_field, columns
 
-draws = DrawBatches(mesh_instance_dtype)
-draws.register_mesh(1, mesh)
-draws.register_lod_group(10, (1,))
-draws.register_shader(0, geometry.render_shader)
+@component
+class Position:
+    value: np.ndarray = array_field(np.float32, shape=(3,))
 
-labels = np.array([42, 42, 99], dtype=np.uint64)
-lod_ids = np.array([10, 10, 10])
-shader_ids = np.array([0, 0, 0])
-changed = draws.sync_arrays(labels, lod_ids, shader_ids)
-order = draws.instance_order
-draws.write_instances(packed_instances[order])
-metadata.write(input_metadata[order])
+world = ECS()
+positions, = world.register(Position)
+ids = world.create(3)
+world.add(ids, columns(Position, value=np.zeros((3, 3), dtype=np.float32)))
+selected = positions[ids]
+scratch = np.empty((3, 3), dtype=np.float32)
+selected.read("value", out=scratch)
+np.add(scratch, 1, out=scratch)
+selected.assign(value=scratch)
+with positions.edit_dense("value") as fields:
+    fields["value"] *= 0.5
 ```
 
-`packed_instances` must match `instance_dtype`; `input_metadata` holds the
-transparency metadata rows described in [README.md](README.md). Both arrays
-above are in input order before indexing. All instance data, including custom
-attributes and deferred metadata, must follow the same compact output order.
-`draws.entities == labels[draws.instance_order]`. Stable grouping preserves input
-order within each shader/LoD pair.
+Normal field reads copy. `read(out=...)` rejects incorrect dtype/shape, read-only
+outputs, and storage aliases. Repeated rows retain NumPy's last-write scatter
+semantics. Numeric metadata is explicit; declare `object` for Python data rather
+than relying on an unsupported annotation fallback.
 
-`sync_arrays()` returns whether instance inputs were invalidated. It snapshots
-and compares input values, detecting in-place edits in O(n) time. Unchanged
-input skips regrouping and uploads. Registry changes are still synchronized.
-Value-only instance/metadata edits remain the caller's responsibility to upload.
-Empty arrays clear the draw list. Integer IDs are required.
+Dense edits borrow columns in storage order. Views must not escape the scope.
+Structural changes to the borrowed store are rejected before any multi-store
+request can partially apply. Declared fields are touched on exit, including after
+exceptions; writes are not rolled back. Compact multicomponent stores containing
+holes first. General joins between independently ordered stores still gather.
 
-For ECS-backed data, keep `sync_batches(entities, transforms, mesh_refs)` and
-read per-component metadata through `mesh_field()`. It avoids expanding repeated
-owners twice and uses version tokens to skip field reads. `instance_order` then
-indexes the selected MeshRef rows before grouping. `mesh_field()` is only
-available after `sync_batches()`. Switching between the array and ECS paths, or
-calling `invalidate_batches()`, invalidates all instance inputs on the next sync.
+See [ECS_API.md](ECS_API.md) and [ARRAY_BENCHMARKS.md](ARRAY_BENCHMARKS.md) for
+full ECS contracts and measured allocation/timing costs.
 
-## Record transparency with explicit frame values
-
-Initialize `TransparencyPass` with caller-owned material, vertex, texture, and
-noise resources. Create geometry passes for each metadata address space and
-register their `render_shader` with the corresponding batches. A complete
-direct-draw example is exercised by `tests/test_tranparency_pass.py` in the
-repository root.
+## Shared draws and independent visibility
 
 ```python
-from RenderContext import render_context
-from TransparencyPass import TransparencyPass
+from numpyecs.RenderContext import RenderContext
+from numpyecs.DrawBatches import DrawBatches, RenderShader, ShaderPass, FrustumCuller
+from numpyecs.InstanceData import MESH_INSTANCE_DTYPE
 
-oit = TransparencyPass(materials=materials, base_textures=base_textures,
-    vertices=vertices, blue_noise=blue_noise, target_format="rgba8unorm")
-transparent_geometry = oit.create_geometry_passes(metadata, transparent=True)
-# Register transparent_geometry.render_shader with transparent_draws.
+draws = DrawBatches(MESH_INSTANCE_DTYPE)
+draws.register_mesh(1, mesh)
+draws.register_lod_group(10, (1,))
+draws.register_shader(0, RenderShader({"color": ShaderPass(pipeline)}))
+draws.sync([10, 10], [0, 0], labels=["first", "second"])
+draws.write_instances(input_instances[draws.instance_order])
+main_view = draws.create_visibility()
+shadow_view = draws.create_visibility()
 
-oit.resize((width, height))  # Skip nonpositive frame sizes in the caller.
-view_projection = oit.update_frame(view=view, projection=projection,
-    camera_position=eye, near=0.1, far=1000)
-commands = render_context.commands("frame")
-# Synchronize and upload instances/metadata before recording GPU passes.
-# Prepare visibility and indirect commands for both opaque and transparent draws.
-
-with oit.opaque_pass(commands) as render:
-    opaque_draws.draw(render, "prepass")
-with oit.guide_pass(commands) as render:
-    transparent_draws.draw(render, "main", pass_override=transparent_geometry.guide)
-with oit.transmittance_pass(commands) as render:
-    transparent_draws.draw(render, "prepass")
-with oit.selection_pass(commands) as render:
-    transparent_draws.draw(render, "main")
-oit.shade_winner(commands, transparent_geometry)
-oit.compose(commands, output.color_attachment())
-render_context.submit(commands.finish())
+commands = RenderContext.commands("frame")
+FrustumCuller().record(commands, main_view,
+    camera_position=eye, view_projection=view_projection)
+with commands.render_pass(color=output.color_attachment()) as render:
+    draws.draw(render, main_view, "color")
+RenderContext.submit(commands.finish())
 ```
 
-`update_frame()` uses the existing row-vector matrix convention and returns
-`view @ projection`. It validates finite matrices, vec3 camera/light values,
-and `0 < near < far` before writing uniforms. `update_camera(camera)` delegates
-to the same implementation and obtains projection aspect from the target size.
+`DrawList.build(lod_ids, shader_ids)` provides pure CPU grouping. `DrawBatches`
+owns shared geometry/instances; `Visibility` owns each view's counters, visible
+indices, and indirect commands. `sync()` snapshots keys and labels to detect
+in-place changes and returns whether instance order was invalidated. Upload all
+attributes and metadata in the same `instance_order`. Pass names are arbitrary.
 
-Visibility preparation remains explicit: call `update_cull_camera()`,
-`refresh_bindings(hzb_view)`, `reset_draw_counts(commands)`, and
-`cull_instances(commands, "frustum")` after synchronization. For the normal Hi-Z
-workflow, draw the depth prepass, build the HZB, then cull with `"hiz"` before the
-main draw. For the transparency example's frustum-only workflow, copy prepass
-commands and visibility to their main buffers before drawing; enable `COPY_SRC`
-on the source buffers. `oit.dummy_hzb` can satisfy the unused HZB binding.
+Use `visibility.all_visible(lod=0)` for CPU/direct preparation, or
+`visibility.write(uint32_indices, indirect_records)` for a custom culler;
+`INDIRECT_DTYPE` describes those command records. After
+drawing depth, build `HZB` and call
+`HiZCuller().record(commands, main_view, hzb_view=hzb.view)` to refine that view's
+frustum results. No dummy HZB or prepass-to-main copies are needed. Indirect
+drawing requires the `indirect-first-instance` device feature.
 
-The context still owns one shared device/window. This change does not introduce
-multiple-device contexts. Transparency geometry retains the existing baked
-world-space vertex ABI, and every transparent draw in a winner-selection pass
-must share the metadata/vertex address space used by `shade_winner()`.
+The default culling ABI is `MESH_INSTANCE_DTYPE`; another dtype requires matching
+shaders/culling or caller-produced visibility. Group 1 supplies `instances` and
+`visible_instances` by default. `ShaderPass.instance_group` selects another group
+or `None` for caller-owned bindings. `draw()` accepts an `instance_binding`
+function for custom layouts. A pass supplies its complete extra binding set.
+
+`EcsDrawAdapter(draws, mesh_refs, lod_field="lod_id", shader_field="shader_id")`
+handles ECS extraction/version tracking. Call `adapter.sync(entities)` and use
+`adapter.mesh_field(name)` for packed per-component attributes. Repeated owners
+expand once; no transform component type is prescribed by the renderer.
+
+## Resources and pipelines through RenderContext
+
+`GpuBuffer(content, usage, copy=False)` borrows contiguous CPU content by default;
+`copy=True` requests a copy. `GpuBuffer(None, usage, dtype=..., count=...)` allocates
+GPU-only storage. `count`, `binding_size`, and `capacity_bytes` distinguish active
+records/scalars, bound bytes, and GPU capacity. Element-range uploads require 1-D
+content; `write_range()` offsets are bytes.
+
+`reserve(count)` preserves active data without changing count. GPU-only
+preservation requires `COPY_SRC | COPY_DST`; CPU-backed preservation needs
+`COPY_DST`. `resize(count)` discards GPU contents on growth. `set_count()` changes
+the active range within capacity and any CPU mirror.
+
+Resources retain their device/generation and reject reuse after device replacement
+or cleanup. Raw WGPU handles remain available. `close()` releases wrapper ownership
+without destroying handles referenced by recorded GPU work.
+
+`Mesh` uses `RenderContext.mesh_arena` by default. Supply `MeshArena` for an asset
+lifetime boundary. `mesh.release()` returns allocations for reuse;
+`arena.compact()` updates live ranges/generations. Draw synchronization detects
+relocation. Copy-on-reuse/reallocation preserves previously recorded handles.
+
+`RenderPipeline` accepts explicit `layout`, `depth_stencil`, per-attachment
+`targets`, `sample_count`, and normalized `vertex_formats`. Color attachments
+accept `resolve_target`. Attachment formats/counts and sample compatibility are
+validated when preparing a pipeline.
+
+`ShaderInterface` replaces Python reflection with explicit bindings, entries,
+vertex inputs, and `UniformInfo` NumPy offsets/strides. This supports padded
+matrices without treating a packed matrix as WGSL-aligned. Automatic layouts
+traverse entry-point function dependencies. Explicit interfaces' `active_bindings`
+handle shader-specific binding elimination; explicit WGPU layouts retain the
+caller's full binding ABI.
+
+## Composable transparency
+
+Create `TransparencyPass` with material/vertex/texture/noise resources and an
+explicit offscreen `target_format` where appropriate. Existing opaque inputs can
+be supplied as `opaque_color=...`, `opaque_depth=...`, or by `set_opaque_inputs()`.
+They must be single-sample, sampleable textures with matching dimensions.
+`resize(size, targets=TransparencyTargets(...))` accepts caller-owned targets;
+otherwise reconstruction targets are allocated internally.
+
+Create geometry with
+`oit.create_geometry_passes(metadata, transparent=True, instances=instance_buffer)`.
+Metadata is a vec4u per packed instance: triangle offset, material index, stable
+surface ID, reserved. Transparent draws in a selection pass share the metadata/
+vertex address space passed to `shade_winner()`. Invalid deferred addresses yield
+empty samples; geometry bindings cannot be mixed between technique owners.
+
+Raster and deferred vertices share local coordinates. Both apply packed instance
+translation, rotation, and scale; normals use inverse scale and rotation. CPU
+loading can still bake glTF node transforms before instance transforms apply.
+
+`material_source` replaces `shade(material, uv, position, normal, lod) -> vec3f`
+without changing selection/reconstruction. A matched `geometry_shader` and
+`shading_shader` pair can customize deformation under the same winner ABI.
+`create_geometry_passes()` accepts additional group-2 resources and higher-numbered
+binding groups. Animation data preparation remains caller-owned; no animation or
+skinning system is supplied.
+
+Use `update_frame(view=..., projection=..., camera_position=..., near=..., far=...)`
+or the `update_camera(camera)` adapter. The row-vector matrix convention remains
+`view @ projection`. Record opaque (skip when inputs already exist), guide,
+transmittance, selection, shading, and composition explicitly in caller commands.
+The technique does not submit or present. The migrated transparency scene and
+GPU integration tests show the complete pass order.
+
+## Examples and diagnostics
+
+From any directory after installation:
+
+```powershell
+python -m numpyecs
+python -m numpyecs --offscreen --frames 1
+python -m numpyecs --window --frames 120
+```
+
+The first command needs only NumPy. GPU modes load packaged shaders and use
+RenderContext. Existing scenes also run through `python main.py ...`.
+
+Enable counters with `RenderContext.enable_statistics()` and inspect them through
+`inspect_resources()`. Counters cover resource creation, uploads, cache behavior,
+grouping, and visibility; arenas report active/capacity bytes. Counters do not
+measure GPU execution time or synchronize the GPU.
+
+From the repository root run `python -m pytest tests src/tests -p no:cacheprovider`.
+Tests cover CPU-only imports, mutation/lifetimes, multiple views, explicit layouts,
+MSAA, custom materials, and offscreen GPU readback.

@@ -4,7 +4,7 @@ import scenes.benchmarks.benchmark_loop as loop
 import numpy as np
 from pyray import *
 
-from ECS import *
+from numpyecs.ECS import *
 
 
 @component
@@ -23,7 +23,7 @@ class Velocity:
 
 @component
 class Mesh:
-    color: Color
+    color: object
 
 
 @component
@@ -136,4 +136,5 @@ loop.add_cubes = add_cubes
 loop.draw = draw
 loop.update = update
 loop.cubes_len = cubes_len
-loop.run()
+if __name__ == "__main__":
+    loop.run()

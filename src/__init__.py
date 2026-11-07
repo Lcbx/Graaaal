@@ -1,5 +1,6 @@
+"""NumPy ECS and procedural rendering. Optional GPU/asset modules load on demand."""
 
-import sys
-from pathlib import Path
 
-sys.path.append(f'{Path(__file__).parent}')
+
+
+__version__ = "0.1.0"

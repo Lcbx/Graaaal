@@ -1,13 +1,16 @@
 """Explicit inspection and invariant checks; never run automatically in hot paths."""
+
 from __future__ import annotations
 
 from typing import Any, TYPE_CHECKING
+
 import numpy as np
 
-from ecs_types import NONE, NO_ENTITY, Mask, _entity_indices
+from .ecs_types import Mask, NONE, NO_ENTITY, _entity_indices
+
 
 if TYPE_CHECKING:
-	from ECS import ECS, ComponentStorage
+	from .ECS import ComponentStorage, ECS
 
 
 def storage_info(store: ComponentStorage) -> dict[str, Any]:
@@ -44,7 +47,7 @@ def _references_clear(array: np.ndarray, rows: np.ndarray) -> bool:
 def check_world(world: ECS) -> None:
 	"""Raise AssertionError on inconsistent generations, pools, masks or references."""
 	# Import here to avoid a runtime cycle with the ECS facade.
-	from ECS import MultiComponentStorage
+	from .ECS import MultiComponentStorage
 	current = world._current_entities
 	assert current.size == world._entity_masks.size, "world array capacities differ"
 	assert 0 <= world._next_entity_index <= current.size, "invalid next entity index"

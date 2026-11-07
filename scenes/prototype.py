@@ -4,10 +4,11 @@ Run with `python main.py scenes/prototype.py`. ImGui shows actor names and healt
 the player panel is blue and enemy panels are red. Model helpers can be
 imported without initializing a graphics device.
 """
-from enum import IntFlag, auto
-from dataclasses import dataclass
 
-from ECS import ECS, Entity, component
+from dataclasses import dataclass
+from enum import IntFlag, auto
+
+from numpyecs.ECS import ECS, Entity, component
 
 
 @component
@@ -154,8 +155,8 @@ def draw_actors(cache):
 
 
 def run_scene():
-	from Imgui import Imgui
-	from RenderContext import RenderContext
+	from numpyecs.Imgui import Imgui
+	from numpyecs.RenderContext import RenderContext
 
 	world = create_world()
 	actors = world.query(Damageable, Attributes, ActorMetadata)

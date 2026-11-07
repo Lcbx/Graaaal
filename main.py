@@ -6,7 +6,7 @@ if __name__ == "__main__":
 	from pathlib import Path
 	from importlib import import_module
 
-	import src
+	import numpyecs
 
 	parser = ArgumentParser(
 		prog='main.py',
@@ -57,15 +57,15 @@ if __name__ == "__main__":
 		scene = args.scene
 		if args.compile:
 			from subprocess import run
-			cwd = src.__path__[0]
-			run( f'py -m mypyc -m ECS', cwd=cwd)
-			run( f'py -m mypyc -m RenderContext', cwd=cwd)
-			run( f'py -m mypyc -m Utils', cwd=cwd)
-			run( f'py -m mypyc -m DrawBatches', cwd=cwd)
+			cwd = numpyecs.__path__[0]
+			run( f'py -m mypyc -m numpyecs.ECS', cwd=cwd)
+			run( f'py -m mypyc -m numpyecs.RenderContext', cwd=cwd)
+			run( f'py -m mypyc -m numpyecs.Math', cwd=cwd)
+			run( f'py -m mypyc -m numpyecs.DrawBatches', cwd=cwd)
 			if scene: run( f'py -m nuitka --output-dir=build --standalone {scene}'.split(' ') )
 		else:
+			from numpyecs.RenderContext import RenderContext
 			if args.frames is not None:
-				from RenderContext import RenderContext
 				window_loop = RenderContext.window_loop
 				frames = 0
 				def bounded_window_loop():
@@ -84,5 +84,6 @@ if __name__ == "__main__":
 			finally:
 				if args.frames is not None:
 					RenderContext.window_loop = window_loop
+				getattr(RenderContext, "cleanup", lambda: None)()
 			if args.frames is not None:
 				print(f"Scene completed: {frames} frames")

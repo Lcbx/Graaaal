@@ -1,0 +1,16 @@
+// Include draw_common.shaderlib and utils.shaderlib before these helpers.
+// The default storage ABI remains usable independently of transform policy.
+fn instance_position(inst: MeshInstance, position: vec3f) -> vec3f {
+    return inst.iPosition + quat_rotate(unpack_rotation(inst.iRotation), position * unpack_scale(inst.iScale));
+}
+
+fn instance_normal_vector(inst: MeshInstance, normal: vec3f) -> vec3f {
+    let scale = unpack_scale(inst.iScale);
+    let safe_scale = select(vec3f(1e-8), scale, abs(scale) > vec3f(1e-8));
+    return quat_rotate(unpack_rotation(inst.iRotation), normal / safe_scale);
+}
+
+fn instance_normal(inst: MeshInstance, normal: vec3f) -> vec3f {
+    let result = instance_normal_vector(inst, normal);
+    return result / max(length(result), 1e-8);
+}

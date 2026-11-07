@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from operator import index as integer_index
-from typing import TYPE_CHECKING, Callable, Sequence
+from typing import Callable, Sequence, TYPE_CHECKING
+
 import numpy as np
-from ecs_types import _synchronous_callable
-from ecs_commands import CommandBuffer
+
+from .ecs_commands import CommandBuffer
+from .ecs_types import _synchronous_callable
+
 
 if TYPE_CHECKING:
-	from ECS import ECS
+	from .ECS import ECS
 
 
 @dataclass(frozen=True)

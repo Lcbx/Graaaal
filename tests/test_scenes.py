@@ -52,9 +52,9 @@ def test_scene_launcher_caps_frames_for_entrypoint_and_legacy_scenes(monkeypatch
 		presents.append(1)
 		return True
 	context = SimpleNamespace(window_loop=window_loop)
-	render_module = ModuleType("RenderContext")
+	render_module = ModuleType("numpyecs.RenderContext")
 	render_module.RenderContext = context
-	monkeypatch.setitem(sys.modules, "RenderContext", render_module)
+	monkeypatch.setitem(sys.modules, "numpyecs.RenderContext", render_module)
 	def run_scene():
 		while context.window_loop():
 			frames.append(1)

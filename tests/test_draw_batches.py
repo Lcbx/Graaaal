@@ -14,8 +14,8 @@ import numpy as np
 import pytest
 
 
-from ECS import ECS, component, Entity, EntityArray, EntityLike, FieldArray, as_entities
-from RenderContext import higher_pow2, BindGroup
+from numpyecs.ECS import ECS, component, Entity, EntityArray, EntityLike, FieldArray, as_entities
+from numpyecs.RenderContext import higher_pow2, BindGroup
 
 
 class Buffer:
@@ -42,7 +42,7 @@ class Shader:
 	def __init__(self, **kwargs):
 		pass
 
-	def UniformBuffer(self, name):
+	def uniform_buffer(self, name):
 		return Buffer(np.zeros(1, dtype=[('workgroup_count', 'u4'), ('batch_count', 'u4'), ('command_count', 'u4')]))
 
 	def bind_group(self, *args, **kwargs):
@@ -102,14 +102,14 @@ def check(d):
 
 @pytest.fixture
 def m(monkeypatch):
-	ecs = types.ModuleType("ECS")
+	ecs = types.ModuleType("numpyecs.ECS")
 	ecs.ComponentAccessor = object
 	ecs.Entity = np.uint64
 	ecs.EntityArray = EntityArray
 	ecs.FieldArray = FieldArray
 	ecs.EntityLike = EntityLike
 	ecs.as_entities = as_entities
-	rc = types.ModuleType("RenderContext")
+	rc = types.ModuleType("numpyecs.RenderContext")
 	for name in ("Texture", "Mesh", "ComputePipeline", "RenderPipeline"):
 		setattr(rc, name, object)
 	rc.RenderPipeline = RenderPipeline
@@ -118,16 +118,16 @@ def m(monkeypatch):
 	rc.TextureUsage = NS()
 	rc.higher_pow2 = higher_pow2
 	rc.BindGroup = BindGroup
-	utils = types.ModuleType("Utils")
+	utils = types.ModuleType("numpyecs.Math")
 	utils.extract_frustum_planes = lambda x: x
-	for name, module in (("ECS", ecs), ("RenderContext", rc), ("Utils", utils)):
+	for name, module in (("numpyecs.ECS", ecs), ("numpyecs.RenderContext", rc), ("numpyecs.Math", utils)):
 		monkeypatch.setitem(sys.modules, name, module)
 	root = Path(__file__).resolve().parent
-	candidates = (root.parent / "src" / "DrawBatches.py", root / "src" / "DrawBatches.py", root / "DrawBatches.py")
+	candidates = (root.parent / "src" / "draw_compiler.py", root / "src" / "draw_compiler.py", root / "draw_compiler.py")
 	path = next((path for path in candidates if path.is_file()), None)
 	if path is None:
 		pytest.fail("Place this test in tests/ beside src/DrawBatches.py, or beside DrawBatches.py")
-	spec = importlib.util.spec_from_file_location("_compact_draw_batches_under_test", path)
+	spec = importlib.util.spec_from_file_location("numpyecs._compact_draw_batches_under_test", path)
 	module = importlib.util.module_from_spec(spec)
 	monkeypatch.setitem(sys.modules, spec.name, module)
 	spec.loader.exec_module(module)
@@ -136,15 +136,15 @@ def m(monkeypatch):
 
 @pytest.fixture
 def d(m):
-	d = m.DrawBatches(np.dtype([("a", "u4"), ("b", "u4")]))
+	d = m._BatchCompiler(np.dtype([("a", "u4"), ("b", "u4")]))
 	for i in (1, 2):
 		mesh = NS(index_count=i * 3, index_range=(i * 5, 10), vertex_range=(i * 7, 10))
 		d.register_mesh(i, mesh, bounds=([0, 0, 0], [1, 1, 1]))
 	d.register_lod_group(10, (1, None), (20,))
 	d.register_lod_group(20, (2,))
 	pipeline = RenderPipeline()
-	d.register_shader(0, m.RenderShader(m.ShaderPass(pipeline), m.ShaderPass(pipeline)))
-	d.register_shader(1, m.RenderShader(m.ShaderPass(pipeline), None))
+	d.register_shader(0, m._KernelShader(m.ShaderPass(pipeline), m.ShaderPass(pipeline)))
+	d.register_shader(1, m._KernelShader(m.ShaderPass(pipeline), None))
 	return d
 
 
@@ -221,7 +221,7 @@ def test_registry_updates_preserve_instances_and_selection(synced, m):
 	offset = int(d.buffers["mesh_metadata"].content[row]["lod_offset"])
 	assert d.buffers["lod_distances"].gpu[offset + 1] == 30
 	pipeline = RenderPipeline()
-	d.register_shader(1, m.RenderShader(m.ShaderPass(pipeline), m.ShaderPass(pipeline)))
+	d.register_shader(1, m._KernelShader(m.ShaderPass(pipeline), m.ShaderPass(pipeline)))
 	d.sync_resources()
 	check(d)
 	assert np.all(d.buffers["batches"].gpu[:len(d.source_batches)]["prepass"] == 1)
@@ -349,14 +349,14 @@ def test_mutating_selection_requires_regrouping(d):
 def test_register_shader_rejects_compute_pipeline(d, m):
 	before = d.shaders[0]
 	with pytest.raises(TypeError, match="RenderPipeline"):
-		d.register_shader(0, m.RenderShader(m.ShaderPass(object()), None))
+		d.register_shader(0, m._KernelShader(m.ShaderPass(object()), None))
 	assert d.shaders[0] is before
 
 
 def test_draw_replaces_material_bindings(synced, m):
 	d, _, _ = synced
 	extra = NS(group=2)
-	d.register_shader(0, m.RenderShader(m.ShaderPass(RenderPipeline(), (extra,)), None))
+	d.register_shader(0, m._KernelShader(m.ShaderPass(RenderPipeline(), (extra,)), None))
 	for info in d.meshes.values():
 		info.mesh.vertex_buffer = object()
 		info.mesh.index_buffer = object()
@@ -425,7 +425,7 @@ def test_hzb_mips_dispatch_and_resize_rebinding(m, monkeypatch, size):
 	hzb.build(NS(compute_pass=compute_pass))
 	for cp, (w, h) in zip(passes, expected):
 		cp.dispatch.assert_called_once_with((w + 15) // 16, (h + 15) // 16)
-	draws = m.DrawBatches(np.dtype("u4"))
+	draws = m._BatchCompiler(np.dtype("u4"))
 	draws.refresh_bindings(hzb.view)
 	old_binding, old_view = draws.bindings["hiz"], hzb.view
 	assert not hzb.resize(size)
@@ -440,4 +440,4 @@ def test_hzb_mips_dispatch_and_resize_rebinding(m, monkeypatch, size):
 @pytest.mark.parametrize("dtype", [np.dtype(object), np.dtype("V0"), np.dtype("u1"), np.dtype(("f4", (3,)))])
 def test_invalid_instance_layout(m, dtype):
 	with pytest.raises(ValueError):
-		m.DrawBatches(dtype)
+		m._BatchCompiler(dtype)

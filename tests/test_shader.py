@@ -1,15 +1,18 @@
 import numpy as np
 import pytest
 
-from RenderContext import *
+from numpyecs.RenderContext import *
 from pyrr import Matrix44 as Mat4
 
 
-RenderContext.setup_graphics_backend(highpower_gpu=False)
+@pytest.fixture(autouse=True)
+def shaders():
+	global shader1, shader2, shader3
+	RenderContext.setup_graphics_backend(highpower_gpu=False)
 
-shader1 = Shader(filepath="tests/test.shader")
-shader2 = Shader(filepath="tests/test.shader", features={"BIAS"})
-shader3 = Shader(filepath="tests/test.shader", features={"BIAS"}, params={"bias": 0.01} )
+	shader1 = Shader(filepath="tests/test.shader")
+	shader2 = Shader(filepath="tests/test.shader", features={"BIAS"})
+	shader3 = Shader(filepath="tests/test.shader", features={"BIAS"}, params={"bias": 0.01} )
 
 bias_decl = "const bias: f32 = "
 func_decl = "fn plus_one(bias: f32) -> f32"
@@ -37,7 +40,7 @@ def test_shader_variants():
 
 
 def test_uniform_buffer():
-	u = shader1.UniformBuffer()
+	u = shader1.uniform_buffer()
 
 	u.content["mvp"] = Mat4.from_scale([1.0, 1.0, 1.0], dtype=np.float32)
 	u.upload()

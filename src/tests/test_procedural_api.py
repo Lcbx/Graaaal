@@ -5,10 +5,10 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-import DrawBatches as batches
-import RenderContext as rc
-import TransparencyPass as transparency
-from ECS import ECS, component, columns
+from numpyecs import DrawBatches as batches
+from numpyecs import RenderContext as rc
+from numpyecs import TransparencyPass as transparency
+from numpyecs.ECS import ECS, component, columns
 
 
 @pytest.fixture
@@ -16,17 +16,17 @@ def draws(monkeypatch, tmp_path):
     device = NS(queue=Mock(), create_shader_module=Mock(),
         create_buffer=lambda **kw: NS(size=kw["size"]),
         create_buffer_with_data=lambda **kw: NS(size=kw["data"].nbytes))
-    monkeypatch.setattr(rc.render_context, "device", device, raising=False)
+    monkeypatch.setattr(rc.RenderContext, "device", device, raising=False)
     # Default engine shaders must also load from outside the repository.
     monkeypatch.chdir(tmp_path)
-    draws = batches.DrawBatches(np.dtype([("value", "u4")]))
+    draws = batches._BatchCompiler(np.dtype([("value", "u4")]))
     pipeline = rc.RenderPipeline.__new__(rc.RenderPipeline)
     pipeline.shader = NS(bind_group=lambda group, **resources: NS(group=group, resources=resources))
     for mesh_id in (1, 2):
         mesh = NS(index_count=3, index_range=(0, 3), vertex_range=(0, 3))
         draws.register_mesh(mesh_id, mesh, bounds=([0, 0, 0], [1, 1, 1]))
         draws.register_lod_group(mesh_id * 10, (mesh_id,))
-    draws.register_shader(0, batches.RenderShader(batches.ShaderPass(pipeline)))
+    draws.register_shader(0, batches._KernelShader(batches.ShaderPass(pipeline)))
     return draws
 
 
@@ -40,10 +40,10 @@ def test_array_grouping_keeps_duplicate_labels_and_aligns_instance_data(draws):
     draws.write_instance_fields(value=values[draws.instance_order])
     np.testing.assert_array_equal(draws.buffers["instances"].content["value"][:4], [200, 400, 100, 300])
     version = draws.instance_order_version
-    rc.render_context.device.queue.write_buffer.reset_mock()
+    rc.RenderContext.device.queue.write_buffer.reset_mock()
     assert not draws.sync_arrays(labels, lod_ids, [0, 0, 0, 0])
     assert draws.instance_order_version == version
-    rc.render_context.device.queue.write_buffer.assert_not_called()
+    rc.RenderContext.device.queue.write_buffer.assert_not_called()
     # Mutating caller-owned keys must invalidate the retained snapshot.
     lod_ids[0] = 10
     assert draws.sync_arrays(labels, lod_ids, [0, 0, 0, 0])
@@ -158,35 +158,19 @@ def test_passes_explain_missing_targets(method, args):
         getattr(oit, method)(*args)
 
 
-def test_cull_camera_accepts_both_keyword_spellings(draws):
+def test_cull_camera_uses_explicit_keywords(draws):
     draws.update_cull_camera(camera_position=[0, 0, 0], view_projection=np.eye(4))
-    before = draws.camera_params_buffer.content.copy()
-    draws.update_cull_camera(cameraPosition=[0, 0, 0], viewProjectionMatrix=np.eye(4))
-    np.testing.assert_array_equal(draws.camera_params_buffer.content, before)
-    with pytest.raises(TypeError):
-        draws.update_cull_camera(camera_position=[0, 0, 0], cameraPosition=[1, 1, 1], view_projection=np.eye(4))
+    assert np.isfinite(draws.camera_params_buffer.content["view_proj"]).all()
     with pytest.raises(TypeError):
         draws.update_cull_camera(camera_position=[0, 0, 0], view_projection=np.eye(4), typo=1)
 
 
-def test_legacy_names_share_identity_and_writable_window_state():
-    assert rc.RenderContext is rc.render_context
-    assert rc.GC_Manager is rc.GCManager
-    assert rc.Shader.UniformBuffer is rc.Shader.uniform_buffer
-    assert batches.standard_RenderShader is batches.standard_render_shader
-    context = rc._RenderContext()
-    context.windowDimensions = (40, 30)
-    assert context.window_dimensions == (40, 30)
-    context.window_dimensions = (20, 10)
-    assert context.windowDimensions == (20, 10)
-
-
 def test_gpu_array_batches_cull_in_compact_order_from_another_directory(monkeypatch, tmp_path):
-    from Utils import mesh_instance_dtype, pack_quaternion, pack_scale
+    from numpyecs.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
 
-    rc.render_context.setup_graphics_backend(True)
+    rc.RenderContext.setup_graphics_backend(True)
     monkeypatch.chdir(tmp_path)
-    draws = batches.DrawBatches(mesh_instance_dtype)
+    draws = batches._BatchCompiler(MESH_INSTANCE_DTYPE)
     # Read back the actual GPU indirect commands, including frustum rejection.
     name = "prepass_draw_cmd"
     buffer = draws.buffers[name]
@@ -195,7 +179,7 @@ def test_gpu_array_batches_cull_in_compact_order_from_another_directory(monkeypa
     shader = rc.Shader(filepath=str(transparency.SHADERS / "stochastic_geometry.shader"))
     pipeline = rc.RenderPipeline(shader, vertex_entry="vertex", fragment_entry="opaque")
     spec = batches.ShaderPass(pipeline)
-    draws.register_shader(0, batches.RenderShader(spec, spec))
+    draws.register_shader(0, batches._KernelShader(spec, spec))
     mesh = NS(index_count=3, index_range=(0, 3), vertex_range=(0, 3))
     draws.register_mesh(1, mesh, bounds=([0, 0, 0], [0.1, 0.1, 0.1]))
     for group_id in (10, 20):
@@ -208,12 +192,12 @@ def test_gpu_array_batches_cull_in_compact_order_from_another_directory(monkeypa
     dummy = rc.Texture((1, 1), format="r32float", usage=rc.TextureUsage.TEXTURE_BINDING)
     draws.refresh_bindings(dummy.view())
     draws.update_cull_camera(camera_position=[0, 0, 0], view_projection=np.eye(4))
-    commands = rc.render_context.commands("array_culling")
+    commands = rc.RenderContext.commands("array_culling")
     draws.reset_draw_counts(commands)
     draws.cull_instances(commands, "frustum")
-    rc.render_context.submit(commands.finish())
-    raw = rc.render_context.device.queue.read_buffer(draws.buffers[name].handle)
-    indirect = np.frombuffer(raw, dtype=batches.indirect_dtype, count=2)
+    rc.RenderContext.submit(commands.finish())
+    raw = rc.RenderContext.device.queue.read_buffer(draws.buffers[name].handle)
+    indirect = np.frombuffer(raw, dtype=batches.INDIRECT_DTYPE, count=2)
     np.testing.assert_array_equal(indirect["instance_count"], [1, 0])
     # Compile both HZB entries from the engine path as well.
     hzb = batches.HZB()

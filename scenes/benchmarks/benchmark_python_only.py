@@ -59,5 +59,6 @@ loop.add_cubes = add_cubes
 loop.draw = draw
 loop.update = update
 loop.cubes_len = cubes_len
-loop.run()
+if __name__ == "__main__":
+    loop.run()
 

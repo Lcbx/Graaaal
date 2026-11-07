@@ -3,11 +3,12 @@
 Uses WGPU's ImguiWgpuBackend for draw lists, textures, clipping and blending.
 Create after init_window(), render after the scene, and close before cleanup().
 """
+
 from contextlib import contextmanager
 
 import glfw
 
-from RenderContext import RenderContext
+from .RenderContext import RenderContext
 
 
 class Imgui:

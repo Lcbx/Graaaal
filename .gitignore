@@ -11,3 +11,4 @@ build/*
 
 # blender
 *.blend1
+*.egg-info/

@@ -1,40 +1,76 @@
 from __future__ import annotations
 
+import inspect
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence, TypeAlias
+
 import numpy as np
-import inspect
+from numpy.typing import NDArray
+
+from .ecs_commands import CommandBuffer, CommandError, DeferredEntities
+from .ecs_diagnostics import check_world, storage_info, world_info
+from .ecs_schedule import Scheduler
+from .ecs_schema import ComponentColumns, ComponentSchema, columns
+from .ecs_types import (
+    BoolArray,
+    ComponentPerEntityCount,
+    CountArray,
+    Entity,
+    EntityArray,
+    EntityLike,
+    FieldArray,
+    GENERATION_INCREMENT,
+    Generation,
+    GenerationArray,
+    INDEX_BITS,
+    INDEX_MASK,
+    INDEX_MAX,
+    INITIAL_CAPACITY,
+    Index,
+    IndexArray,
+    IndexLike,
+    Mask,
+    MaskArray,
+    NONE,
+    NO_ENTITY,
+    OBJECT_DTYPE,
+    arg_names,
+    array_field,
+    as_entities,
+    as_rows,
+    component,
+    entity_generation,
+    entity_index,
+    higher_pow2,
+    _COUNT_STR,
+    _ENTITY_STR,
+    _clear_object_references,
+    _dtype_for,
+    _entity_indices,
+    _predicate_parameters,
+    _quantity,
+)
+
+
 try:
 	from mypy_extensions import mypyc_attr
 except ImportError:
 	# Compilation support is optional for the NumPy-only runtime.
 	def mypyc_attr(*attrs: str, **options: object) -> Any:  # type: ignore[misc]
 		return lambda cls: cls
-from numpy.typing import NDArray
-
-from ecs_types import (
-	Entity, Index, Generation, Mask, ComponentPerEntityCount,
-	EntityArray, IndexArray, GenerationArray, MaskArray, CountArray, BoolArray, FieldArray,
-	EntityLike, IndexLike, INDEX_MAX, INDEX_BITS, INDEX_MASK, GENERATION_INCREMENT,
-	NONE, NO_ENTITY, INITIAL_CAPACITY, OBJECT_DTYPE,
-	component, higher_pow2, entity_index, entity_generation, as_entities, as_rows, arg_names,
-)
-from ecs_types import _quantity, _entity_indices, _clear_object_references, _predicate_parameters, _dtype_for, _ENTITY_STR, _COUNT_STR
-from ecs_schema import ComponentColumns, ComponentSchema, columns
-from ecs_commands import CommandBuffer, CommandError, DeferredEntities
-from ecs_schedule import Scheduler
-from ecs_diagnostics import storage_info, world_info, check_world
 
 
 class _RowSelection:
 	"""Common storage identity, row ownership, and lifetime checks."""
-	__slots__ = ("_store", "_rows", "_layout_version")
+	__slots__ = ("_store", "_rows", "_layout_version", "_take_rows")
 
 	def __init__(self, store: ComponentStorage, rows: IndexArray) -> None:
 		self._store = store
 		self._rows = as_rows(rows).copy()
 		self._rows.flags.writeable = False
 		self._layout_version = store.layout_version
+		self._take_rows = None
 
 	def _validate(self, store: ComponentStorage | None = None) -> None:
 		if store is not None and self._store is not store:
@@ -91,6 +127,23 @@ class ComponentSelection(_RowSelection):
 		"""Assign fields atomically; repeated rows use NumPy last-write semantics."""
 		self._validate()
 		self._store._write_fields(self._rows, fields)
+
+	def read(self, field: str, *, out: FieldArray | None = None) -> FieldArray:
+		"""Gather a field; out must have the exact dtype/shape and cannot alias storage."""
+		self._validate()
+		if field not in self._store.fields: raise KeyError(field)
+		array = self._store._dense[field]
+		if out is None: return array[self._rows]
+		if not isinstance(out, np.ndarray) or out.dtype != array.dtype or out.shape != (len(self),) + array.shape[1:]:
+			raise ValueError("out must match the selected field's dtype and shape")
+		if not out.flags.writeable: raise ValueError("out must be writable")
+		if any(np.shares_memory(out, value) for value in self._store._dense.values()):
+			raise ValueError("out must not alias component storage")
+		# Checked indices allow clip mode, avoiding take's raise-mode temporary.
+		if self._take_rows is None:
+			self._take_rows = self._rows.astype(np.intp)
+		np.take(array, self._take_rows, axis=0, out=out, mode="clip")
+		return out
 
 	def vector(self, *field_names: str) -> FieldArray:
 		"""Pack numeric fields in C order, using NumPy dtype promotion."""
@@ -213,6 +266,33 @@ class ComponentAccessor:
 		if isinstance(self._store, MultiComponentStorage):
 			self._store._defragment(self._store._live_count)
 
+	@contextmanager
+	def edit_dense(self, *field_names: str) -> Iterator[dict[str, FieldArray]]:
+		"""Borrow numeric columns in storage order; views must not escape the scope.
+
+		Structural edits to this store are forbidden. Declared fields are touched
+		even after exceptions; writes are not rolled back. Compact multicomponent
+		storage before borrowing if it contains holes.
+		"""
+		store = self._store
+		store._check_structural()
+		fields = field_names or store.fields
+		if len(set(fields)) != len(fields): raise ValueError("duplicate writable fields")
+		for name in fields:
+			if name not in store.fields: raise KeyError(name)
+			if store._dense[name].dtype.hasobject: raise TypeError("dense editing requires numeric fields")
+		if isinstance(store, MultiComponentStorage) and store._live_count != store._size:
+			raise RuntimeError("Compact multicomponent storage before dense editing")
+		views = {name: store._dense[name][:store._size].view() for name in fields}
+		borrowed = tuple(views.values())
+		store._borrow_count += 1
+		try:
+			yield views
+		finally:
+			store._borrow_count -= 1
+			if store._size: store.touch(*fields)
+			for array in borrowed: array.flags.writeable = False
+
 	def get_rows(self) -> IndexArray:
 		"""Return ephemeral raw row indices; rows() retains lifetime checks."""
 		return self._store._active_rows()
@@ -299,6 +379,7 @@ class ComponentStorage:
 		self.membership_version = 0
 		self.layout_version = 0
 		self.field_versions = {name: 0 for name in self.fields}
+		self._borrow_count = 0
 		self._field_dtypes = self.schema._field_dtypes.copy()
 
 		self._capacity = max(1, int(capacity))
@@ -315,6 +396,10 @@ class ComponentStorage:
 			elif dtype.hasobject:
 				_clear_object_references(array, slice(None))
 			self._dense[name] = array
+
+	def _check_structural(self) -> None:
+		if self._borrow_count:
+			raise RuntimeError("Cannot structurally edit component storage during edit_dense")
 
 	def touch(self, *field_names: str) -> None:
 		fields = field_names or self.fields
@@ -380,6 +465,7 @@ class ComponentStorage:
 
 	def _grow_dense(self, minimum_capacity: int) -> None:
 		if minimum_capacity <= self._capacity: return
+		self._check_structural()
 		self.layout_version += 1
 
 		new_capacity = higher_pow2(minimum_capacity)
@@ -416,6 +502,7 @@ class ComponentStorage:
 
 	def _validate_add(self, entities: EntityArray) -> None:
 		indices = _entity_indices(entities)
+		self._check_structural()
 		if np.unique(indices).size != indices.size:
 			raise ValueError(f"duplicate owners for {self.component_cls.__name__}")
 		if np.any(self._get_dense_indices(indices) != NONE):
@@ -455,6 +542,7 @@ class ComponentStorage:
 	def _remove_rows(self, rows: IndexArray) -> EntityArray:
 		if rows.size == 0:
 			return np.empty(0, dtype=Entity)
+		self._check_structural()
 
 		self.membership_version += 1
 		self.layout_version += 1
@@ -589,6 +677,7 @@ class MultiComponentStorage(ComponentStorage):
 		self._size -= int(np.argmax(reverse_live))
 
 	def _defragment(self, required_capacity: int) -> None:
+		self._check_structural()
 		rows = self._active_rows()
 		live = int(rows.size)
 
@@ -644,6 +733,7 @@ class MultiComponentStorage(ComponentStorage):
 
 	def _validate_add(self, entities: EntityArray) -> None:
 		owners, counts = np.unique(_entity_indices(entities), return_counts=True)
+		self._check_structural()
 		heads = self._get_dense_indices(owners)
 		existing = heads != NONE
 		counts[existing] += self._dense_counts[heads[existing]].astype(np.int64)
@@ -765,6 +855,7 @@ class MultiComponentStorage(ComponentStorage):
 
 	def _remove_rows(self, rows: IndexArray) -> EntityArray:
 		if not rows.size: return np.empty(0, dtype=Entity)
+		self._check_structural()
 		self.membership_version += 1
 		self.layout_version += 1
 		removed_owners = self._dense_entities[rows]
@@ -1235,6 +1326,8 @@ class ECS:
 		entity_array = np.unique(entity_array)
 		indices = _entity_indices(entity_array)
 		masks = self._entity_masks[indices].copy()
+		for component_cls, bit in self._comp_bits.items():
+			if np.any((masks & bit) != 0): self._stores[component_cls]._check_structural()
 
 		for component_cls, bit in self._comp_bits.items():
 			selected = (masks & bit) != 0
@@ -1265,6 +1358,7 @@ class ECS:
 		filter_values = not np.all(alive)
 		prepared: dict[ComponentStorage, tuple[Mask, list[dict[str, FieldArray]]]] = {}
 		for store, bit, payload in self._parse_add_components(components):
+			if not replace: store._check_structural()
 			multiple = isinstance(store, MultiComponentStorage)
 			if replace and multiple:
 				raise TypeError("set() does not support multicomponent storage")
@@ -1323,6 +1417,7 @@ class ECS:
 
 		indices = _entity_indices(entity_array)
 		stores = [self._component_info(cls) for cls in dict.fromkeys(component_types)]
+		for store, _ in stores: store._check_structural()
 		for store, bit in stores:
 			store._remove_entities(indices)
 			self._entity_masks[indices] &= ~bit

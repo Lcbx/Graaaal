@@ -25,7 +25,7 @@ def main():
     if args.frames < 1:
         parser.error('frames must be positive')
 
-    from RenderContext import RenderContext, GpuBuffer
+    from numpyecs.RenderContext import RenderContext, GpuBuffer
     from scenes.direct_draw_example import CubeInstances, run_scene
 
     original_loop, original_upload, original_update = RenderContext.window_loop, GpuBuffer.upload, CubeInstances.update

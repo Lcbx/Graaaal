@@ -1,7 +1,48 @@
 # Engine API and internals improvement plan
 
-Status: proposed implementation plan. The phases below are future work, not
-claims about features already implemented.
+Status: core implementation completed on 2026-11-07. The phase descriptions
+below remain the design/acceptance checklist; the implementation record identifies
+the delivered APIs and the deliberately deferred, workload-dependent work.
+
+Review results:
+- [P2] Allow released meshes to leave the draw registry — C:/Users/User/Desktop/tests/engines/numpyEcs/src/draw_compiler.py:267-271
+  After removing a mesh's instances and calling mesh.release(), subsequent synchronization still visits the registered mesh: its changed generation marks it dirty, and this unconditional range access raises RuntimeError("Mesh allocation has been released"), even when _mesh_commands contains no destinations for it. There is no public unregister operation, so unloading an unused mesh breaks the retained DrawBatches object. Provide registry removal or skip range access for meshes without active destinations.
+- [P2] Remove the remaining CPU-mirror dependency from draw_mesh — C:/Users/User/Desktop/tests/engines/numpyEcs/src/RenderContext.py:719-720
+  When a newly supported GPU-only buffer is passed as instances, draw_mesh() still calculates the vertex-buffer offset using instances.content.dtype.itemsize. Since content is None, this raises AttributeError before reaching the updated count calculation, including when instance_offset is zero. Use instances.dtype.itemsize for the offset so GPU-generated instance buffers work through this drawing API.
+
+
+## Implementation record
+
+| Phase | Delivered |
+| --- | --- |
+| 1 | Installable `numpyecs` package with shader resources; relative imports; CPU-only math/assets/packing modules; import-safe scenes; removed naming aliases and `Utils.py` |
+| 2 | `array_field()` dtype/shape metadata; explicit object fields; reusable `selection.read(out=...)`; scoped `edit_dense()` with structural preflight and exception-path invalidation |
+| 3 | Captured device/generation ownership; active buffer count/binding size/capacity; GPU-only storage and preserving reserve; RenderContext-owned default mesh arena with release/reuse and compaction |
+| 4 | Pure NumPy `DrawList`; optional `EcsDrawAdapter`; public drawing separated from its private compiler; independent `Visibility`; frustum/Hi-Z and CPU/custom preparation; named passes and configurable instance bindings |
+| 5 | Explicit shader interfaces/layouts, normalized vertex formats, per-attachment state, MSAA/resolve, depth/stencil configuration, feature validation, and pipeline/binding cache handling |
+| 6 | External opaque inputs and caller-owned targets; shared raster/deferred transforms and inverse-scale normals; bounded winner addressing; custom material source and matched deformation shader/resource interfaces |
+| 7 | Installed CPU/offscreen/window examples; migrated scene integrations; opt-in counters and resource inspection; GPU readback tests; recorded NumPy access measurements |
+
+Validation: the complete suite passes (415 tests), including CPU-only dependency
+checks, scene import checks, independent GPU visibility, padded explicit uniforms,
+MSAA, custom materials, transformed reconstruction, and resource lifetimes. A wheel
+was independently installed in a temporary directory and its packaged shader
+example rendered successfully from an unrelated working directory.
+The batched-draw, direct-draw, transparency, and prototype scenes each completed
+a bounded three-frame window run. The direct-draw shadow pipeline now explicitly
+disables its fragment entry for the depth-only pass. `git diff --check` passes.
+
+The current public contracts are in [PROCEDURAL_API.md](PROCEDURAL_API.md).
+Measured array access costs and retained scratch-memory tradeoffs are in
+[ARRAY_BENCHMARKS.md](ARRAY_BENCHMARKS.md). These are local CPU measurements,
+not GPU execution timings or whole-frame speedup claims.
+
+Workload-dependent changes remain deferred: dirty-row/chunk tracking, paged sparse
+maps, alternate multicomponent storage, wider component masks, and parallel
+scheduling. Existing schedule phases remain sufficient for the integrations;
+custom phase configuration was not needed. Custom deformation interfaces do not
+constitute an animation/skinning system. The shared winner-address-space contract
+remains explicit. RenderContext remains the central window/event-loop/GPU manager.
 
 The goal is a reusable, customizable NumPy-based game engine with a small,
 procedural API. Applications should be able to use the ECS, asset preparation,

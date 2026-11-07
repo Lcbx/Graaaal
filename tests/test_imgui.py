@@ -10,8 +10,8 @@ import wgpu
 from imgui_bundle import imgui
 import wgpu.utils.imgui as backend_module
 
-from Imgui import Imgui
-from RenderContext import RenderContext
+from numpyecs.Imgui import Imgui
+from numpyecs.RenderContext import RenderContext
 from scenes.prototype import ActorCache, Damageable, Attributes, ActorMetadata, create_world, draw_actors
 from scenes.transparency_example import BilateralFilter, FilterSettings
 

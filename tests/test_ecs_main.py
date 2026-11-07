@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from ECS import *
+from numpyecs.ECS import *
 
 
 def test_higher_pow2() -> None:

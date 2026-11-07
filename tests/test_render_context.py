@@ -5,7 +5,7 @@ import weakref
 
 import numpy as np
 import pytest
-import RenderContext as rc
+from numpyecs import RenderContext as rc
 
 
 def test_entry_inference_comments_and_depth_only():
@@ -142,7 +142,7 @@ def test_render_pass_material_switch_drops_previous_groups():
 
 def test_gc_budget_and_restore(monkeypatch):
     enabled, thresholds = rc.gc.isenabled(), rc.gc.get_threshold()
-    manager = rc.GC_Manager()
+    manager = rc.GCManager()
     try:
         monkeypatch.setattr(rc.RenderContext, "target_frame_time", 0.02)
         monkeypatch.setattr(rc.RenderContext, "frame_start", 1.0)
@@ -172,7 +172,7 @@ def test_gc_busy_frames_cannot_starve_old_generation(monkeypatch):
     monkeypatch.setattr(rc.gc, "get_count", lambda: tuple(counts))
     collect = Mock()
     monkeypatch.setattr(rc.gc, "collect", collect)
-    manager = rc.GC_Manager(max_deferral=1.0)
+    manager = rc.GCManager(max_deferral=1.0)
     try:
         manager()
         clock[0] = 0.5
@@ -197,7 +197,7 @@ def test_gc_idle_reclaims_a_real_cycle(monkeypatch):
         pass
 
     monkeypatch.setattr(rc.RenderContext, "target_frame_time", None)
-    manager = rc.GC_Manager(thresholds=(1, 10000, 10000))
+    manager = rc.GCManager(thresholds=(1, 10000, 10000))
     try:
         rc.gc.collect(2)
         obj = Cycle()
@@ -223,11 +223,11 @@ def test_gc_helpers_reclaim_promoted_cycles_without_freezing(monkeypatch):
     freeze, unfreeze = Mock(), Mock()
     monkeypatch.setattr(rc.gc, "freeze", freeze)
     monkeypatch.setattr(rc.gc, "unfreeze", unfreeze)
-    manager = rc.GC_Manager()
+    manager = rc.GCManager()
     refs = []
     try:
         old = abandoned_cycle()
-        rc.GC_Manager.full_sweep()
+        rc.GCManager.full_sweep()
         assert old() is None
 
         def load():
@@ -237,7 +237,7 @@ def test_gc_helpers_reclaim_promoted_cycles_without_freezing(monkeypatch):
             rc.gc.collect(0)
             rc.gc.collect(1)
 
-        rc.GC_Manager.scene_transition(load)
+        rc.GCManager.scene_transition(load)
         assert refs[-1]() is None
 
         def failed_load():
@@ -245,7 +245,7 @@ def test_gc_helpers_reclaim_promoted_cycles_without_freezing(monkeypatch):
             raise RuntimeError("scene failed")
 
         with pytest.raises(RuntimeError, match="scene failed"):
-            rc.GC_Manager.scene_transition(failed_load)
+            rc.GCManager.scene_transition(failed_load)
         assert refs[-1]() is None
     finally:
         manager.close()
@@ -254,7 +254,7 @@ def test_gc_helpers_reclaim_promoted_cycles_without_freezing(monkeypatch):
 
 
 def test_gc_closed_manager_does_not_collect(monkeypatch):
-    manager = rc.GC_Manager()
+    manager = rc.GCManager()
     manager.close()
     collect = Mock()
     monkeypatch.setattr(rc.gc, "collect", collect)

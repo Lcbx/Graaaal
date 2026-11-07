@@ -1,10 +1,12 @@
 """Self-contained direct-draw scene with versioned, shader-specific instance packing."""
-from math import cos, sin
+
 import random as rd
+from math import cos, sin
 
 import numpy as np
 
-from ECS import ECS, component, columns
+from numpyecs.ECS import ECS, columns, component
+
 
 @component
 class Position:
@@ -73,14 +75,22 @@ class CubeInstances:
 
 
 def run_scene():
-	from RenderContext import (
-		RenderContext, Shader, RenderPipeline, GpuBuffer, BufferUsage, Mesh, get_time,
-		create_depth_framebuffer, create_depth_sampler,
+	from numpyecs.RenderContext import (
+	    BufferUsage,
+	    create_depth_framebuffer,
+	    create_depth_sampler,
+	    get_time,
+	    GpuBuffer,
+	    Mesh,
+	    RenderContext,
+	    RenderPipeline,
+	    Shader,
 	)
-	from Utils import (
-		Camera, Vec3, Quaternion, pack_rgba8_srgb, pack_quaternion, pack_scale,
-		mesh_instance_dtype, make_cube_mesh, load_gltf_first_mesh_interleaved,
-	)
+	from numpyecs.Math import Camera, Vec3
+	from pyrr import Quaternion
+	from numpyecs.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale
+	from numpyecs.Geometry import make_cube_mesh
+	from numpyecs.Assets import load_gltf_first_mesh_interleaved
 
 	world = ECS()
 	positions, velocities, rotations, scales, tints = world.register(
@@ -176,6 +186,7 @@ def run_scene():
 	shadow_pipeline = RenderPipeline(
 		shader,
 		vertex_entry="shadow_vertex",
+		fragment_entry=None,
 		depth_bias=2,
 		depth_bias_slope_scale=2.0,
 		label="shadow",
@@ -185,7 +196,7 @@ def run_scene():
 		"scenes/resources/rooftop_utility_pole.glb"
 	)
 	model_mesh = Mesh(vertices, indices)
-	model_instances = np.zeros(1, mesh_instance_dtype)
+	model_instances = np.zeros(1, MESH_INSTANCE_DTYPE)
 	model_instances[0]["iPosition"] = Vec3(15.0, 0.0, 15.0)
 	model_instances[0]["iTint"] = pack_rgba8_srgb([0.3, 0.5, 0.7, 1.0])
 	model_instances[0]["iRotation"] = pack_quaternion(Quaternion())
@@ -198,14 +209,14 @@ def run_scene():
 
 	cube_mesh = make_cube_mesh()
 	cube_instances = CubeInstances(world, render_query, (Position, Rotation, Scale, Tint),
-		mesh_instance_dtype, pack_quaternion, pack_scale)
+		MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale)
 	cube_instances.update()
 	cube_instance_buffer = GpuBuffer(
 		cube_instances.content,
 		BufferUsage.VERTEX | BufferUsage.COPY_DST,
 	)
 
-	uniform_buffer = shader.UniformBuffer()
+	uniform_buffer = shader.uniform_buffer()
 
 	shadow_texture = create_depth_framebuffer(1024, 1024)
 	shadow_view = shadow_texture.view()

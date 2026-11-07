@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from ECS import ECS, Entity, INDEX_MAX, NO_ENTITY, component, entity_index
+from numpyecs.ECS import ECS, Entity, INDEX_MAX, NO_ENTITY, component, entity_index
 
 
 @component

@@ -4,9 +4,10 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from RenderContext import BufferUsage, GpuBuffer, RenderContext, Texture, TextureUsage
-from Utils import Camera, mesh_instance_dtype
-from TransparencyPass import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE, TransparencyPass
+from numpyecs.RenderContext import BufferUsage, GpuBuffer, RenderContext, Texture, TextureUsage
+from numpyecs.Math import Camera
+from numpyecs.InstanceData import MESH_INSTANCE_DTYPE, pack_scale, pack_quaternion
+from numpyecs.TransparencyPass import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE, TransparencyPass
 
 
 def test_procedural_transparency_records_into_caller_commands_and_output(monkeypatch, tmp_path):
@@ -37,9 +38,12 @@ def test_procedural_transparency_records_into_caller_commands_and_output(monkeyp
 		base_textures=white.view(dimension="2d-array"), vertices=GpuBuffer(stored, storage),
 		blue_noise=noise, target_format="rgba8unorm")
 	metadata = GpuBuffer(np.array([[0, 0, 42, 0]], dtype=np.uint32), storage)
-	geometry = oit.create_geometry_passes(metadata, transparent=True)
 	vertex_buffer = GpuBuffer(vertices, BufferUsage.VERTEX | BufferUsage.COPY_DST)
-	instances = GpuBuffer(np.zeros(1, dtype=mesh_instance_dtype), storage)
+	instances = GpuBuffer(np.zeros(1, dtype=MESH_INSTANCE_DTYPE), storage)
+	instances.content["iScale"] = pack_scale([1, 1, 1])
+	instances.content["iRotation"] = pack_quaternion([0, 0, 0, 1])
+	instances.upload()
+	geometry = oit.create_geometry_passes(metadata, transparent=True, instances=instances)
 	visible = GpuBuffer(np.zeros(1, dtype=np.uint32), storage)
 	instance_bindings = oit.shader.bind_group(1, instances=instances, visible_instances=visible)
 	camera = Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 55, near=0.01, far=100)
@@ -63,8 +67,8 @@ def test_procedural_transparency_records_into_caller_commands_and_output(monkeyp
 			pass  # This caller has no opaque geometry.
 		for begin, shader_pass in (
 			(oit.guide_pass, geometry.guide),
-			(oit.transmittance_pass, geometry.render_shader.prepass),
-			(oit.selection_pass, geometry.render_shader.main),
+			(oit.transmittance_pass, geometry.render_shader['prepass']),
+			(oit.selection_pass, geometry.render_shader['main']),
 		):
 			with begin(commands) as render:
 				render.set_pipeline(shader_pass.pipeline)

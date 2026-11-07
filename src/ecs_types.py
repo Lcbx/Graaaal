@@ -1,15 +1,35 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
-from enum import IntFlag
-from collections import deque
 import inspect
+from collections import deque
+from dataclasses import (
+    dataclass,
+    field as dataclass_field,
+    fields as dataclass_fields,
+    is_dataclass,
+)
+from enum import IntFlag
 from operator import index as integer_index
 from types import MappingProxyType
-from typing import cast, Any, Callable, ClassVar, Iterable, Iterator, Mapping, Sequence, TypeAlias, get_origin, get_type_hints
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+    TypeAlias,
+    cast,
+    get_origin,
+    get_type_hints,
+)
 
 import numpy as np
 from numpy.typing import NDArray
+
+from .array_utils import higher_pow2
+
 
 def component(cls: type | None = None, *, multiples: bool = False) -> Any | Callable:
 	def decorator(target: Any) -> Any:
@@ -18,6 +38,15 @@ def component(cls: type | None = None, *, multiples: bool = False) -> Any | Call
 	if cls is None:
 		return decorator
 	return decorator(cls)
+
+
+def array_field(dtype: Any, *, shape: Sequence[int] = ()) -> Any:
+	"""Declare a dataclass column, e.g. position: np.ndarray = array_field('f4', shape=(3,))."""
+	shape = tuple(integer_index(size) for size in shape)
+	if any(size <= 0 for size in shape): raise ValueError("Field dimensions must be positive")
+	base = np.dtype(dtype)
+	if base.hasobject and shape: raise TypeError("Shaped object fields are not supported")
+	return dataclass_field(metadata={"numpyecs.dtype": np.dtype((base, shape)) if shape else base})
 
 
 Entity                  = np.uint64
@@ -49,11 +78,6 @@ OBJECT_DTYPE         = np.dtype(object)
 _ENTITY_STR          = "_entity"
 _COUNT_STR           = "_count"
 
-
-# useful for buffer resizing
-# 0->1, 1->2, 2->4, 3->4, 4->8, 5->8
-def higher_pow2(n: int|np.uint32|np.uint64) -> int:
-	return 1 << int(n).bit_length()
 
 def entity_index(entity: Entity | EntityArray) -> Index | IndexArray:
 	result = as_entities(entity)
@@ -141,7 +165,7 @@ def _component_fields(component_cls: type[Any]) -> tuple[tuple[str, Any], ...]:
 	hints = get_type_hints(component_cls)
 	if is_dataclass(component_cls):
 		return tuple(
-			(field.name, hints.get(field.name, field.type))
+			(field.name, field.metadata.get("numpyecs.dtype", hints.get(field.name, field.type)))
 			for field in dataclass_fields(component_cls)
 			if get_origin(hints.get(field.name, field.type)) is not ClassVar
 		)
@@ -161,9 +185,11 @@ def _dtype_for(annotation: Any) -> np.dtype[Any]:
 		if issubclass(annotation, (str, bytes)):
 			return OBJECT_DTYPE
 	try:
-		return np.dtype(annotation)
-	except TypeError:
-		...
-	return OBJECT_DTYPE
+		dtype = np.dtype(annotation)
+	except (TypeError, ValueError):
+		raise TypeError(f"Unsupported component annotation {annotation!r}; declare a NumPy dtype or explicit object field") from None
+	if dtype.hasobject and annotation is not object and not isinstance(annotation, np.dtype):
+		raise TypeError(f"Unsupported component annotation {annotation!r}; use object for Python data")
+	return dtype
 
 

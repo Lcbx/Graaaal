@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
-from ecs_types import EntityArray, EntityLike, as_entities, _quantity
+
+from .ecs_types import EntityArray, EntityLike, as_entities, _quantity
+
 
 if TYPE_CHECKING:
-	from ECS import ECS
+	from .ECS import ECS
 
 
 class DeferredEntities:
