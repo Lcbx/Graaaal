@@ -1,4 +1,4 @@
-"""Single-winner stochastic OIT, using DrawBatches for every geometry pass.
+"""Single-winner stochastic OIT with frustum and Hi-Z culling via DrawBatches.
 
 Run: python main.py scenes/transparency_example.py [--frames 120]
 Space toggles orbit, scrolling zooms, R reverses transparent submission order.
@@ -17,9 +17,10 @@ import glfw
 import numpy as np
 
 from numpyecs.Assets import load_blue_noise
-from numpyecs.DrawBatches import DrawBatches, FrustumCuller
+from numpyecs.DrawBatches import DrawBatches, FrustumCuller, HiZCuller, ShaderPass
 from numpyecs.ECS import ECS, component
 from numpyecs.EcsDrawing import EcsDrawAdapter
+from numpyecs.HZB import HZB
 from numpyecs.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
 from numpyecs.Math import Camera, Vec3, Vec4
 from numpyecs.RenderContext import (
@@ -27,6 +28,7 @@ from numpyecs.RenderContext import (
     GpuBuffer,
     Mesh,
     RenderContext,
+    RenderPipeline,
     Texture,
     TextureUsage,
 )
@@ -63,6 +65,10 @@ class GeometryBatches:
 		self.data = DrawBatches(MESH_INSTANCE_DTYPE)
 		self.metadata = GpuBuffer(np.zeros((1, 4), dtype=np.uint32), BufferUsage.STORAGE | BufferUsage.COPY_DST)
 		self.passes = transparency.create_geometry_passes(self.metadata, transparent=transparent, instances=self.data.buffers["instances"])
+		if not transparent:
+			self.depth_pass = ShaderPass(RenderPipeline(transparency.shader, vertex_entry="vertex",
+				fragment_entry="opaque_prepass", cull_mode="none", label="opaque_depth"),
+				self.passes.render_shader["prepass"].bindings)
 		self.data.register_shader(0, self.passes.render_shader)
 		for primitive in primitives:
 			if (materials[primitive.material_id]["surface"][2] == 2) != transparent:
@@ -98,6 +104,7 @@ transparency: TransparencyPass
 opaque: GeometryBatches
 transparent: GeometryBatches
 camera: Camera
+hzb: HZB
 center: np.ndarray
 radius: float
 angle = 0.65
@@ -107,7 +114,7 @@ distance = 0.0
 
 def init_scene(path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_PATH):
 	"""Initialize the example's global render data after device setup."""
-	global transparency, opaque, transparent, camera, center, radius, angle, orbit, distance
+	global transparency, opaque, transparent, camera, hzb, center, radius, angle, orbit, distance
 	primitives, materials, images, vertices = load_transparency_scene(path)
 	# Ignore a large flat ground plane when framing the example.
 	objects = [p.vertices["position"] for p in primitives if np.ptp(p.vertices["position"][:, 1]) > 0.01]
@@ -126,6 +133,7 @@ def init_scene(path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_P
 		vertices=GpuBuffer(vertices, BufferUsage.STORAGE | BufferUsage.COPY_DST), blue_noise=blue_noise,
 		bilateral_filter=bilateral_filter if bilateral_filter is not None else
 			BilateralFilter(filter_near=radius, filter_far=radius*4))
+	hzb = HZB()
 	opaque = GeometryBatches(primitives, materials, transparency, False)
 	transparent = GeometryBatches(primitives, materials, transparency, True)
 	camera = Camera(tuple(center + (radius, radius*0.65, radius)), tuple(center), (0, 1, 0), 55,
@@ -373,6 +381,38 @@ def on_char(code):
 	return True
 
 
+def render_frame():
+	"""Record frustum culling, opaque depth, Hi-Z culling, and transparency."""
+	width, height = RenderContext.window_dimensions
+	if width <= 0 or height <= 0:
+		return False
+	transparency.resize((width, height))
+	hzb.resize((width, height))
+	view_projection = transparency.update_camera(camera)
+	commands = RenderContext.commands("stochastic_renderer")
+	for geometry in (opaque, transparent):
+		geometry.prepare(commands, camera, view_projection)
+	# Only opaque and alpha-tested surfaces contribute occluder depth.
+	with commands.render_pass(color=(), depth=hzb.depth_texture.depth_attachment(clear=1.0),
+		label="depth_prepass") as render:
+		opaque.draw(render, "prepass", pass_override=opaque.depth_pass)
+	hzb.build(commands)
+	for geometry in (opaque, transparent):
+		HiZCuller().record(commands, geometry.visibility, hzb_view=hzb.view)
+	with transparency.opaque_pass(commands) as render:
+		opaque.draw(render, "main")
+	with transparency.guide_pass(commands) as render:
+		transparent.draw(render, "main", pass_override=transparent.passes.guide)
+	with transparency.transmittance_pass(commands) as render:
+		transparent.draw(render, "prepass")
+	with transparency.selection_pass(commands) as render:
+		transparent.draw(render, "main")
+	transparency.shade_winner(commands, transparent.passes)
+	transparency.compose(commands, RenderContext.screen())
+	RenderContext.submit(commands.finish())
+	return True
+
+
 def run_scene():
 	global settings, angle
 	from numpyecs.ImGui import ImGui
@@ -390,27 +430,8 @@ def run_scene():
 				if orbit:
 					angle += RenderContext.frame_time * 0.2
 				camera.position = Vec3(center + distance * np.array([cos(angle), 0.5, sin(angle)]))
-				width, height = RenderContext.window_dimensions
-				if width <= 0 or height <= 0:
-					continue
-				transparency.resize((width, height))
-				view_projection = transparency.update_camera(camera)
-				commands = RenderContext.commands("stochastic_renderer")
-				for geometry in (opaque, transparent):
-					geometry.prepare(commands, camera, view_projection)
-				with transparency.opaque_pass(commands) as render:
-					opaque.draw(render, "prepass")
-				with transparency.guide_pass(commands) as render:
-					transparent.draw(render, "main", pass_override=transparent.passes.guide)
-				with transparency.transmittance_pass(commands) as render:
-					transparent.draw(render, "prepass")
-				with transparency.selection_pass(commands) as render:
-					transparent.draw(render, "main")
-				transparency.shade_winner(commands, transparent.passes)
-				transparency.compose(commands, RenderContext.screen())
-				RenderContext.submit(commands.finish())
-
-				gui.render(settings.draw)
+				if render_frame():
+					gui.render(settings.draw)
 	finally:
 		RenderContext.event_handlers["mouse_scroll"].remove(scroll_callback)
 		RenderContext.event_handlers["char"].remove(on_char)

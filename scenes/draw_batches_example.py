@@ -210,13 +210,9 @@ def run_scene():
 	render_query = world.query(Transform, MeshRef)
 
 	CUBE_COUNT = 1000
-
 	SPACE_SIZE = 180
-
 	CUBE_MAX_SIDE = 7
-
 	WINDOW_W, WINDOW_H = 1200, 1200
-
 	TITLE = "glfw + wgpu - Split Compute Hi-Z Pipeline"
 
 	camera_dist = 30.0
@@ -260,19 +256,13 @@ def run_scene():
 	shader = Shader(filepath='scenes/shaders/complex.shader', label="complex")
 
 	uniform_buffer = shader.uniform_buffer()
-
 	render_shader = standard_render_shader(shader, uniform_buffer)
-
 	prepass_uniform_buffer = shader.uniform_buffer()
-
 	render_shader['prepass'].bindings = ((shader.bind_group(0, uniforms=prepass_uniform_buffer)),)
-
 	render_data = DrawBatches(MESH_INSTANCE_DTYPE)
 	render_adapter = EcsDrawAdapter(render_data, mesh_refs)
 	render_visibility = render_data.create_visibility()
-
 	render_data.register_shader(0, render_shader)
-
 	hzb = HZB()
 
 	instance_version = None
@@ -284,13 +274,9 @@ def run_scene():
 	model_mesh = Mesh(vertices, indices)
 
 	cube_mesh = make_cube_mesh()
-
 	render_data.register_mesh(0, model_mesh)
-
 	render_data.register_mesh(1, cube_mesh)
-
 	render_data.register_lod_group(0, (0, None), (100.0,))
-
 	render_data.register_lod_group(1, (1,))
 
 	[ground] = world.create()
@@ -323,25 +309,17 @@ def run_scene():
 	deleted_count = 2 # start after ground and pole mesh
 
 	create_cubes(CUBE_COUNT)
-
 	RenderContext.event_handlers["mouse_scroll"].append(scroll_callback)
-
 	RenderContext.event_handlers["char"].append(on_char)
 
 	fps_frames = 0
-
 	start_t = get_time()
-
 	fps_print_timestamp = start_t
 
 	schedule = Scheduler(world)
-
 	schedule.add("cube_changes", queue_cube_changes, before="movement")
-
 	schedule.add("movement", lambda world, commands, dt: movement_system(world, dt))
-
 	schedule.add("instances", lambda world, commands, dt: update_instances(world, render_data), phase="render_prep")
-
 	while RenderContext.window_loop():
 		now = RenderContext.frame_start
 

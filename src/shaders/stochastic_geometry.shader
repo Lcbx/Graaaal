@@ -39,6 +39,14 @@ fn vertex(input: VertexInput, @builtin(instance_index) instance_index: u32) -> V
 }
 
 @fragment
+fn opaque_prepass(input: VertexOutput, @builtin(front_facing) front: bool) {
+	let lod = raster_lod(input.uv);
+	let material = materials[metadata[input.instance].y];
+	if !front && material.flags.y == 0u { discard; }
+	if material.surface.z == 1.0 && base_color(material, input.uv, lod).a < material.surface.w { discard; }
+}
+
+@fragment
 fn opaque(input: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4f {
 	let lod = raster_lod(input.uv);
 	let material = materials[metadata[input.instance].y];

@@ -252,27 +252,9 @@ def gpu_scene(monkeypatch, request):
 
 
 def render_frame(render_scene):
-	"""Exercise the public procedural passes with the example's geometry."""
-	width, height = RenderContext.window_dimensions
-	if width <= 0 or height <= 0:
-		return
-	oit = render_scene.transparency
-	oit.resize((width, height))
-	view_projection = oit.update_camera(render_scene.camera)
-	commands = RenderContext.commands("test_transparency_frame")
-	for geometry in (render_scene.opaque, render_scene.transparent):
-		geometry.prepare(commands, render_scene.camera, view_projection)
-	with oit.opaque_pass(commands) as render:
-		render_scene.opaque.draw(render, "prepass")
-	with oit.guide_pass(commands) as render:
-		render_scene.transparent.draw(render, "main", pass_override=render_scene.transparent.passes.guide)
-	with oit.transmittance_pass(commands) as render:
-		render_scene.transparent.draw(render, "prepass")
-	with oit.selection_pass(commands) as render:
-		render_scene.transparent.draw(render, "main")
-	oit.shade_winner(commands, render_scene.transparent.passes)
-	oit.compose(commands, RenderContext.screen())
-	RenderContext.submit(commands.finish())
+	"""Exercise the example's complete culling and transparency pipeline."""
+	render_scene.render_frame()
+
 
 def read_texture(texture, dtype, components):
 	width, height, _ = texture.size
@@ -345,19 +327,24 @@ def test_gpu_resize_rebuilds_targets_and_bindings(gpu_scene, monkeypatch):
 	renderer, _ = gpu_scene
 	render_frame(renderer)
 	previous = renderer.transparency.winner
+	previous_hzb = renderer.hzb.view
 	output = Texture((48, 32), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	monkeypatch.setattr(RenderContext, "window_dimensions", (48, 32))
 	monkeypatch.setattr(RenderContext, "screen", lambda **kwargs: output.color_attachment())
 	render_frame(renderer)
 	assert renderer.transparency.winner is not previous
+	assert renderer.hzb.view is not previous_hzb
+	assert renderer.hzb.size == (48, 32)
 	assert renderer.transparency.winner.size == (48, 32, 1)
 	assert np.any(read_texture(renderer.transparency.winner, np.uint32, 4)[:, :, 0] != 0)
 	assert np.any(read_texture(output, np.uint8, 4)[:, :, :3] != 0)
 	# Minimized windows leave valid resources alone and submit no new work.
 	previous = renderer.transparency.winner
+	previous_hzb = renderer.hzb.view
 	monkeypatch.setattr(RenderContext, "window_dimensions", (0, 0))
 	render_frame(renderer)
 	assert renderer.transparency.winner is previous
+	assert renderer.hzb.view is previous_hzb
 
 
 def test_gpu_filter_changes_only_reconstruction_without_recreating_targets(gpu_scene):
@@ -680,3 +667,30 @@ def test_default_filter_restores_canopy_boundary_support_and_reduces_grain(monke
 		renderer.transparency.set_debug_view("final")
 	assert supports[1] > supports[0]*1.5
 	assert deviations[1] < deviations[0]*0.9
+
+
+def test_gpu_hiz_culls_opaque_occlusion_and_preserves_cutout_holes(gpu_scene):
+	renderer, _ = gpu_scene
+	# Keep the transparent bounds inside the opaque backdrop's screen coverage.
+	renderer.transparent.data.write_instance_fields(iScale=scene.pack_scale([0.05, 0.05, 1]))
+	view = renderer.transparent.visibility._view
+	for name in ("prepass_draw_cmd", "main_draw_cmd"):
+		buffer = view.buffers[name]
+		view.buffers[name] = scene.GpuBuffer(buffer.content.copy(), buffer.usage | scene.BufferUsage.COPY_SRC)
+	view.bindings.clear()
+
+	def instance_counts(name):
+		buffer = view.buffers[name]
+		raw = RenderContext.device.queue.read_buffer(buffer.handle)
+		return np.frombuffer(raw, dtype=buffer.dtype)["instance_count"][:len(renderer.transparent.data.draw_batches)]
+
+	render_frame(renderer)
+	np.testing.assert_array_equal(instance_counts("prepass_draw_cmd"), [1, 1, 1])
+	np.testing.assert_array_equal(instance_counts("main_draw_cmd"), [1, 1, 0])
+	# Transparent layers do not occlude one another, even at full opacity.
+	materials = renderer.transparency.shared["materials"]
+	materials.content["surface"][3, 2:] = (1, 0.5)
+	materials.content["base_color"][3, 3] = 0
+	materials.upload()
+	render_frame(renderer)
+	np.testing.assert_array_equal(instance_counts("main_draw_cmd"), [1, 1, 1])
