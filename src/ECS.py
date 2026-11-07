@@ -986,6 +986,11 @@ class _PreparedMutation:
 
 @mypyc_attr(allow_interpreted_subclasses=True)
 class ECS:
+	"""Explicit world state for procedural systems operating on NumPy arrays.
+
+	Pass a world, accessors, or queries to ordinary functions. Scheduler and
+	CommandBuffer are optional; no system base class or global world is required.
+	"""
 	def __init__(self) -> None:
 		self._stores: dict[type[Any], ComponentStorage] = {}
 		self._comp_bits: dict[type[Any], Mask] = {}

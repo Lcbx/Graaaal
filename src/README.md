@@ -3,6 +3,8 @@
 | Document | Purpose |
 | --- | --- |
 | [ECS_API.md](ECS_API.md) | Public API reference and executable usage examples |
+| [PROCEDURAL_API.md](PROCEDURAL_API.md) | API review, naming conventions, array batching, and explicit rendering workflow |
+| [Improvements.md](Improvements.md) | Phased plan for reusable NumPy APIs and customizable rendering, preserving RenderContext's central role |
 | [ECS_TODO.md](ECS_TODO.md) | Completed implementation phases, validation record, and deferred work |
 | [ECS_BENCHMARKS.md](ECS_BENCHMARKS.md) | Recorded measurements, methodology, and optimization decisions |
 | [Scene guide](../scenes/README.md) | Running examples and bounded rendering checks |
@@ -52,7 +54,7 @@ MASK alpha coverage and BLEND mean opacity while filtering color in linear
 space. It requires an initialized rendering device and material records with
 `base_color` and `surface` fields; it is independent of the transparency passes.
 
-`tranparency_pass.py` owns the reusable stochastic transparency pipelines,
+`TransparencyPass.py` owns the reusable stochastic transparency pipelines,
 filter settings, and render targets. It accepts
 caller-owned material/vertex buffers, a texture array view and a linear noise
 texture. It does not load glTF, create a camera or window, manage an ECS world,
@@ -70,7 +72,10 @@ stable surface ID, reserved. Metadata follows compact DrawBatches instance
 order. All transparent draws in a winner-selection pass must share one metadata
 address space; pass that geometry's bindings to `shade_winner`.
 
-The frame can be recorded procedurally with an existing command context:
+Use `update_frame(view=..., projection=..., camera_position=..., near=..., far=...)`
+with plain arrays, or `update_camera(camera)` as a convenience adapter. Both
+return the culling view-projection matrix. The frame can be recorded procedurally
+with an existing command context:
 
 ```python
 oit.resize((width, height))
@@ -151,7 +156,7 @@ contents, so re-upload after growth.
 pool ownership at scene transitions; discard old meshes first. Context cleanup
 and device setup also reset the pools. Recreate meshes after changing devices.
 
-`GC_Manager` temporarily disables automatic cyclic GC and performs at most one
+`GCManager` temporarily disables automatic cyclic GC and performs at most one
 collection per idle call. Its time budgets estimate how much spare frame time a
 collection needs; they cannot cap the pause. A generation that remains due for
 `max_deferral` seconds (default: 1 second) is collected even in a busy frame.

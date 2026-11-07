@@ -349,7 +349,7 @@ def load_scene(path: str | Path):
 	Use load_gltf_scene() for plain geometry and original glTF materials.
 	"""
 	# Resolve shared shader layouts at call time to avoid an import cycle through DrawBatches.
-	from tranparency_pass import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE
+	from TransparencyPass import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE
 	loaded, materials, images = load_gltf_scene(path)
 	records = np.zeros(len(materials), dtype=MATERIAL_DTYPE)
 	for i, material in enumerate(materials):
@@ -418,7 +418,7 @@ def build_material_texture_array(images, materials, size):
 		mode, factor = int(material["surface"][2]), float(material["base_color"][3])
 		cutoff = float(material["surface"][3])/factor if factor > 0 else 0
 		preserve = mode == 1 and 0 < cutoff <= 1
-		params = shader.UniformBuffer("params")
+		params = shader.uniform_buffer("params")
 		params.content["info"] = (0, mode, preserve, 0)
 		params.content["cutoff"] = (cutoff, 0, 0, 0)
 		params.upload()

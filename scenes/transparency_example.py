@@ -25,7 +25,7 @@ from Utils import (
 	Camera, Vec3, Vec4, build_material_texture_array, load_blue_noise, load_scene,
 	mesh_instance_dtype, pack_quaternion, pack_scale,
 )
-from tranparency_pass import (
+from TransparencyPass import (
 	BilateralFilter, DEBUG_VIEWS, TransparencyPass,
 )
 

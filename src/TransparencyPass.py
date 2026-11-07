@@ -1,12 +1,14 @@
-"""Reusable stochastic transparency resources and explicit GPU passes.
+"""Stochastic transparency resources and explicit GPU passes.
 
 The caller owns geometry, camera, command recording, output and submission.
 No window, asset file, ECS world, or ImGui context is created by this module.
 """
 from dataclasses import dataclass
+from operator import index
 from pathlib import Path
 
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
 
 from DrawBatches import RenderShader, ShaderPass
 from RenderContext import (
@@ -97,8 +99,8 @@ class TransparencyPass:
 		target_format = target_format or getattr(RenderContext, "presentation_format", "rgba8unorm")
 		self.compose_shader = Shader(filepath=str(SHADERS / "stochastic_compose.shader"),
 			params={"srgb_surface": target_format.endswith("-srgb")})
-		self.uniforms = self.shader.UniformBuffer("frame")
-		self.bilateral_uniforms = self.compose_shader.UniformBuffer("bilateral")
+		self.uniforms = self.shader.uniform_buffer("frame")
+		self.bilateral_uniforms = self.compose_shader.uniform_buffer("bilateral")
 		self.debug_view = "final"
 		self.set_bilateral_filter(bilateral_filter if bilateral_filter is not None else BilateralFilter())
 		self.shade_pipeline = ComputePipeline(self.shading_shader, entry="shade_winner")
@@ -166,15 +168,18 @@ class TransparencyPass:
 		self.debug_view = view
 		self.set_bilateral_filter(self.bilateral_filter)
 
-	def resize(self, size):
-		"""Allocate targets and refresh geometry bindings; ignore minimized sizes."""
+	def resize(self, size: tuple[int, int]) -> bool:
+		"""Return whether targets changed; retain targets for minimized sizes."""
 		if len(size) != 2:
 			raise ValueError("Expected transparency target width and height")
-		size = tuple(size)
+		try:
+			size = tuple(index(value) for value in size)
+		except TypeError:
+			raise ValueError("Expected integer transparency target dimensions") from None
 		if size[0] <= 0 or size[1] <= 0:
-			return
+			return False
 		if size == self.size:
-			return
+			return False
 		attachment = TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING
 		self.main_color = Texture(size, format="rgba16float", usage=attachment, label="opaque_hdr")
 		self.depth = Texture(size, format="depth32float", usage=attachment, label="opaque_depth")
@@ -191,39 +196,66 @@ class TransparencyPass:
 			transmittance=self.transmittance, winner_color=self.winner_color, opaque_depth=self.depth,
 			transparent_depth=self.transparent_depth, frame=self.uniforms, bilateral=self.bilateral_uniforms)
 		self.size = size
+		return True
 
-	def update_camera(self, camera, *, light_dir=(0.4, 0.8, 0.3)):
-		"""Upload frame uniforms after resize(); return the culling view-projection."""
+	def _require_targets(self) -> tuple[int, int]:
 		if self.size is None:
-			raise RuntimeError("Resize transparency targets before updating the camera")
-		width, height = self.size
-		view, projection = camera.view(), camera.projection(width/height)
-		for name, value in dict(view=view, proj=projection, light_dir=(*light_dir, 0),
-			camera_position=(*camera.position, 1), clip=(camera.near, camera.far, 0, 0)).items():
+			raise RuntimeError("Resize transparency targets before recording passes or updating frame uniforms")
+		return self.size
+
+	def update_frame(self, *, view: ArrayLike, projection: ArrayLike,
+		camera_position: ArrayLike, near: float, far: float,
+		light_dir: ArrayLike = (0.4, 0.8, 0.3)) -> NDArray[np.float32]:
+		"""Upload explicit camera values and return view @ projection for culling.
+
+		Matrices follow the existing row-vector convention. No camera class is
+		required; resize targets first. Invalid inputs leave uniforms unchanged.
+		"""
+		self._require_targets()
+		view, projection = np.asarray(view, dtype=np.float32), np.asarray(projection, dtype=np.float32)
+		position, light = np.asarray(camera_position, dtype=np.float32), np.asarray(light_dir, dtype=np.float32)
+		if (view.shape != (4, 4) or projection.shape != (4, 4)
+			or position.shape != (3,) or light.shape != (3,)
+			or not all(np.all(np.isfinite(value)) for value in (view, projection, position, light))):
+			raise ValueError("Expected finite 4x4 view/projection matrices and vec3 camera/light values")
+		if not (np.isfinite(near) and np.isfinite(far) and 0 < near < far):
+			raise ValueError("Camera clip distances must satisfy 0 < near < far")
+		for name, value in dict(view=view, proj=projection, light_dir=(*light, 0),
+			camera_position=(*position, 1), clip=(near, far, 0, 0)).items():
 			self.uniforms.content[name] = value
 		self.uniforms.upload()
 		return view @ projection
 
+	def update_camera(self, camera, *, light_dir=(0.4, 0.8, 0.3)):
+		"""Convenience adapter for camera objects; update_frame accepts plain arrays."""
+		width, height = self._require_targets()
+		return self.update_frame(view=camera.view(), projection=camera.projection(width/height),
+			camera_position=camera.position, near=camera.near, far=camera.far, light_dir=light_dir)
+
 	def opaque_pass(self, commands, *, clear=(0.035, 0.05, 0.08, 1)):
+		self._require_targets()
 		return commands.render_pass(color=self.main_color.color_attachment(clear=clear),
 			depth=self.depth.depth_attachment(clear=1), label="1_opaque")
 
 	def guide_pass(self, commands):
+		self._require_targets()
 		# Includes low-alpha fragments and pixels with no stochastic winner.
 		return commands.render_pass(depth=self.transparent_depth.depth_attachment(clear=1),
 			label="2a_transparent_depth_guide")
 
 	def transmittance_pass(self, commands):
+		self._require_targets()
 		return commands.render_pass(color=self.transmittance.color_attachment(clear=(1, 1, 1, 1)),
 			depth=self.depth.depth_attachment(), label="2_transmittance")
 
 	def selection_pass(self, commands):
+		self._require_targets()
 		return commands.render_pass(color=self.winner.color_attachment(clear=(0, 0, 0, 0)),
 			depth=self.selection_depth.depth_attachment(clear=1), label="3_select_winner")
 
 	def shade_winner(self, commands, geometry):
 		"""Record deferred shading for the metadata used during winner selection."""
-		width, height = self.size
+		width, height = self._require_targets()
 		with commands.compute_pass(label="4_shade_winner") as compute:
 			compute.set_pipeline(self.shade_pipeline)
 			for bindings in (self.shade_frame, self.shade_targets, geometry.shading):
@@ -232,6 +264,7 @@ class TransparencyPass:
 
 	def compose(self, commands, output):
 		"""Reconstruct into a caller-provided ColorAttachment; does not submit."""
+		self._require_targets()
 		with commands.render_pass(color=output, label="5_reconstruct_compose") as render:
 			render.set_pipeline(self.compose_pipeline)
 			render.set_bind_groups(self.compose_resources)

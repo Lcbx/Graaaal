@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol, Sequence
 from numpy.typing import ArrayLike, NDArray
 
@@ -64,9 +65,10 @@ class ShaderPass:
 @dataclass
 class RenderShader:
 	main: ShaderPass
-	prepass: ShaderPass | None
+	prepass: ShaderPass | None = None
 
-def standard_RenderShader(shader: Shader, uniform_buffer: GpuBuffer | None = None, vertex_entry: str = "vertex", fragment_entry: str | None = "fragment") -> RenderShader:
+def standard_render_shader(shader: Shader, uniform_buffer: GpuBuffer | None = None, vertex_entry: str = "vertex", fragment_entry: str | None = "fragment") -> RenderShader:
+	"""Create matching depth/main passes with a shared group-0 uniform buffer."""
 	prepass_pipeline = RenderPipeline(
 		shader,
 		vertex_entry=vertex_entry,
@@ -80,12 +82,15 @@ def standard_RenderShader(shader: Shader, uniform_buffer: GpuBuffer | None = Non
 		depth_test="less-equal",
 		label="main",
 	)
-	uniforms_bg = shader.bind_group(0, uniforms= uniform_buffer or shader.UniformBuffer())
+	uniforms_bg = shader.bind_group(0, uniforms=uniform_buffer if uniform_buffer is not None else shader.uniform_buffer())
 	bindings_tup = (uniforms_bg,)
 	return RenderShader(
 		ShaderPass(main_pipeline, bindings_tup),
 		ShaderPass(prepass_pipeline, bindings_tup)
 	)
+
+
+standard_RenderShader = standard_render_shader  # Compatibility spelling.
 
 
 @dataclass
@@ -111,7 +116,7 @@ class DrawBatches:
 		self.instance_dtype: np.dtype[Any] = np.dtype(instance_dtype)
 		if self.instance_dtype.hasobject or self.instance_dtype.subdtype is not None or not self.instance_dtype.itemsize or self.instance_dtype.itemsize % 4:
 			raise ValueError("Expected fixed-size instance records with a stride divisible by four")
-		self._cull_shader: Shader = cull_shader or Shader(filepath='scenes/shaders/cull.shader', label="cull")
+		self._cull_shader: Shader = cull_shader or Shader(filepath=str(Path(__file__).with_name("shaders") / "cull.shader"), label="cull")
 		self._cull_pipelines: dict[str, ComputePipeline] = {}
 		self.meshes: dict[MeshId, MeshInfo] = {}
 		self.group_rows: dict[int, int] = {}
@@ -125,6 +130,8 @@ class DrawBatches:
 		self.entities: EntityArray = np.empty(0, dtype=Entity)
 		self._batch_version: tuple[Any, ...] | None = None
 		self._selection: EntityArray = np.empty(0, dtype=Entity)
+		self._array_keys: tuple[FieldArray, FieldArray] | None = None
+		self.instance_order: FieldArray = np.empty(0, dtype=np.intp)
 		self._mesh_selection: _MeshSelection | None = None
 		self._mesh_order: FieldArray = np.empty(0, dtype=np.intp)
 		self.component_rows: FieldArray = np.empty(0, dtype=np.uint32)
@@ -294,10 +301,47 @@ class DrawBatches:
 			if batches != self.source_batches or self._destinations_dirty:
 				self._rebuild_destinations(owners, batches)
 			self._mesh_selection, self._mesh_order = refs, order
+			self._array_keys = None
+			self.instance_order = order.astype(np.intp)
 			self.component_rows, self.entities = component_rows, owners
 			self.instance_order_version += 1
 			self._selection = ents.copy()
 			self._batch_version = version
+		self.sync_resources()
+		return regroup
+
+	def sync_arrays(self, entities: EntityLike, lod_ids: ArrayLike, shader_ids: ArrayLike) -> bool:
+		"""Group one draw instance per input row, without ECS accessors.
+
+		Repeated entity IDs are labels and do not expand rows. instance_order maps
+		compact output rows to input rows; reorder all instance data and metadata
+		with it. Inputs are compared by value, including in-place edits. A True
+		result invalidates instance inputs, just like sync_batches().
+		"""
+		ents = as_entities(entities)
+		lod_ids, shader_ids = np.asarray(lod_ids), np.asarray(shader_ids)
+		if not lod_ids.size: lod_ids = lod_ids.astype(np.int64)
+		if not shader_ids.size: shader_ids = shader_ids.astype(np.int64)
+		if not (ents.ndim == lod_ids.ndim == shader_ids.ndim == 1 and len(ents) == len(lod_ids) == len(shader_ids)):
+			raise ValueError("Expected equally sized 1D entity, LoD ID, and shader ID arrays")
+		if lod_ids.dtype.kind not in "iu" or shader_ids.dtype.kind not in "iu":
+			raise TypeError("LoD and shader IDs must be integers")
+		keys = self._array_keys
+		regroup = (keys is None or not np.array_equal(ents, self._selection)
+			or not np.array_equal(lod_ids, keys[0]) or not np.array_equal(shader_ids, keys[1]))
+		if regroup:
+			order, batches = build_batches(np.arange(len(ents), dtype=Entity), lod_ids, shader_ids)
+			owners = ents[order]
+			if batches != self.source_batches or self._destinations_dirty:
+				self._rebuild_destinations(owners, batches)
+			self.entities = owners
+			self.instance_order = order.astype(np.intp)
+			self.component_rows = np.empty(0, dtype=np.uint32)
+			self._mesh_selection = None
+			self._batch_version = None
+			self._selection = ents.copy()
+			self._array_keys = (lod_ids.copy(), shader_ids.copy())
+			self.instance_order_version += 1
 		self.sync_resources()
 		return regroup
 
@@ -512,13 +556,22 @@ class DrawBatches:
 			rp.draw_indexed_indirect(commands, batch.command_index * indirect_dtype.itemsize)
 
 	def invalidate_batches(self) -> None:
-		"""Force regrouping and instance input invalidation on the next sync_batches call."""
+		"""Force regrouping and instance input invalidation on the next sync call."""
 		self._batch_version = None
+		self._array_keys = None
 
-	def update_cull_camera(self, cameraPosition: Sequence[float], viewProjectionMatrix: Sequence[Sequence[float]] | FieldArray) -> None:
+	def update_cull_camera(self, camera_position: Sequence[float] | None = None,
+		view_projection: Sequence[Sequence[float]] | FieldArray | None = None, **legacy: Any) -> None:
 		"""Update when the camera changes; upload before the next reset/culling operation."""
-		vp = np.asarray(viewProjectionMatrix, dtype=np.float32)
-		position = np.asarray(cameraPosition, dtype=np.float32)
+		for old, new in (("cameraPosition", "camera_position"), ("viewProjectionMatrix", "view_projection")):
+			if old not in legacy: continue
+			if (camera_position if new == "camera_position" else view_projection) is not None:
+				raise TypeError(f"Supply only {new}, not both spellings")
+			if new == "camera_position": camera_position = legacy.pop(old)
+			else: view_projection = legacy.pop(old)
+		if legacy: raise TypeError(f"Unexpected arguments: {', '.join(legacy)}")
+		vp = np.asarray(view_projection, dtype=np.float32)
+		position = np.asarray(camera_position, dtype=np.float32)
 		if vp.shape != (4, 4) or position.shape != (3,) or not np.all(np.isfinite(vp)) or not np.all(np.isfinite(position)):
 			raise ValueError("Expected a finite 4x4 camera matrix and vec3 position")
 		planes = extract_frustum_planes(vp)
@@ -542,7 +595,7 @@ class HZB:
 		shader: Shader | None = None,
 		pipelines: tuple[ComputePipeline, ComputePipeline] | None = None
 	) -> None:
-		self._shader = shader or Shader(filepath='scenes/shaders/hzb.shader', label="hzb")
+		self._shader = shader or Shader(filepath=str(Path(__file__).with_name("shaders") / "hzb.shader"), label="hzb")
 		self._pipelines = pipelines or (
 			ComputePipeline(self._shader, entry="reduce_depth", label="hzb_depth"),
 			ComputePipeline(self._shader, entry="main", label="hzb")

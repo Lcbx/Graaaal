@@ -39,7 +39,7 @@ class _RenderContext:
 		self.presentation_format: str
 
 		self.window: Any = None
-		self.windowDimensions: tuple[int, int] = (0, 0)
+		self.window_dimensions: tuple[int, int] = (0, 0)
 		self.aspect: float = 1.0
 
 		self.target_frame_time: float | None = None
@@ -56,7 +56,16 @@ class _RenderContext:
 		# handlers return True if no need to propagate further
 		self.event_handlers: dict[str, list[Callable]] = {}
 		self._glfw_initialized = False
-		self._gc_manager: GC_Manager | None = None
+		self._gc_manager: GCManager | None = None
+
+	@property
+	def windowDimensions(self) -> tuple[int, int]:
+		"""Compatibility spelling; use window_dimensions."""
+		return self.window_dimensions
+
+	@windowDimensions.setter
+	def windowDimensions(self, value: tuple[int, int]) -> None:
+		self.window_dimensions = value
 
 	def init_window(
 		self,
@@ -114,7 +123,7 @@ class _RenderContext:
 
 		self.setup_graphics(vsync=vsync, highpower_gpu=highpower_gpu, required_gpu_features=required_gpu_features)
 		if custom_gc:
-			self._gc_manager = GC_Manager()
+			self._gc_manager = GCManager()
 			self.event_handlers["idle"].append(self._gc_manager)
 
 		self.frame_start = get_time()
@@ -150,7 +159,7 @@ class _RenderContext:
 
 	def update_window_size(self, wh: tuple[int, int]) -> None:
 		w, h = wh
-		self.windowDimensions = wh
+		self.window_dimensions = wh
 		assert self.canvas is not None
 		self.canvas.set_physical_size(w, h)
 		self.aspect = w / h
@@ -210,7 +219,7 @@ class _RenderContext:
 		window, self.window = self.window, None
 		initialized, self._glfw_initialized = self._glfw_initialized, False
 		self._screen_view = None
-		self.windowDimensions = (0, 0)
+		self.window_dimensions = (0, 0)
 		if hasattr(self, "depth"):
 			del self.depth
 		if self._gc_manager is not None:
@@ -241,7 +250,7 @@ class _RenderContext:
 		self.present()
 
 		wh = glfw.get_framebuffer_size(self.window)
-		if wh != self.windowDimensions and wh[0] > 0 and wh[1] > 0:
+		if wh != self.window_dimensions and wh[0] > 0 and wh[1] > 0:
 			self.update_window_size(wh)
 
 		self.idle_hook()
@@ -305,9 +314,11 @@ class _RenderContext:
 	) -> DepthAttachment:
 		return DepthAttachment(self.depth, self.depth_format, clear, store, read_only)
 
-RenderContext = _RenderContext()
+render_context = _RenderContext()
+# Historical name for the same singleton; resource constructors share this device.
+RenderContext = render_context
 
-class GC_Manager:
+class GCManager:
 	"""Run at most one collection per idle call, preferably in spare frame time.
 
 	Time budgets are estimates, not limits on GC pauses. A due generation is
@@ -388,6 +399,9 @@ class GC_Manager:
 		finally:
 			# Loading may promote temporary cycles; sweep every generation once.
 			gc.collect(2)
+
+
+GC_Manager = GCManager  # Compatibility spelling.
 
 
 class CommandContext:
@@ -1691,7 +1705,8 @@ class Shader:
 			print(self.info.source)
 			raise ex from None
 
-	def UniformBuffer(self, name: str | None = None) -> _UniformBuffer:
+	def uniform_buffer(self, name: str | None = None) -> _UniformBuffer:
+		"""Allocate a reflected uniform block; infer its name when there is only one."""
 		if not self.info.uniforms:
 			raise ValueError( "no uniforms were parsed" )
 
@@ -1702,6 +1717,8 @@ class Shader:
 			name = next(iter(self.info.uniforms))
 
 		return _UniformBuffer(self.info.uniforms[name], label=name)
+
+	UniformBuffer = uniform_buffer  # Compatibility spelling.
 
 	def bind_group(self, group: int, **resources: Any) -> BindGroup:
 		return BindGroup(self, group, resources)

@@ -11,7 +11,7 @@ from RenderContext import RenderContext, Texture, TextureUsage
 from Utils import gltf_node_matrix, load_blue_noise
 import Utils as utils
 from scenes import transparency_example as scene
-import tranparency_pass as transparency
+import TransparencyPass as transparency
 
 
 def test_bundled_blue_noise_loads_as_deterministic_linear_thresholds():

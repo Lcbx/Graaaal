@@ -60,7 +60,7 @@ opaque HDR color/depth, multiplicative RGB/scalar transmittance, hardware-depth
 winner selection, deferred compute shading, and 3×3 or 5×5 cross-bilateral reconstruction
 guided by transparent/opaque depth and transmittance. Selection uses static, surface-decorrelated
 blue noise and a separate depth buffer; no temporal accumulation or sorting is used.
-The reusable GPU passes live in [`src/tranparency_pass.py`](../src/tranparency_pass.py),
+The reusable GPU passes live in [`src/TransparencyPass.py`](../src/TransparencyPass.py),
 with procedural recording documented in the [source guide](../src/README.md).
 The example keeps its render data, camera, and orbit controls in module globals,
 initialized by `init_scene()` after device setup. Its main loop records each

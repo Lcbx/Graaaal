@@ -6,7 +6,7 @@ import pytest
 
 from RenderContext import BufferUsage, GpuBuffer, RenderContext, Texture, TextureUsage
 from Utils import Camera, mesh_instance_dtype
-from tranparency_pass import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE, TransparencyPass
+from TransparencyPass import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE, TransparencyPass
 
 
 def test_procedural_transparency_records_into_caller_commands_and_output(monkeypatch, tmp_path):
