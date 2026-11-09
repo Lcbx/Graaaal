@@ -37,6 +37,18 @@ def test_buffers_reject_other_device_and_generation_even_without_growth(device, 
     with pytest.raises(RuntimeError, match="generation"): _ = buffer.binding
 
 
+def test_resolve_attachment_rejects_expired_device_generation(device, monkeypatch):
+    monkeypatch.setattr(device, "create_texture",
+        lambda **kwargs: NS(create_view=lambda: object()), raising=False)
+    target = rc.Texture((16, 16), format="rgba8unorm", usage=rc.TextureUsage.RENDER_ATTACHMENT)
+    attachment = target.color_attachment()
+    monkeypatch.setattr(rc.RenderContext, "device_generation", rc.RenderContext.device_generation + 1)
+    source = rc.Texture((16, 16), format="rgba8unorm",
+        usage=rc.TextureUsage.RENDER_ATTACHMENT, sample_count=4)
+    with pytest.raises(RuntimeError, match="expired device generation"):
+        source.color_attachment(resolve_target=attachment)
+
+
 def test_mesh_release_reuses_capacity_and_compaction_updates_live_ranges(device):
     arena = MeshArena()
     vertices = np.zeros(3, dtype=[("position", "f4", 3)])

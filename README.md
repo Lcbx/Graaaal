@@ -177,7 +177,8 @@ Active groups and referenced meshes cannot be unregistered.
 
 `RenderPipeline` accepts explicit `layout`, `depth_stencil`, per-attachment
 `targets`, `sample_count`, and normalized `vertex_formats`. Color attachments
-accept `resolve_target`. Attachment formats/counts and sample compatibility are
+accept a texture, texture view, or `RenderContext.screen()` attachment as
+`resolve_target`. Attachment formats/counts and sample compatibility are
 validated when preparing a pipeline.
 
 `ShaderInterface` replaces Python reflection with explicit bindings, entries,

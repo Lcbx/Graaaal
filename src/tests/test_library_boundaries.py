@@ -41,7 +41,7 @@ import glfw, wgpu
 def forbidden(*args, **kwargs): raise AssertionError('graphics initialization during import')
 glfw.init = forbidden
 wgpu.gpu.request_adapter_sync = forbidden
-from scenes import transparency_example, draw_batches_example, direct_draw_example, prototype
-assert all(callable(scene.run_scene) for scene in (transparency_example, draw_batches_example, direct_draw_example, prototype))
+from scenes import transparency_example, draw_batches_example, direct_draw_example, prototype, msaa_example
+assert all(callable(scene.run_scene) for scene in (transparency_example, draw_batches_example, direct_draw_example, prototype, msaa_example))
 '''], cwd=Path(__file__).resolve().parents[2], text=True, capture_output=True)
     assert result.returncode == 0, result.stderr

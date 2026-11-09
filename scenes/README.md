@@ -8,6 +8,7 @@ python main.py scenes/draw_batches_example.py
 python main.py scenes/direct_draw_example.py
 python main.py scenes/prototype.py
 python main.py scenes/transparency_example.py
+python main.py scenes/msaa_example.py
 ```
 
 | Scene | Purpose and controls |
@@ -16,8 +17,9 @@ python main.py scenes/transparency_example.py
 | `direct_draw_example.py` | Direct instanced drawing and shadows. Scrolling adjusts the view. |
 | `prototype.py` | ImGui actor/health panels backed by ECS data; combat resolution remains a placeholder. |
 | `transparency_example.py` | Stochastic transparency using `resources/small_scene.glb`; controls below. |
+| `msaa_example.py` | Rotating triangle with resize handling. Number keys: 1 disables MSAA; 4 selects 4x MSAA (default). |
 
-All four expose `run_scene()` and can be imported without creating a window or
+All five expose `run_scene()` and can be imported without creating a window or
 GPU device. The launcher initializes scene execution and cleans up RenderContext
 on exit. Paths and asset files resolve relative to the scene modules.
 
@@ -29,7 +31,7 @@ python -u main.py scenes/draw_batches_example.py --frames 120
 
 The launcher presents the final submitted frame and prints the frame count.
 Closing the window early can produce fewer frames. The limit applies to
-`RenderContext.window_loop()` scenes, including the four above; it does not apply
+`RenderContext.window_loop()` scenes, including the five above; it does not apply
 to the legacy Raylib benchmark loop.
 
 ## Transparency controls

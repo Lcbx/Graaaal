@@ -137,7 +137,8 @@ def test_explicit_uniform_layout_bypasses_reflector_and_gpu_only_buffer():
     assert np.frombuffer(rc.RenderContext.device.queue.read_buffer(result.handle), dtype=np.float32)[0] == 5
 
 
-def test_msaa_resolve_normalized_attributes_and_per_attachment_state():
+@pytest.mark.parametrize("resolve_target_kind", ["texture", "view", "attachment"])
+def test_msaa_resolve_normalized_attributes_and_per_attachment_state(resolve_target_kind):
     rc.RenderContext.setup_graphics_backend(True)
     shader = rc.Shader(source='''
         struct VertexOutput { @builtin(position) position: vec4f, @location(0) color: vec4f, }
@@ -158,8 +159,10 @@ def test_msaa_resolve_normalized_attributes_and_per_attachment_state():
     buffer = rc.GpuBuffer(vertices, rc.BufferUsage.VERTEX | rc.BufferUsage.COPY_DST)
     resolved = [rc.Texture((16, 16), format="rgba8unorm", usage=rc.TextureUsage.RENDER_ATTACHMENT | rc.TextureUsage.COPY_SRC) for _ in range(2)]
     multisampled = [rc.Texture((16, 16), format="rgba8unorm", usage=rc.TextureUsage.RENDER_ATTACHMENT, sample_count=4) for _ in range(2)]
+    targets = [texture.view() if resolve_target_kind == "view" else
+        texture.color_attachment() if resolve_target_kind == "attachment" else texture for texture in resolved]
     commands = rc.RenderContext.commands()
-    with commands.render_pass(color=[a.color_attachment(clear=(0, 0, 0, 1), resolve_target=b) for a, b in zip(multisampled, resolved)]) as render:
+    with commands.render_pass(color=[a.color_attachment(clear=(0, 0, 0, 1), resolve_target=b) for a, b in zip(multisampled, targets)]) as render:
         render.set_pipeline(pipeline)
         render.set_vertex_buffer(0, buffer)
         render.draw(3)

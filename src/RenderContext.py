@@ -1185,11 +1185,21 @@ class Texture(_OwnedResource):
 		*,
 		clear: Color | None = None,
 		store: bool = True,
-		resolve_target: Texture | TextureView | None = None,
+		resolve_target: Texture | TextureView | ColorAttachment | None = None,
 	) -> ColorAttachment:
+		"""Resolve to a texture, texture view, or RenderContext.screen() attachment."""
 		self._check_device()
+		resolve_view = None
+		if isinstance(resolve_target, Texture):
+			resolve_view = resolve_target.binding
+		elif isinstance(resolve_target, TextureView):
+			resolve_view = resolve_target.handle
+		elif isinstance(resolve_target, ColorAttachment):
+			if resolve_target.device_generation is not None and resolve_target.device_generation != RenderContext.device_generation:
+				raise RuntimeError("Attachment belongs to an expired device generation")
+			resolve_view = resolve_target.view
 		return ColorAttachment(self.binding, self.format, clear, store, self.sample_count,
-			resolve_target.binding if isinstance(resolve_target, Texture) else resolve_target.handle if resolve_target else None,
+			resolve_view,
 			self._device_generation)
 
 	def depth_attachment(
