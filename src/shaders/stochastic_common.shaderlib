@@ -2,8 +2,10 @@
 <Frame> proj: mat4x4f;
 <Frame> light_dir: vec4f;
 <Frame> camera_position: vec4f;
-// clip: near, far, unused, unused.
+// clip: near, far, surface noise-cell width in pixels, noise mode (see NOISE_MODES).
 <Frame> clip: vec4f;
+// grazing: start angle (degrees), end angle (degrees), enabled, reserved.
+<Frame> grazing: vec4f;
 @group(0) @binding(0) var<uniform> frame: Frame;
 
 <Material> base_color: vec4f;

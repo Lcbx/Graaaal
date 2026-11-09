@@ -8,31 +8,29 @@
 <ShadingVertex> uv: vec4f;
 @group(2) @binding(4) var<storage, read> vertices: array<ShadingVertex>;
 @group(2) @binding(5) var<storage, read> shading_instances: array<MeshInstance>;
+#if PARAMS.get("sample_count", 1) > 1
+@group(1) @binding(0) var winners: texture_multisampled_2d<u32>;
+@group(1) @binding(1) var winner_color: texture_storage_2d_array<rgba16float, write>;
+@group(1) @binding(2) var winners_extra: texture_multisampled_2d<u32>;
+#else
 @group(1) @binding(0) var winners: texture_2d<u32>;
 @group(1) @binding(1) var winner_color: texture_storage_2d<rgba16float, write>;
+#endif
 
-@compute @workgroup_size(8, 8)
-fn shade_winner(@builtin(global_invocation_id) id: vec3u) {
-	let dimensions = textureDimensions(winners);
-	if any(id.xy >= dimensions) { return; }
-	let pixel = vec2i(id.xy);
-	let payload = textureLoad(winners, pixel, 0);
+fn shade_payload(payload: vec4u) -> vec4f {
 	// Empty pixels are zero samples, including pixels where all low-alpha
 	// fragments lost the stochastic test. Never leave last frame's value here.
 	if payload.x == 0u {
-		textureStore(winner_color, pixel, vec4f(0.0));
-		return;
+		return vec4f(0.0);
 	}
 	let instance_id = payload.x - 1u;
 	if instance_id >= arrayLength(&metadata) || instance_id >= arrayLength(&shading_instances) {
-		textureStore(winner_color, pixel, vec4f(0.0));
-		return;
+		return vec4f(0.0);
 	}
 	let info = metadata[instance_id];
 	let triangle_count = arrayLength(&vertices) / 3u;
 	if info.x >= triangle_count || payload.y >= triangle_count - info.x || info.y >= arrayLength(&materials) {
-		textureStore(winner_color, pixel, vec4f(0.0));
-		return;
+		return vec4f(0.0);
 	}
 	let triangle = (info.x + payload.y) * 3u;
 	let a = vertices[triangle];
@@ -48,5 +46,20 @@ fn shade_winner(@builtin(global_invocation_id) id: vec3u) {
 	let lod_face = unpack2x16float(payload.w);
 	let color = shade(materials[info.y], uv, position, select(-normal, normal, lod_face.y > 0.0), lod_face.x);
 	// Straight HDR color: no multiplication or division by opacity here.
-	textureStore(winner_color, pixel, vec4f(color, 1.0));
+	return vec4f(color, 1.0);
+}
+
+@compute @workgroup_size(8, 8)
+fn shade_winner(@builtin(global_invocation_id) id: vec3u) {
+	if any(id.xy >= textureDimensions(winners)) { return; }
+	let pixel = vec2i(id.xy);
+#if PARAMS.get("sample_count", 1) > 1
+	let low = textureLoad(winners, pixel, i32(id.z));
+	let high = textureLoad(winners_extra, pixel, i32(id.z));
+	let payload = vec4u(low.x | (low.y << 16u), low.z | (low.w << 16u),
+		high.x | (high.y << 16u), high.z | (high.w << 16u));
+	textureStore(winner_color, pixel, i32(id.z), shade_payload(payload));
+#else
+	textureStore(winner_color, pixel, shade_payload(textureLoad(winners, pixel, 0)));
+#endif
 }

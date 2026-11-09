@@ -1,0 +1,153 @@
+// Object-space, pixel-scale hashed thresholds for arbitrary triangle meshes.
+// Scale discretization and uniform CDF correction follow Wyman & McGuire,
+// Hashed Alpha Testing (I3D 2017), section 5.4. No UV/card topology is assumed.
+fn noise_cell_threshold(noise: texture_2d<f32>, position: vec3f, scale: f32, level: i32, seed: u32) -> f32 {
+	// Hash floored float bit patterns instead of converting to i32: large local
+	// coordinates cannot overflow an integer conversion. Adding zero canonicalizes
+	// signed zero so adjacent triangles agree at coordinate-plane boundaries.
+	let cell = bitcast<vec3u>(floor(position*scale)+vec3f(0.0));
+	let key = hash3d_u32(cell, seed ^ hash_u32(bitcast<u32>(level)));
+	let dimensions = textureDimensions(noise);
+	let index = vec2u(key, hash_u32(key ^ 0x68bc21ebu)) % dimensions;
+	// The texture supplies uniform ranks, not a screen-space spectral guarantee.
+	return textureLoad(noise, vec2i(index), 0).r;
+}
+
+fn object_noise_threshold(noise: texture_2d<f32>, position: vec3f, dx: vec3f, dy: vec3f, pixels: f32, seed: u32) -> f32 {
+	let footprint = max(max(length(dx), length(dy)), 1e-8);
+	let log_scale = clamp(-log2(pixels*footprint), -24.0, 24.0);
+	let level = i32(floor(log_scale));
+	let scale = exp2(f32(level));
+	let thresholds = vec2f(noise_cell_threshold(noise, position, scale, level, seed),
+		noise_cell_threshold(noise, position, scale*2.0, level+1, seed));
+	return clamp(blend_uniform_thresholds(thresholds, fract(log_scale)), 0.0, 1.0);
+}
+
+// Point-sampled UV octaves retain the tile's spatial arrangement within each
+// octave. The stochastic mixture is experimental: it preserves uniform marginals
+// with an independent selector, but not necessarily the tile's blue spectrum.
+fn wrap_noise_cell(cell: vec2f, dimensions: vec2u) -> vec2u {
+	let size = vec2f(dimensions);
+	let wrapped = cell-floor(cell/size)*size;
+	return vec2u(clamp(wrapped, vec2f(0.0), size-1.0));
+}
+
+fn bayer_threshold_64(pixel: vec2u) -> f32 {
+	var rank = 0u;
+	for (var bit = 0u; bit < 6u; bit += 1u) {
+		let x = (pixel.x >> bit) & 1u;
+		let y = (pixel.y >> bit) & 1u;
+		let digit = ((x ^ y) << 1u) | y;
+		rank |= digit << (2u*(5u-bit));
+	}
+	return (f32(rank)+0.5)/4096.0;
+}
+
+fn uv_octave_threshold(noise: texture_2d<f32>, uv: vec2f, octave: i32, seed: u32, bayer: bool) -> f32 {
+	let dimensions = select(textureDimensions(noise), vec2u(64u), bayer);
+	let phase = hash_u32(seed ^ hash_u32(bitcast<u32>(octave)) ^ 0x4f1bbcdcu);
+	let shift = vec2u(phase & 65535u, phase >> 16u) % dimensions;
+	let cell = floor(uv*64.0*exp2(-f32(octave)));
+	let pixel = (wrap_noise_cell(cell, dimensions)+shift) % dimensions;
+	if bayer { return bayer_threshold_64(pixel); }
+	return textureLoad(noise, vec2i(pixel), 0).r;
+}
+
+fn uv_noise_threshold(noise: texture_2d<f32>, uv: vec2f, dx: vec2f, dy: vec2f,
+	pixels: f32, seed: u32, mode: u32) -> f32 {
+	// Raw UV derivatives: no material LOD bias, clamping or texture mip level.
+	let footprint = max(length(dx), length(dy))*64.0*pixels;
+	let log_scale = clamp(log2(max(footprint, 1e-20)), -24.0, 24.0);
+	let octave = i32(floor(log_scale));
+	let blend = fract(log_scale);
+	let bayer = mode == 3u;
+	let thresholds = vec2f(uv_octave_threshold(noise, uv, octave, seed, bayer),
+		uv_octave_threshold(noise, uv, octave+1, seed, bayer));
+	if mode == 1u { return blend_uniform_thresholds(thresholds, blend); }
+	// An independent hash channel on the finer UV lattice makes the selector
+	// move with the surface too. It never uses frame or screen coordinates.
+	let cell = floor(uv*64.0*exp2(-f32(octave)))+vec2f(0.0);
+	let bits = bitcast<vec2u>(cell);
+	let selector_bits = hash3d_u32(vec3u(bits, bitcast<u32>(octave)), seed ^ 0xb5297a4du);
+	let selector = f32(selector_bits >> 8u)*(1.0/16777216.0);
+	return select(thresholds.x, thresholds.y, selector < blend);
+}
+
+fn correlated_octave_threshold(hierarchy: texture_2d<f32>, uv: vec2f, octave: i32, seed: u32) -> f32 {
+	// One origin at the finest level keeps all parent/child cells aligned.
+	// The 64x64 hierarchy spans octaves -4..2; outside it, boundary levels repeat.
+	let relative = octave+4;
+	let last = i32(textureNumLevels(hierarchy))-1;
+	let level = clamp(relative, 0, last);
+	let size = textureDimensions(hierarchy, level);
+	let base_size = textureDimensions(hierarchy, 0);
+	let phase = hash_u32(seed ^ 0x27d4eb2du);
+	let origin = vec2f(vec2u(phase & 65535u, phase >> 16u) % base_size);
+	let base = uv*1024.0+origin;
+	let cell = floor(base*exp2(-f32(relative)));
+	let pixel = wrap_noise_cell(cell, size);
+	let rank = textureLoad(hierarchy, vec2i(pixel), level).r;
+	// The same independent root-tile jitter refines every rank bin. It also
+	// prevents the 1x1 root from degenerating into a fixed alpha=.5 threshold.
+	let root_scale = exp2(f32(max(relative-last, 0)));
+	let root = bitcast<vec2u>(floor(base/(vec2f(base_size)*root_scale))+vec2f(0.0));
+	let bits = hash3d_u32(vec3u(root, 0u), seed ^ 0x165667b1u);
+	let jitter = (f32(bits >> 9u)+0.5)/8388608.0;
+	return min((rank+jitter)/f32(size.x*size.y), 0.9999999403953552);
+}
+
+fn correlated_noise_threshold(hierarchy: texture_2d<f32>, uv: vec2f, dx: vec2f, dy: vec2f,
+	pixels: f32, seed: u32) -> f32 {
+	let s = clamp(log2(max(max(length(dx), length(dy))*64.0*pixels, 1e-20)), -24.0, 24.0);
+	let octave = i32(floor(s));
+	let a = correlated_octave_threshold(hierarchy, uv, octave, seed);
+	let b = correlated_octave_threshold(hierarchy, uv, octave+1, seed);
+	let cell = bitcast<vec2u>(floor(uv*64.0*exp2(-f32(octave)))+vec2f(0.0));
+	let bits = hash3d_u32(vec3u(cell, bitcast<u32>(octave)), seed ^ 0xb5297a4du);
+	let selector = f32(bits >> 8u)*(1.0/16777216.0);
+	// Correlated samples do not satisfy the independent-lerp CDF assumption.
+	return select(a, b, selector < fract(s));
+}
+
+fn triplanar_noise_threshold(noise: texture_2d<f32>, hierarchy: texture_2d<f32>,
+	position: vec3f, dx: vec3f, dy: vec3f, normal: vec3f, pixels: f32, seed: u32, correlated: bool) -> f32 {
+	let largest = max(abs(normal.x), max(abs(normal.y), abs(normal.z)));
+	if largest < 1e-20 {
+		return object_noise_threshold(noise, position, dx, dy, pixels, seed);
+	}
+	let weights = pow(abs(normal)/largest, vec3f(4.0));
+	var x: f32;
+	var y: f32;
+	var z: f32;
+	if correlated {
+		x = correlated_noise_threshold(hierarchy, position.yz, dx.yz, dy.yz, pixels, seed ^ 0x243f6a88u);
+		y = correlated_noise_threshold(hierarchy, position.xz, dx.xz, dy.xz, pixels, seed ^ 0x85a308d3u);
+		z = correlated_noise_threshold(hierarchy, position.xy, dx.xy, dy.xy, pixels, seed ^ 0x13198a2eu);
+	} else {
+		x = uv_noise_threshold(noise, position.yz, dx.yz, dy.yz, pixels, seed ^ 0x243f6a88u, 1u);
+		y = uv_noise_threshold(noise, position.xz, dx.xz, dy.xz, pixels, seed ^ 0x85a308d3u, 1u);
+		z = uv_noise_threshold(noise, position.xy, dx.xy, dy.xy, pixels, seed ^ 0x13198a2eu, 1u);
+	}
+	// Smooth normal weights avoid dominant-axis seams. Correct each blend's
+	// marginal distribution; simply averaging uniform thresholds biases opacity.
+	let xy_weight = weights.x+weights.y;
+	let xy = blend_uniform_thresholds(vec2f(x, y), weights.y/max(xy_weight, 1e-20));
+	return min(blend_uniform_thresholds(vec2f(xy, z), weights.z/max(xy_weight+weights.z, 1e-20)), 0.9999999403953552);
+}
+
+fn surface_noise_threshold(noise: texture_2d<f32>, hierarchy: texture_2d<f32>,
+	position: vec3f, dx: vec3f, dy: vec3f, normal: vec3f,
+	uv: vec2f, uv_dx: vec2f, uv_dy: vec2f, pixels: f32, seed: u32, mode: u32) -> f32 {
+	if mode == 5u || mode == 6u {
+		return triplanar_noise_threshold(noise, hierarchy, position, dx, dy, normal, pixels, seed, mode == 6u);
+	}
+	let determinant = uv_dx.x*uv_dy.y-uv_dx.y*uv_dy.x;
+	// Missing/constant and rank-one UVs cannot carry a two-dimensional tile.
+	if mode == 0u || abs(determinant) <= 1e-20 {
+		return object_noise_threshold(noise, position, dx, dy, pixels, seed);
+	}
+	if mode == 4u {
+		return correlated_noise_threshold(hierarchy, uv, uv_dx, uv_dy, pixels, seed);
+	}
+	return uv_noise_threshold(noise, uv, uv_dx, uv_dy, pixels, seed, mode);
+}

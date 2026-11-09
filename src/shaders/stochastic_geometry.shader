@@ -2,11 +2,17 @@
 #include "stochastic_common.shaderlib"
 #include "utils.shaderlib"
 #include "instance_transform.shaderlib"
+#include "stochastic_noise.shaderlib"
 
 @group(1) @binding(0) var<storage, read> instances: array<MeshInstance>;
 @group(1) @binding(1) var<storage, read> visible_instances: array<u32>;
+#if PARAMS.get("sample_count", 1) > 1
+@group(3) @binding(0) var opaque_depth: texture_depth_multisampled_2d;
+#else
 @group(3) @binding(0) var opaque_depth: texture_depth_2d;
+#endif
 @group(3) @binding(1) var blue_noise: texture_2d<f32>;
+@group(3) @binding(2) var noise_hierarchy: texture_2d<f32>;
 
 <VertexInput> position: vec3f;
 <VertexInput> normal: vec3f;
@@ -15,10 +21,21 @@
 <VertexInput> triangle: u32;
 
 <VertexOutput> @builtin(position) position: vec4f;
+#if PARAMS.get("sample_count", 1) > 1
+<VertexOutput> @interpolate(perspective, sample) world: vec3f;
+<VertexOutput> @interpolate(perspective, sample) normal: vec3f;
+<VertexOutput> @interpolate(perspective, sample) uv: vec2f;
+<VertexOutput> @interpolate(perspective, sample) barycentric: vec2f;
+<VertexOutput> @interpolate(perspective, sample) local: vec3f;
+<VertexOutput> @interpolate(perspective, sample) local_normal: vec3f;
+#else
 <VertexOutput> world: vec3f;
 <VertexOutput> normal: vec3f;
 <VertexOutput> uv: vec2f;
 <VertexOutput> barycentric: vec2f;
+<VertexOutput> local: vec3f;
+<VertexOutput> local_normal: vec3f;
+#endif
 <VertexOutput> @interpolate(flat) triangle: u32;
 <VertexOutput> @interpolate(flat) instance: u32;
 
@@ -35,7 +52,29 @@ fn vertex(input: VertexInput, @builtin(instance_index) instance_index: u32) -> V
 	output.barycentric = input.barycentric;
 	output.triangle = input.triangle;
 	output.instance = id;
+	output.local = input.position;
+	output.local_normal = input.normal;
 	return output;
+}
+
+fn surface_grazing_fade(world: vec3f) -> f32 {
+	// Geometric derivatives reflect the projected surface, independent of smooth
+	// shading normals and instance scale. Evaluate them before every discard.
+	let geometric_normal = cross(dpdxFine(world), dpdyFine(world));
+	if frame.grazing.z == 0.0 { return 1.0; }
+	let orthographic_to_eye = vec3f(frame.view[0].z, frame.view[1].z, frame.view[2].z);
+	let to_eye = select(frame.camera_position.xyz-world, orthographic_to_eye, frame.proj[3].w == 1.0);
+	let denominator = length(geometric_normal)*length(to_eye);
+	if denominator <= 1e-20 { return 1.0; }
+	return grazing_fade_factor(dot(geometric_normal, to_eye)/denominator, frame.grazing.x, frame.grazing.y);
+}
+
+fn raster_opacity(material: Material, uv: vec2f, lod: f32, world: vec3f) -> vec3f {
+	let alpha = base_color(material, uv, lod).a;
+	let width = fwidth(alpha);
+	let coverage = select(alpha, sharpen_alpha(alpha, material.surface.w, width), material.surface.z == 1.0);
+	let fade = surface_grazing_fade(world);
+	return clamp(coverage*material.opacity_rgb.rgb, vec3f(0.0), vec3f(1.0))*fade;
 }
 
 @fragment
@@ -61,8 +100,8 @@ fn opaque(input: VertexOutput, @builtin(front_facing) front: bool) -> @location(
 fn transmittance(input: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4f {
 	let lod = raster_lod(input.uv);
 	let material = materials[metadata[input.instance].y];
+	let alpha = raster_opacity(material, input.uv, lod, input.world);
 	if !front && material.flags.y == 0u { discard; }
-	let alpha = opacity(material, input.uv, lod);
 	let p = max(alpha.x, max(alpha.y, alpha.z));
 	return vec4f(vec3f(1.0)-alpha, 1.0-p);
 }
@@ -76,37 +115,68 @@ fn raster_lod(uv: vec2f) -> f32 {
 }
 
 @fragment
-fn transparent_depth(input: VertexOutput, @builtin(front_facing) front: bool) {
+fn transparent_depth(input: VertexOutput, @builtin(front_facing) front: bool, @builtin(sample_index) sample: u32) -> @location(0) vec4f {
 	let lod = raster_lod(input.uv);
-	if input.position.z >= textureLoad(opaque_depth, vec2i(input.position.xy), 0) { discard; }
 	let material = materials[metadata[input.instance].y];
+	let alpha = raster_opacity(material, input.uv, lod, input.world);
+	// Reciprocal view depth is affine over a projected triangle. Storing its
+	// gradient permits exact planar prediction, including perspective foreshortening.
+	let reciprocal_depth = 1.0 / max(-(frame.view*vec4f(input.world, 1.0)).z, 1e-6);
+	let slope = vec2f(dpdxFine(reciprocal_depth), dpdyFine(reciprocal_depth));
+	if input.position.z >= textureLoad(opaque_depth, vec2i(input.position.xy), i32(sample)) { discard; }
 	if !front && material.flags.y == 0u { discard; }
-	let alpha = opacity(material, input.uv, lod);
 	// Ignore fully transparent texels; retain every nonzero opacity, however low.
-	if max(alpha.x, max(alpha.y, alpha.z)) <= 0.0 { discard; }
+	let p = max(alpha.x, max(alpha.y, alpha.z));
+	if p <= 0.0 { discard; }
+	// Reserve half-float 1.0 for exact certainty. Fractional values near one
+	// would otherwise round up and incorrectly bypass missing-winner filtering.
+	// 0.99951171875 is the largest representable half-float below one.
+	let guide_probability = select(min(p, 0.99951171875), 1.0, p == 1.0);
+	return vec4f(guide_probability, slope, reciprocal_depth);
 }
 
+#if PARAMS.get("sample_count", 1) > 1
+<WinnerOutput> @location(0) low: vec4u;
+<WinnerOutput> @location(1) high: vec4u;
+#endif
+
 @fragment
-fn select_winner(input: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4u {
+fn select_winner(input: VertexOutput, @builtin(front_facing) front: bool, @builtin(sample_index) sample: u32)
+#if PARAMS.get("sample_count", 1) > 1
+ -> WinnerOutput {
+#else
+ -> @location(0) vec4u {
+#endif
 	let lod = raster_lod(input.uv);
 	let pixel = vec2i(input.position.xy);
-	// Selection has its own writable depth; reject opaque occlusion explicitly.
-	if input.position.z >= textureLoad(opaque_depth, pixel, 0) { discard; }
 	let info = metadata[input.instance];
 	let material = materials[info.y];
+	let alpha = raster_opacity(material, input.uv, lod, input.world);
+	// Derivatives precede every discard. The same local field follows the mesh
+	// through camera motion and instance transforms, without triangle reseeding.
+	// Opposite physical sides use separate seeds on two-sided/closed surfaces.
+	var seed = hash_u32(info.z ^ select(0xa511e9b3u, 0u, front));
+#if PARAMS.get("sample_count", 1) > 1
+	// Static per-sample decorrelation; no frame counter or temporal history.
+	seed = hash_u32(seed ^ hash_u32(sample + 0x68bc21ebu));
+#endif
+	let u = surface_noise_threshold(blue_noise, noise_hierarchy, input.local, dpdxFine(input.local), dpdyFine(input.local), input.local_normal,
+		input.uv, dpdxFine(input.uv), dpdyFine(input.uv), frame.clip.z, seed, u32(frame.clip.w));
+	// Selection has its own writable depth; reject opaque occlusion explicitly.
+	if input.position.z >= textureLoad(opaque_depth, pixel, i32(sample)) { discard; }
 	if !front && material.flags.y == 0u { discard; }
-	let alpha = opacity(material, input.uv, lod);
 	let p = max(alpha.x, max(alpha.y, alpha.z));
-	let seed = hash_u32(info.z ^ hash_u32(input.triangle + 1u));
-	let dimensions = textureDimensions(blue_noise);
-	let noise_pixel = (vec2u(pixel) + vec2u(seed & 65535u, seed >> 16u)) % dimensions;
-	// Integer wrapping tiles the original rank map exactly. Surface-specific
-	// translations preserve its blue-noise thresholds without modifying ranks.
-	let u = textureLoad(blue_noise, vec2i(noise_pixel), 0).r;
 	if u >= p { discard; }
 	// Zero instance is the empty sentinel. Hardware depth writes keep all four
 	// payload components consistent with the nearest accepted triangle.
-	return vec4u(input.instance + 1u, input.triangle,
+	let payload = vec4u(input.instance + 1u, input.triangle,
 		pack2x16unorm(clamp(input.barycentric, vec2f(0.0), vec2f(1.0))),
 		pack2x16float(vec2f(lod, select(-1.0, 1.0, front))));
+#if PARAMS.get("sample_count", 1) > 1
+	// rgba32uint cannot be multisampled. Preserve every bit in two rgba16uint targets.
+	return WinnerOutput(vec4u(payload.x & 65535u, payload.x >> 16u, payload.y & 65535u, payload.y >> 16u),
+		vec4u(payload.z & 65535u, payload.z >> 16u, payload.w & 65535u, payload.w >> 16u));
+#else
+	return payload;
+#endif
 }

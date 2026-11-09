@@ -108,13 +108,19 @@ class ImGui:
 		with self._activate():
 			if not self._update_display():
 				return
+			color = self.context.screen(clear=clear)
+			# A resize can arrive after the scene acquired this frame's surface.
+			# Derive clipping/viewport scale from that exact view, not live GLFW size.
+			pixels_w, pixels_h = color.view.size[:2]
+			width, height = self.io.display_size
+			self.io.display_framebuffer_scale = (pixels_w/width, pixels_h/height)
 			self.imgui.new_frame()
 			try:
 				draw()
 			finally:
 				self.imgui.render()
 			commands = self.context.commands("imgui")
-			with commands.render_pass(color=self.context.screen(clear=clear), label="imgui") as render:
+			with commands.render_pass(color=color, label="imgui") as render:
 				self._backend.render(self.imgui.get_draw_data(), render.handle)
 			self.context.submit(commands.finish())
 

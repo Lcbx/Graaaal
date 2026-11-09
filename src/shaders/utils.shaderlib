@@ -30,6 +30,35 @@ fn hash_u32(value: u32) -> u32 {
 	return x ^ (x >> 16u);
 }
 
+fn hash3d_u32(cell: vec3u, seed: u32) -> u32 {
+	return hash_u32(hash_u32(cell.x ^ seed) ^ hash_u32(cell.y + 0x9e3779b9u) ^ hash_u32(cell.z + 0x85ebca6bu));
+}
+
+// A linear blend of independent uniform thresholds is not uniform. Apply its
+// CDF to retain P(threshold < alpha) = alpha through noise-scale transitions.
+// The endpoint case avoids the singular denominators at blend = 0 or 1.
+fn blend_uniform_thresholds(thresholds: vec2f, blend: f32) -> f32 {
+	if blend <= 1e-6 { return thresholds.x; }
+	if blend >= 1.0-1e-6 { return thresholds.y; }
+	let x = mix(thresholds.x, thresholds.y, blend);
+	let a = min(blend, 1.0-blend);
+	if x < a { return x*x/(2.0*a*(1.0-a)); }
+	if x > 1.0-a { return 1.0-(1.0-x)*(1.0-x)/(2.0*a*(1.0-a)); }
+	return (x-0.5*a)/(1.0-a);
+}
+
+// Analytic pixel coverage for an alpha-tested texture. Callers evaluate the
+// alpha derivative before divergent branches/discards in every raster pass.
+fn sharpen_alpha(alpha: f32, cutoff: f32, width: f32) -> f32 {
+	return clamp((alpha-cutoff)/max(width, 1e-5)+0.5, 0.0, 1.0);
+}
+
+// Symmetric for front/back faces; interpolate in angle, not in cosine space.
+fn grazing_fade_factor(cosine: f32, start_degrees: f32, end_degrees: f32) -> f32 {
+	let angle = degrees(acos(clamp(abs(cosine), 0.0, 1.0)));
+	return 1.0-smoothstep(start_degrees, end_degrees, angle);
+}
+
 fn unpack_rotation(packed: vec2u) -> vec4f {
 	return vec4f( unpack2x16snorm(packed.x), unpack2x16snorm(packed.y) );
 }

@@ -88,3 +88,40 @@ def build_material_texture_array(images, materials, size):
 		RenderContext.submit(cmd.finish())
 	return result
 
+
+def build_correlated_noise_hierarchy(source):
+	"""Build nested rank-preserving noise levels on the GPU, without readback.
+
+	Parents average each 2x2 child block, then receive unique integer ranks again.
+	Uniform per-tile rank jitter at sampling time retains continuous marginals,
+	including the 1x1 root. Small noise tiles (up to 64x64) bound the rank pass cost.
+	"""
+	width, height, layers = source.size
+	if width != height or layers != 1 or width > 64 or width & (width-1):
+		raise ValueError("Noise hierarchy requires a square power-of-two tile up to 64x64")
+	levels = width.bit_length()
+	usage = TextureUsage.TEXTURE_BINDING | TextureUsage.STORAGE_BINDING
+	result = Texture((width, height), format="r32float", usage=usage,
+		mip_level_count=levels, label="correlated_noise_ranks")
+	shader = Shader(filepath=str(Path(__file__).with_name("shaders") / "noise_hierarchy.shader"))
+	pipelines = {name: ComputePipeline(shader, entry=name) for name in ("rank_values", "average_children")}
+	commands = RenderContext.commands("correlated_noise_hierarchy")
+	previous = source
+	for level in range(levels):
+		size = width >> level
+		current = result.view(base_mip_level=level, mip_level_count=1, dimension="2d")
+		if level:
+			scratch = Texture((size, size), format="r32float", usage=usage)
+			with commands.compute_pass(label=f"noise_parent_{level}") as compute:
+				compute.set_pipeline(pipelines["average_children"])
+				compute.set_bind_group(shader.bind_group(0, source=previous, destination=scratch))
+				compute.dispatch((size+7)//8, (size+7)//8)
+			previous = scratch
+		with commands.compute_pass(label=f"noise_ranks_{level}") as compute:
+			compute.set_pipeline(pipelines["rank_values"])
+			compute.set_bind_group(shader.bind_group(0, source=previous, destination=current))
+			compute.dispatch((size+7)//8, (size+7)//8)
+		previous = current
+	RenderContext.submit(commands.finish())
+	return result
+

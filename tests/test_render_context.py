@@ -8,6 +8,30 @@ import pytest
 from numpyecs import RenderContext as rc
 
 
+@pytest.mark.parametrize("size", [(2560, 1369), (640, 480), (0, 0)])
+def test_window_loop_applies_resize_events_before_returning_frame_dimensions(monkeypatch, size):
+    context = rc._RenderContext()
+    context.window = object()
+    context.window_dimensions = (1200, 900)
+    context.canvas = NS(set_physical_size=Mock())
+    context.device = NS(create_texture=Mock(return_value=NS(create_view=Mock())))
+    context.present = Mock()
+    context._frame_pacing = Mock()
+    physical = [(1200, 900)]
+    monkeypatch.setattr(rc.glfw, "get_framebuffer_size", lambda window: physical[0])
+    monkeypatch.setattr(rc.glfw, "poll_events", lambda: physical.__setitem__(0, size))
+    monkeypatch.setattr(rc.glfw, "window_should_close", lambda window: False)
+    assert context.window_loop()
+    assert context.window_dimensions == size
+    if size == (0, 0):
+        context.canvas.set_physical_size.assert_not_called()
+        context.device.create_texture.assert_not_called()
+    else:
+        context.canvas.set_physical_size.assert_called_once_with(*size)
+        assert context.device.create_texture.call_args.kwargs["size"] == (*size, 1)
+        assert context.aspect == size[0]/size[1]
+
+
 def test_entry_inference_comments_and_depth_only():
     shader = rc.Shader.__new__(rc.Shader)
     shader.info = rc.ShaderSource('''

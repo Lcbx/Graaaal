@@ -244,15 +244,17 @@ class _RenderContext:
 		"""Present the previous image, update window/input state, run gc, and continue the loop. """
 		self.present()
 
+		self.idle_hook()
+		self._frame_pacing()
+		glfw.poll_events()
+		# Events can resize the window. Synchronize the surface before the scene
+		# records this frame using window_dimensions and the default depth target.
 		wh = glfw.get_framebuffer_size(self.window)
 		if wh != self.window_dimensions and wh[0] > 0 and wh[1] > 0:
 			self.update_window_size(wh)
 		elif wh[0] <= 0 or wh[1] <= 0:
 			self.window_dimensions = wh
 
-		self.idle_hook()
-		self._frame_pacing()
-		glfw.poll_events()
 		return not glfw.window_should_close(self.window)
 
 	def present(self) -> None:

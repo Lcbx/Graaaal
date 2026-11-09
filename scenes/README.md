@@ -45,26 +45,70 @@ widgets, so those actions do not also move the camera or trigger scene shortcuts
 | Space / scroll | Toggle orbit / zoom |
 | R | Reverse transparent draw order |
 | D | Cycle final, transmittance, winner, reconstruction, and filter-support views |
-| 3 / 5 | Select reconstruction footprint |
-| A | Toggle distance adaptation |
+| N | Cycle noise modes, including UV correlated hierarchy and both triplanar options |
+| [ / ] | Decrease/increase surface noise-cell size |
+| G | Toggle grazing-angle opacity fade |
+| M | Toggle 4x MSAA (off by default); also available in the settings dropdown |
+| 1 / 3 / 5 / 9 | Disable reconstruction / select its fixed footprint |
 | F | Hide/show settings |
 | Up/Down, Left/Right | Select/edit a settings row; Shift gives finer increments |
-| Home | Restore startup settings |
-| F5 / F9 | Save/load `scenes/transparency_filter.json` |
+| Home | Restore startup filter settings |
 
-Arrow edits are disabled while the settings window is hidden. Save/load errors
-appear in the window and leave active settings unchanged.
+Arrow edits are disabled while the settings window is hidden.
+Startup uses the defaults in code; `transparency_filter.json` is read only with
+F9 or Load, so it can be deleted without affecting startup.
+MSAA, noise mode, cell size and grazing fade are live controls and are not stored in the
+filter profile. UV blue CDF lerp is the default; stochastic picking and Bayer
+remain experimental comparisons. The settings window also exposes these controls.
 
-Default reconstruction uses a 5x5 footprint. When `init_scene()` is called without
-filter settings, adaptation distances span one to four times the framed scene's
-radius. Explicit `BilateralFilter()` defaults use distances 10 through 50 instead.
+The noise dropdown additionally offers **UV blue: correlated hierarchy**,
+**Triplanar blue: CDF lerp**, and **Triplanar: correlated hierarchy**. The hierarchy
+is generated once on the GPU when first selected. Its levels share a spatial
+origin and are re-ranked after downsampling to retain threshold coverage.
+Triplanar modes use object-space projections with smooth local-normal weights
+and work independently of UV islands. All sampling is static, without TAA.
+The previous default and existing modes remain available.
+
+**MSAA (M)** switches between off and 4x. Four independent samples cover geometry,
+opacity and winner selection. Composition averages their linear HDR contributions
+before tone mapping. This smooths silhouettes and supplies extra stochastic samples,
+at an additional GPU/memory cost. It works with every reconstruction kernel,
+including 1x1, and does not use TAA or frame history.
+
+"Fade grazing surfaces" starts disabled. Its two editable angles default to
+70 degrees (start) and 85 degrees (completely faded). Angles are measured from
+the geometric surface normal: 0 is face-on, 90 is edge-on. Opacity fades smoothly
+between them on both front and back faces. The interval must satisfy
+`0 <= start < end <= 90`; drag either value or Ctrl+click to type it. The fade
+affects MASK/BLEND surfaces consistently in guide, transmittance and selection.
+
+Default reconstruction uses a fixed 3x3 footprint, spatial sigma 0.9, relative
+depth sigma 0.05, transmittance sigma 0.3, and minimum depth tolerance 0.01.
+The five controls are kernel size, spatial sigma, relative depth sigma,
+transmittance sigma, and minimum depth tolerance. Slope correction is always
+enabled: tilted cards keep their filter support while depth breaks remain protected.
+Certain nearest winners bypass the blur; all fractional pixels use the complete
+normalized filter. The 1x1 option skips neighborhood reconstruction and shows the
+unfiltered stochastic result without an extra opacity multiplication.
 See the [transparency notes](../src/stochastic_transparency.md) for the pass order,
 filter parameters, and interpretation of diagnostic views.
 
 The example loads static glTF node transforms, OPAQUE/MASK/BLEND modes,
 double-sided materials, base-color textures, roughness/metallic factors, and
-emissive factors. It builds 512x512 material texture layers with repeat/trilinear
-sampling and alpha-aware mipmaps. Normal/material maps, sampler overrides,
+emissive factors. Static primitives go directly into DrawBatches arrays; metadata
+follows its packed instance order. It builds 512x512 material texture layers with repeat/trilinear
+sampling and alpha-aware mipmaps. The tree's `Simple_foliage.001` material is
+explicitly treated as MASK, with coverage-preserving mips and sharpened alpha
+shared across guide, transmittance and selection. Thresholds are anchored to UV
+octaves, with object-space fallback for missing or rank-one UVs. A single UV
+octave preserves the tile spectrum; fractional-octave mixtures do not guarantee
+it. There is no card inference or projected-size cutoff. The independent surface
+selector, CDF lerp, and Bayer options are compared in the
+[sampling notes](../src/stochastic_transparency.md#acceptance-and-winner-data).
+`transparency.set_noise_scale(2)` trades coarser grain for greater stability;
+the default scale is 1 pixel. Repeated UV islands within one instance can
+correlate overlapping layers, so object-hash mode remains useful for those assets.
+Normal/material maps, sampler overrides,
 material extensions, animation, and skinning are outside this example.
 [Blue-noise source and license](resources/blue_noise/README.md).
 

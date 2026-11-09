@@ -193,9 +193,19 @@ caller's full binding ABI.
 Create `TransparencyPass` with material/vertex/texture/noise resources and an
 explicit offscreen `target_format` where appropriate. Existing opaque inputs can
 be supplied as `opaque_color=...`, `opaque_depth=...`, or by `set_opaque_inputs()`.
-They must be single-sample, sampleable textures with matching dimensions.
+They must be sampleable textures with matching dimensions and the configured sample count.
 `resize(size, targets=TransparencyTargets(...))` accepts caller-owned targets;
 otherwise reconstruction targets are allocated internally.
+The guide pass writes both `transparent_depth` and an rgba16float
+`transparent_guide` containing nearest acceptance and reciprocal-depth gradients.
+Supply both when using caller-owned `TransparencyTargets`.
+
+MSAA is optional: `sample_count=4` enables it, and `set_sample_count(1 or 4)`
+switches the default shader set live. The example uses **M** or its MSAA dropdown;
+the default is off. At 4x, winner payloads use two `rgba16uint` MSAA targets and
+shaded colors use a four-layer array. Composition resolves linear HDR before tone
+mapping; no temporal accumulation is used. See the
+[target requirements](src/stochastic_transparency.md#optional-msaa) for custom targets.
 
 Create geometry with
 `oit.create_geometry_passes(metadata, transparent=True, instances=instance_buffer)`.
@@ -207,6 +217,22 @@ empty samples; geometry bindings cannot be mixed between technique owners.
 Raster and deferred vertices share local coordinates. Both apply packed instance
 translation, rotation, and scale; normals use inverse scale and rotation. CPU
 loading can still bake glTF node transforms before instance transforms apply.
+Noise defaults to point-sampled UV blue-noise octaves with CDF-corrected lerp.
+`noise_mode` / `set_noise_mode(name)` also selects stochastic octave picking,
+object-space hashing or diagnostic Bayer noise. UV modes fall back to object
+hashing for missing/degenerate UVs; no cards or triangle reseeding are assumed.
+`noise_scale=1.0` / `set_noise_scale(pixels)` controls grain size. Guide and
+transmittance passes are independent of these selection-only options.
+`uv_blue_correlated`, `triplanar_blue`, and `triplanar_correlated` add a GPU-built
+rank hierarchy and UV-independent object-space projections. Choose them through
+`set_noise_mode(...)` or the example's noise selector; sampling remains static.
+`GrazingFade(enabled=True, start_angle=70, end_angle=85)` optionally fades
+transparent-surface opacity between two angles from the geometric normal.
+Pass it as `grazing_fade=...` or call `set_grazing_fade(...)`; it starts disabled.
+MASK materials use sharpened alpha when routed through the transparent
+passes. Reconstruction uses a fixed 3x3, 5x5 or 9x9 bilateral footprint (default
+3x3 with spatial sigma 0.9), with slope correction always enabled. A 1x1 kernel
+bypasses neighborhood reconstruction and retains the unfiltered stochastic estimator.
 
 `material_source` replaces `shade(material, uv, position, normal, lod) -> vec3f`
 without changing selection/reconstruction. A matched `geometry_shader` and

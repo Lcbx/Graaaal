@@ -30,12 +30,14 @@ class Primitive:
 	stable_id: int
 
 
-def load_transparency_scene(path: str | Path):
+def load_transparency_scene(path: str | Path, *, mask_materials=()):
 	"""Load static glTF into raster primitives, GPU material records and images.
 
 	Returns (primitives, materials, images, shading_vertices), packed for the
 	transparency shaders. This prepares CPU arrays only; no device is needed.
 	Use load_gltf_scene() for plain geometry and original glTF materials.
+	mask_materials explicitly overrides named materials to MASK for cutout assets
+	incorrectly authored as BLEND; ordinary BLEND is never automatically sharpened.
 	"""
 	loaded, materials, images = load_gltf_scene(path)
 	records = np.zeros(len(materials), dtype=MATERIAL_DTYPE)
@@ -52,6 +54,8 @@ def load_transparency_scene(path: str | Path):
 		# RGB opacity is separate from color; scalar glTF alpha uses (1,1,1).
 		records[i]["opacity_rgb"] = (1, 1, 1, 1)
 		records[i]["flags"] = (i, bool(material and material.doubleSided), 0, 0)
+		if material and material.name in mask_materials:
+			records[i]["surface"][2] = 1
 
 	primitives, shading_vertices = [], []
 	triangle_offset = 0

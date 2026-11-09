@@ -13,7 +13,7 @@ import wgpu.utils.imgui as backend_module
 from numpyecs.ImGui import ImGui
 from numpyecs.RenderContext import RenderContext
 from scenes.prototype import ActorCache, Damageable, Attributes, ActorMetadata, create_world, draw_actors
-from scenes.transparency_example import BilateralFilter, FilterSettings
+from scenes.transparency_example import BilateralFilter, FilterSettings, GrazingFade
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ def ui(monkeypatch):
 		yield NS(handle="pass")
 	commands = NS(render_pass=Mock(side_effect=render_pass), finish=lambda: "commands")
 	context = NS(window=object(), canvas=object(), device=object(), presentation_format="rgba8unorm",
-		frame_time=1/60, event_handlers={}, screen=Mock(return_value="screen"),
+		frame_time=1/60, event_handlers={}, screen=Mock(return_value=NS(view=NS(size=(1200, 900, 1)))),
 		commands=Mock(return_value=commands), submit=Mock())
 	gui = ImGui(context)
 	try:
@@ -86,10 +86,11 @@ def test_render_uses_screen_overlay_updates_dpi_and_detaches_only_own_handlers(u
 	assert tuple(gui.io.display_size) == (600, 450)
 	assert tuple(gui.io.display_framebuffer_scale) == (2, 2)
 	gui.context.screen.assert_called_once_with(clear=None)
-	commands.render_pass.assert_called_once_with(color="screen", label="imgui")
+	commands.render_pass.assert_called_once_with(color=gui.context.screen.return_value, label="imgui")
 	gui.context.submit.assert_called_once_with("commands")
 	assert imgui.get_current_context() == outer
 	sizes.logical, sizes.physical = (800, 400), (1200, 800)
+	gui.context.screen.return_value.view.size = (1200, 800, 1)
 	gui.context.frame_time = 0.02
 	gui.render(draw, clear=(0, 0, 0, 1))
 	assert tuple(gui.io.display_framebuffer_scale) == (1.5, 2)
@@ -118,6 +119,21 @@ def test_draw_failure_finishes_imgui_frame_and_allows_next_frame(ui):
 	gui.render(lambda: None)
 
 
+def test_resize_between_scene_and_overlay_uses_acquired_target_dimensions(ui):
+	gui, sizes, commands, _ = ui
+	# GLFW already reports the new window; the scene acquired the old surface.
+	sizes.logical, sizes.physical = (2560, 1369), (2560, 1369)
+	def draw():
+		# Resizing can continue even while building the widgets.
+		sizes.logical, sizes.physical = (1920, 1080), (1920, 1080)
+	gui.render(draw)
+	data = gui._backend.render.call_args.args[0]
+	assert tuple(data.display_size) == (2560, 1369)
+	np.testing.assert_allclose(np.array(data.display_size)*np.array(data.framebuffer_scale), (1200, 900), atol=0.001)
+	gui.context.screen.assert_called_once_with(clear=None)
+	commands.render_pass.assert_called_once_with(color=gui.context.screen.return_value, label="imgui")
+
+
 def test_both_scenes_render_real_imgui_draw_data_to_gpu(monkeypatch):
 	RenderContext.setup_graphics_backend(True)
 	device = RenderContext.device
@@ -134,7 +150,8 @@ def test_both_scenes_render_real_imgui_draw_data_to_gpu(monkeypatch):
 	world = create_world()
 	cache = ActorCache(world, world.query(Damageable, Attributes, ActorMetadata))
 	cache.update()
-	renderer = NS(bilateral_filter=BilateralFilter(), debug_view="final")
+	renderer = NS(bilateral_filter=BilateralFilter(), debug_view="final", sample_count=1,
+		noise_mode="uv_blue_lerp", noise_scale=1, grazing_fade=GrazingFade())
 	settings = FilterSettings(renderer)
 	try:
 		with ImGui() as gui:
@@ -146,5 +163,31 @@ def test_both_scenes_render_real_imgui_draw_data_to_gpu(monkeypatch):
 				pixels = np.frombuffer(data, dtype=np.uint8).reshape(900, 1200, 4)
 				assert np.count_nonzero(np.any(pixels[:, :, :3] > 0, axis=2)) > 10000
 				assert np.max(pixels[:, :, :3]) > 150  # Includes text, not just a background.
+	finally:
+		texture.destroy()
+
+
+@pytest.mark.parametrize("logical,physical", [((2560, 1369), (2560, 1369)), ((40, 30), (40, 30)), ((80, 60), (160, 120))])
+def test_real_gpu_clipping_matches_surface_during_resize_and_dpi_changes(monkeypatch, logical, physical):
+	RenderContext.setup_graphics_backend(True)
+	device = RenderContext.device
+	texture = device.create_texture(size=(80, 60, 1), format="rgba8unorm",
+		usage=wgpu.TextureUsage.RENDER_ATTACHMENT | wgpu.TextureUsage.COPY_SRC)
+	monkeypatch.setattr(glfw, "get_window_size", lambda window: logical)
+	monkeypatch.setattr(glfw, "get_framebuffer_size", lambda window: physical)
+	monkeypatch.setattr(glfw, "get_cursor_pos", lambda window: (0, 0))
+	monkeypatch.setattr(RenderContext, "window", object())
+	monkeypatch.setattr(RenderContext, "canvas", object())
+	monkeypatch.setattr(RenderContext, "presentation_format", "rgba8unorm", raising=False)
+	# The acquired view, rather than GLFW or cached window dimensions, is authoritative.
+	monkeypatch.setattr(RenderContext, "window_dimensions", physical)
+	monkeypatch.setattr(RenderContext, "_screen_view", texture.create_view())
+	def draw():
+		imgui.get_background_draw_list().add_rect_filled((0, 0), imgui.get_io().display_size, 0xffffffff)
+	try:
+		with ImGui() as gui:
+			gui.render(draw, clear=(0, 0, 0, 1))
+			data = device.queue.read_texture({"texture": texture}, {"bytes_per_row": 80*4}, (80, 60, 1))
+			np.testing.assert_array_equal(np.frombuffer(data, dtype=np.uint8), 255)
 	finally:
 		texture.destroy()

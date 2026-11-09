@@ -32,10 +32,7 @@ def test_bundled_blue_noise_loads_as_deterministic_linear_thresholds():
 	{"kernel_size": 4}, {"kernel_size": 3.0}, {"spatial_sigma": 0},
 	{"depth_sigma": -1}, {"transmittance_sigma": float("nan")},
 	{"min_depth_sigma": float("inf")},
-	{"adaptive": 1}, {"filter_near": -1}, {"filter_near": 50, "filter_far": 50},
-	{"filter_far": float("inf")}, {"far_spatial_sigma": 0},
-	{"far_depth_sigma": -1}, {"far_transmittance_sigma": float("nan")},
-	{"far_transmittance_weight": -0.1}, {"far_transmittance_weight": 1.1},
+	{"kernel_size": 7}, {"kernel_size": True}, {"kernel_size": 0},
 ])
 def test_bilateral_filter_rejects_invalid_footprints_and_tolerances(options):
 	with pytest.raises(ValueError):
@@ -82,6 +79,13 @@ def test_real_scene_has_opaque_mask_and_blended_geometry():
 		count = len(primitive.vertices)
 		np.testing.assert_array_equal(vertices["position"][start:start+count, :3], primitive.vertices["position"])
 	assert np.isfinite(vertices["normal"]).all()
+	# The example overrides only the named canopy, keeping generic loading faithful.
+	_, cutout_materials, _, _ = scene.load_transparency_scene(scene.PATH)
+	changed = cutout_materials["surface"][:, 2] != materials["surface"][:, 2]
+	assert changed.sum() == 1
+	assert materials["surface"][changed, 2] == 2
+	assert cutout_materials["surface"][changed, 2] == 1
+	assert cutout_materials["flags"][changed, 2] == 0  # no geometry-specific anchoring flags
 
 
 def mip_material(mode=2, alpha_factor=1, cutoff=0.5):
@@ -233,7 +237,7 @@ def make_layers():
 	return primitives, materials, images, np.concatenate(storage)
 
 
-@pytest.fixture(params=[3, 5])
+@pytest.fixture(params=[3, 5, 9])
 def gpu_scene(monkeypatch, request):
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	monkeypatch.setattr(scene, "load_transparency_scene", lambda path: make_layers())
@@ -289,6 +293,21 @@ def test_gpu_transmittance_selection_occlusion_order_and_empty_samples(gpu_scene
 	render_frame(renderer)
 	np.testing.assert_array_equal(read_texture(renderer.transparency.winner_color, np.float16, 4), 0)
 	np.testing.assert_array_equal(read_texture(renderer.transparency.transmittance, np.float16, 4), 1)
+
+
+def test_static_primitive_input_order_preserves_packed_metadata_and_shading(gpu_scene, monkeypatch):
+	renderer, output = gpu_scene
+	render_frame(renderer)
+	before = read_texture(output, np.uint8, 4)
+	payload = read_texture(renderer.transparency.winner, np.uint32, 4)
+	options = renderer.transparency.bilateral_filter
+	primitives, materials, images, vertices = make_layers()
+	monkeypatch.setattr(scene, "load_transparency_scene", lambda path: (primitives[::-1], materials, images, vertices))
+	scene.init_scene(bilateral_filter=options)
+	renderer.camera.position, renderer.camera.target = scene.Vec3(0, 0, 3), scene.Vec3(0, 0, 0)
+	render_frame(renderer)
+	np.testing.assert_array_equal(read_texture(output, np.uint8, 4), before)
+	np.testing.assert_array_equal(read_texture(renderer.transparency.winner, np.uint32, 4), payload)
 
 
 def test_gpu_zero_full_rgb_and_low_opacity(gpu_scene):
@@ -422,15 +441,22 @@ def test_gpu_cutout_sampling_has_no_black_bilinear_fringe(monkeypatch):
 	renderer.camera.position = scene.Vec3(0, 0, 3)
 	renderer.camera.target = scene.Vec3(0, 0, 0)
 	render_frame(renderer)
-	depth = read_texture(renderer.transparency.depth, np.float32, 1)[:, :, 0].astype(np.float64)
-	near, far = renderer.camera.near, renderer.camera.far
-	foreground = near*far/(far-depth*(far-near)) < 3
+	payload = read_texture(renderer.transparency.winner, np.uint32, 4)
+	foreground = payload[:, :, 0] == 1
 	assert 0.2 < foreground.mean() < 0.9
-	color = read_texture(renderer.transparency.main_color, np.float16, 4)[:, :, :3][foreground]
+	color = read_texture(renderer.transparency.winner_color, np.float16, 4)[:, :, :3][foreground]
 	# With black transparent neighbors, accepted alpha-edge samples darken to
 	# roughly 20% of this brightness. Padding keeps straight white color intact.
 	assert color.min() > 0.47
 	assert color.max() < 0.51
+	guide = read_texture(renderer.transparency.transparent_guide, np.float16, 4)[:, :, 0]
+	t = read_texture(renderer.transparency.transmittance, np.float16, 4)
+	# Sharpened MASK probability is identical in guide, accumulation and selection.
+	np.testing.assert_allclose(1-t[:, :, 3], guide, atol=0.001)
+	assert np.any((guide > 0) & (guide < 1))
+	assert np.any(guide == 1) and np.any(guide == 0)
+	assert np.all(foreground[guide == 1])
+	assert not np.any(foreground[guide == 0])
 
 
 def test_gpu_minified_alpha_and_deferred_color_use_matching_mips(monkeypatch):
@@ -508,6 +534,335 @@ def decode_display(image):
 	return np.where(color <= 0.04045, color/12.92, ((color+0.055)/1.055)**2.4)
 
 
+def test_gpu_self_normalisation_preserves_constant_radiance_and_empty_kernels(gpu_scene):
+	renderer, output = gpu_scene
+	buffer = renderer.transparency.shared["materials"]
+	buffer.content["base_color"][:3] = 0
+	buffer.content["base_color"][0, 3] = 0.15
+	buffer.content["surface"][0, 1] = 1  # black metal has no diffuse/specular term
+	buffer.content["emission"][0, :3] = (1, 0.5, 0.25)
+	buffer.upload()
+	renderer.transparency.set_debug_view("reconstruction")
+	noise = load_blue_noise(scene.BLUE_NOISE_PATH)
+	for offset in ((0, 0), (9, 23), (31, 11)):
+		pixels = np.ascontiguousarray(np.roll(noise, offset, axis=(0, 1)))
+		RenderContext.device.queue.write_texture({"texture": renderer.transparency.noise.handle}, pixels,
+			{"bytes_per_row": 256}, (64, 64, 1))
+		render_frame(renderer)
+		mapped = decode_display(read_texture(output, np.uint8, 4)[:, :, :3])
+		hdr = mapped/np.maximum(1-mapped, 1e-6)
+		occupied = read_texture(renderer.transparency.winner_color, np.float16, 4)[:, :, 3] > 0
+		# Any kernel containing a winner of this constant color must reconstruct
+		# exactly A_rgb * color, independent of the random number of survivors.
+		supported = np.zeros_like(occupied)
+		radius = renderer.transparency.bilateral_filter.kernel_size//2
+		for y in range(-radius, radius+1):
+			for x in range(-radius, radius+1):
+				supported |= np.roll(occupied, (y, x), axis=(0, 1))
+		supported = supported[radius:-radius, radius:-radius]
+		values = hdr[radius:-radius, radius:-radius][supported]
+		np.testing.assert_allclose(values, np.broadcast_to((0.15, 0.075, 0.0375), values.shape), atol=0.003)
+	# A wholly empty neighborhood has a finite zero contribution (no stale data).
+	RenderContext.device.queue.write_texture({"texture": renderer.transparency.noise.handle},
+		np.ones((64, 64), dtype=np.float32), {"bytes_per_row": 256}, (64, 64, 1))
+	render_frame(renderer)
+	np.testing.assert_array_equal(read_texture(output, np.uint8, 4)[:, :, :3], 0)
+
+
+def test_gpu_certain_winners_bypass_filter_even_with_varying_shading(gpu_scene):
+	renderer, output = gpu_scene
+	buffer = renderer.transparency.shared["materials"]
+	buffer.content["base_color"][0, 3] = 1
+	buffer.upload()
+	renderer.transparency.set_debug_view("winner")
+	render_frame(renderer)
+	winner = read_texture(output, np.uint8, 4)
+	assert np.ptp(winner[:, :, 0]) > 0  # spatially varying specular lighting
+	renderer.transparency.set_bilateral_filter(scene.BilateralFilter(spatial_sigma=10))
+	renderer.transparency.set_debug_view("reconstruction")
+	render_frame(renderer)
+	np.testing.assert_array_equal(read_texture(output, np.uint8, 4), winner)
+	guide = read_texture(renderer.transparency.transparent_guide, np.float16, 4)
+	np.testing.assert_array_equal(guide[:, :, 0], 1)
+
+
+def test_gpu_1x1_bypasses_reconstruction_without_extra_alpha_attenuation(gpu_scene):
+	renderer, output = gpu_scene
+	buffer = renderer.transparency.shared["materials"]
+	buffer.content["base_color"][:3] = 0
+	buffer.content["base_color"][0, 3] = 0.2
+	buffer.content["surface"][0, 1] = 1
+	buffer.content["emission"][0, :3] = (1, 0.5, 0.25)
+	renderer.transparency.set_bilateral_filter(scene.BilateralFilter(kernel_size=1))
+	renderer.transparency.set_debug_view("reconstruction")
+	for opacity_rgb in ((1, 1, 1), (1, 0.5, 0.25)):
+		buffer.content["opacity_rgb"][0, :3] = opacity_rgb
+		buffer.upload()
+		render_frame(renderer)
+		t = read_texture(renderer.transparency.transmittance, np.float16, 4).astype(np.float32)
+		winner = read_texture(renderer.transparency.winner_color, np.float16, 4).astype(np.float32)
+		assert np.any(winner[:, :, 3] == 0) and np.any(winner[:, :, 3] == 1)
+		hdr = (1-t[:, :, :3])*winner[:, :, :3]/np.maximum(1-t[:, :, 3:], 1e-6)
+		mapped = hdr/(1+hdr)
+		expected = np.rint(np.where(mapped <= 0.0031308, 12.92*mapped, 1.055*mapped**(1/2.4)-0.055)*255)
+		image = read_texture(output, np.uint8, 4)[:, :, :3]
+		np.testing.assert_allclose(image, expected, atol=1)
+		# Point mode is independent of all reconstruction tolerances.
+		renderer.transparency.set_bilateral_filter(scene.BilateralFilter(kernel_size=1,
+			spatial_sigma=0.1, depth_sigma=0.0001, transmittance_sigma=0.001, min_depth_sigma=0.000001))
+		render_frame(renderer)
+		np.testing.assert_array_equal(read_texture(output, np.uint8, 4)[:, :, :3], image)
+	# Empty winners remain visibly empty in point mode, whereas a real footprint
+	# reconstructs the constant color from neighboring accepted samples.
+	empty = winner[:, :, 3] == 0
+	np.testing.assert_array_equal(image[empty], 0)
+	renderer.transparency.set_bilateral_filter(scene.BilateralFilter(kernel_size=9))
+	render_frame(renderer)
+	assert np.any(read_texture(output, np.uint8, 4)[:, :, 0][empty] > 0)
+
+
+@pytest.mark.parametrize("alpha", [0.95, 0.9998])
+def test_gpu_nearly_opaque_missing_winners_use_full_reconstruction(gpu_scene, alpha):
+	renderer, output = gpu_scene
+	buffer = renderer.transparency.shared["materials"]
+	buffer.content["base_color"][:3] = 0
+	buffer.content["base_color"][0, 3] = alpha
+	buffer.content["surface"][0, 1] = 1
+	buffer.content["emission"][0, :3] = 1
+	buffer.upload()
+	renderer.transparency.set_debug_view("reconstruction")
+	if alpha > 0.99:
+		assert np.float16(alpha) == 1  # reproduce the guide's half-float rounding
+		noise = load_blue_noise(scene.BLUE_NOISE_PATH)
+		# Deliberately exercise rare rejections without needing a huge image.
+		noise = np.where(noise > 0.8, np.nextafter(np.float32(1), np.float32(0)), np.float32(0.25))
+		RenderContext.device.queue.write_texture({"texture": renderer.transparency.noise.handle}, noise,
+			{"bytes_per_row": 256}, (64, 64, 1))
+	render_frame(renderer)
+	guide = read_texture(renderer.transparency.transparent_guide, np.float16, 4)[:, :, 0]
+	assert np.all(guide < 1)  # fractional opacity must never encode certainty
+	missing = read_texture(renderer.transparency.winner_color, np.float16, 4)[:, :, 3] == 0
+	assert missing.any()
+	image = read_texture(output, np.uint8, 4)[:, :, :3]
+	# Previously the own/filtered mix showed rare black holes as cards moved.
+	# Every supported pixel now gets the same constant reconstructed radiance.
+	np.testing.assert_allclose(image[missing], np.broadcast_to(image[32, 32], image[missing].shape), atol=1)
+	np.testing.assert_allclose(decode_display(image), alpha/(1+alpha), atol=0.004)
+
+
+def test_gpu_fixed_footprint_is_distance_and_noise_independent(gpu_scene):
+	renderer, output = gpu_scene
+	buffer = renderer.transparency.shared["materials"]
+	buffer.content["base_color"][:3, 3] = (0.1, 0, 0)
+	buffer.upload()
+	options = renderer.transparency.bilateral_filter
+	renderer.transparency.set_debug_view("filter_support")
+	supports = []
+	for camera_z in (3, 6):
+		renderer.camera.position.z = camera_z
+		render_frame(renderer)
+		supports.append(read_texture(output, np.uint8, 4)[5:-5, 5:-5, 0])
+	np.testing.assert_array_equal(*supports)
+	radius = options.kernel_size//2
+	y, x = np.mgrid[-radius:radius+1, -radius:radius+1]
+	w = np.exp(-(x*x+y*y)/(2*options.spatial_sigma**2))
+	np.testing.assert_allclose(decode_display(supports[0]), w.sum()**2/(w*w).sum()/options.kernel_size**2, atol=0.01)
+	before = read_texture(output, np.uint8, 4)
+	RenderContext.device.queue.write_texture({"texture": renderer.transparency.noise.handle},
+		np.ones((64, 64), dtype=np.float32), {"bytes_per_row": 256}, (64, 64, 1))
+	render_frame(renderer)
+	np.testing.assert_array_equal(read_texture(output, np.uint8, 4), before)
+
+
+def test_gpu_noise_scale_changes_sampling_without_affecting_opacity_or_filter(gpu_scene):
+	renderer, _ = gpu_scene
+	render_frame(renderer)
+	transmittance = read_texture(renderer.transparency.transmittance, np.float16, 4)
+	guide = read_texture(renderer.transparency.transparent_guide, np.float16, 4)
+	winners = read_texture(renderer.transparency.winner, np.uint32, 4)
+	options = renderer.transparency.bilateral_filter
+	for invalid in (0, -1, float("nan"), float("inf"), 1e300, 1e-300):
+		with pytest.raises(ValueError):
+			renderer.transparency.set_noise_scale(invalid)
+		assert renderer.transparency.noise_scale == 1
+	renderer.transparency.set_noise_scale(2)
+	render_frame(renderer)
+	np.testing.assert_array_equal(read_texture(renderer.transparency.transmittance, np.float16, 4), transmittance)
+	np.testing.assert_array_equal(read_texture(renderer.transparency.transparent_guide, np.float16, 4), guide)
+	assert not np.array_equal(read_texture(renderer.transparency.winner, np.uint32, 4), winners)
+	assert renderer.transparency.bilateral_filter is options
+	assert renderer.transparency.uniforms.content["clip"][..., 2] == 2
+
+
+@pytest.mark.parametrize("usable_uvs", [False, True])
+@pytest.mark.parametrize("noise_mode", ["uv_blue_lerp", "uv_blue_correlated", "triplanar_blue", "triplanar_correlated"])
+def test_gpu_curved_mesh_noise_tracks_pan_and_rigid_object_transforms(gpu_scene, monkeypatch, usable_uvs, noise_mode):
+	renderer, _ = gpu_scene
+	primitives, materials, images, _ = make_layers()
+	materials["base_color"][:3, 3] = (0.5, 0, 0)
+	# A genuinely curved triangle mesh with no UVs, component IDs or planar units.
+	axis = np.linspace(-1, 1, 13)
+	grid = np.array([[(x+0.137, y-0.231, 0.6+0.3*np.sin(2.7*x)*np.cos(2.3*y))
+		for x in axis] for y in axis], dtype=np.float32)
+	positions = []
+	for y in range(12):
+		for x in range(12):
+			positions.extend((grid[y, x], grid[y, x+1], grid[y+1, x+1],
+				grid[y, x], grid[y+1, x+1], grid[y+1, x]))
+	vertices = np.zeros(len(positions), dtype=transparency.VERTEX_DTYPE)
+	vertices["position"] = positions
+	vertices["normal"] = (0, 0, 1)
+	if usable_uvs:
+		vertices["uv"] = vertices["position"][:, :2]*(0.37, -0.91)  # nonuniform, mirrored UVs
+	vertices["triangle"] = np.repeat(np.arange(len(vertices)//3), 3)
+	vertices["barycentric"] = np.tile(((1, 0), (0, 1), (0, 0)), (len(vertices)//3, 1))
+	primitives[0].vertices = vertices
+	stored, offset = [], 0
+	for primitive in primitives:
+		primitive.triangle_offset = offset
+		v = primitive.vertices
+		record = np.zeros(len(v), dtype=transparency.SHADING_VERTEX_DTYPE)
+		for name, width in (("position", 3), ("normal", 3), ("uv", 2)):
+			record[name][:, :width] = v[name]
+		stored.append(record)
+		offset += len(v)//3
+	monkeypatch.setattr(scene, "load_transparency_scene", lambda path: (primitives, materials, images, np.concatenate(stored)))
+	scene.init_scene(bilateral_filter=scene.BilateralFilter(kernel_size=1))
+	renderer.transparency.set_noise_mode(noise_mode)
+	renderer.camera = scene.Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 3,
+		perspective=False, near=0.01, far=100)
+	renderer.transparency.set_noise_scale(2)
+	render_frame(renderer)
+	first = read_texture(renderer.transparency.winner, np.uint32, 4)[:, :, 0] != 0
+	assert first.sum() > 500
+	# Orthographic translation preserves the surface footprint. Large and curved
+	# meshes must track the pan, with no projected-radius cutoff or card fallback.
+	renderer.camera.position.x += 3/64
+	renderer.camera.target.x += 3/64
+	render_frame(renderer)
+	second = read_texture(renderer.transparency.winner, np.uint32, 4)[:, :, 0] != 0
+	assert np.mean(second[:, :-1] == first[:, 1:]) > 0.995
+	# Co-transform camera and every object: screen geometry is identical while
+	# world coordinates change. A world-space anchor would fail this comparison.
+	angle = 0.73
+	rotation = np.array([[np.cos(angle), 0, np.sin(angle)], [0, 1, 0], [-np.sin(angle), 0, np.cos(angle)]])
+	translation = np.array([4, -2, 1])
+	for geometry in (renderer.opaque, renderer.transparent):
+		geometry.data.write_instance_fields(iPosition=translation,
+			iRotation=scene.pack_quaternion([0, np.sin(angle/2), 0, np.cos(angle/2)]),
+			iScale=scene.pack_scale([2, 2, 2]))
+	renderer.camera.position = scene.Vec3(np.asarray(renderer.camera.position) @ rotation.T * 2 + translation)
+	renderer.camera.target = scene.Vec3(np.asarray(renderer.camera.target) @ rotation.T * 2 + translation)
+	renderer.camera.fovy_deg *= 2
+	render_frame(renderer)
+	transformed = read_texture(renderer.transparency.winner, np.uint32, 4)[:, :, 0] != 0
+	assert np.mean(transformed == second) > 0.995
+
+
+def test_gpu_object_noise_has_no_triangle_diagonal_or_uv_seam(gpu_scene, monkeypatch):
+	renderer, _ = gpu_scene
+	primitives, materials, images, stored = make_layers()
+	materials["base_color"][:3, 3] = (0.5, 0, 0)
+	monkeypatch.setattr(scene, "load_transparency_scene", lambda path: (primitives, materials, images, stored))
+	masks = []
+	for triangulation in range(2):
+		if triangulation:
+			# Flip the diagonal and change every UV. This is the same geometric
+			# surface, but its local triangle IDs and texture parameterization differ.
+			v = primitives[0].vertices
+			v["position"] = [(-10, -10, 0.6), (10, -10, 0.6), (-10, 10, 0.6),
+				(10, -10, 0.6), (10, 10, 0.6), (-10, 10, 0.6)]
+			v["uv"] = np.random.default_rng(9).random((6, 2))*7
+			stored["position"][:6, :3] = v["position"]
+			stored["uv"][:6, :2] = v["uv"]
+		scene.init_scene(bilateral_filter=scene.BilateralFilter(kernel_size=1))
+		renderer.transparency.set_noise_mode("object_hash")
+		renderer.camera.position = scene.Vec3(0, 0, 3)
+		renderer.camera.target = scene.Vec3(0, 0, 0)
+		render_frame(renderer)
+		masks.append(read_texture(renderer.transparency.winner, np.uint32, 4)[:, :, 0] != 0)
+	assert 0.4 < masks[0].mean() < 0.6
+	assert np.mean(masks[0] == masks[1]) > 0.995
+
+
+def test_gpu_uv_noise_modes_change_only_selection_and_preserve_continuous_uvs(gpu_scene, monkeypatch):
+	renderer, _ = gpu_scene
+	primitives, materials, images, stored = make_layers()
+	for primitive in primitives:
+		v = primitive.vertices
+		v["uv"] = v["position"][:, :2]*(0.13, -0.27)+(0.037, -0.113)
+		start = primitive.triangle_offset*3
+		stored["uv"][start:start+len(v), :2] = v["uv"]
+	monkeypatch.setattr(scene, "load_transparency_scene", lambda path: (primitives, materials, images, stored))
+	scene.init_scene(bilateral_filter=scene.BilateralFilter(kernel_size=1))
+	renderer.camera.position = scene.Vec3(0, 0, 3)
+	renderer.camera.target = scene.Vec3(0, 0, 0)
+	frames = []
+	hierarchy = None
+	for mode in scene.NOISE_MODES:
+		renderer.transparency.set_noise_mode(mode)
+		if mode in ("uv_blue_correlated", "triplanar_correlated"):
+			if hierarchy is None:
+				hierarchy = renderer.transparency._noise_hierarchy
+			assert renderer.transparency._noise_hierarchy is hierarchy
+		render_frame(renderer)
+		frames.append((read_texture(renderer.transparency.transmittance, np.float16, 4),
+			read_texture(renderer.transparency.winner, np.uint32, 4)))
+		assert renderer.transparency.uniforms.content["clip"][..., 3] == scene.NOISE_MODES.index(mode)
+	for t, _ in frames[1:]:
+		np.testing.assert_array_equal(t, frames[0][0])
+	assert len({payload[:, :, 0].tobytes() for _, payload in frames}) == len(scene.NOISE_MODES)
+	previous = renderer.transparency.noise_mode
+	with pytest.raises(ValueError):
+		renderer.transparency.set_noise_mode("unknown")
+	assert renderer.transparency.noise_mode == previous
+	# The UV mode must also ignore triangulation when UVs remain continuous.
+	renderer.transparency.set_noise_mode("uv_blue_pick")
+	render_frame(renderer)
+	before = read_texture(renderer.transparency.winner, np.uint32, 4)[:, :, 0]
+	v = primitives[0].vertices
+	v["position"] = [(-10, -10, 0.6), (10, -10, 0.6), (-10, 10, 0.6),
+		(10, -10, 0.6), (10, 10, 0.6), (-10, 10, 0.6)]
+	v["uv"] = v["position"][:, :2]*(0.13, -0.27)+(0.037, -0.113)
+	stored["position"][:6, :3] = v["position"]
+	stored["uv"][:6, :2] = v["uv"]
+	scene.init_scene(bilateral_filter=scene.BilateralFilter(kernel_size=1))
+	renderer.transparency.set_noise_mode("uv_blue_pick")
+	renderer.camera.position = scene.Vec3(0, 0, 3)
+	renderer.camera.target = scene.Vec3(0, 0, 0)
+	render_frame(renderer)
+	after = read_texture(renderer.transparency.winner, np.uint32, 4)[:, :, 0]
+	assert np.mean(before == after) > 0.995
+
+
+def test_gpu_slope_aware_weights_recover_support_on_oblique_card(gpu_scene, monkeypatch):
+	renderer, output = gpu_scene
+	primitives, materials, images, vertices = make_layers()
+	materials["base_color"][:3, 3] = (0.5, 0, 0)
+	card = primitives[0].vertices
+	card["position"][:, 2] += card["position"][:, 0]*0.8
+	vertices["position"][:6, :3] = card["position"]
+	monkeypatch.setattr(scene, "load_transparency_scene", lambda path: (primitives, materials, images, vertices))
+	options = scene.BilateralFilter(kernel_size=5, spatial_sigma=2, depth_sigma=0.002, min_depth_sigma=0.0001)
+	scene.init_scene(bilateral_filter=options)
+	renderer.camera.position = scene.Vec3(0, 0, 3)
+	renderer.camera.target = scene.Vec3(0, 0, 0)
+	renderer.transparency.set_debug_view("filter_support")
+	render_frame(renderer)
+	aware = decode_display(read_texture(output, np.uint8, 4)[32, 32, 0])
+	# Compare to independent raw-depth Gaussian weights on the same rasterized
+	# plane. This assesses the always-on correction without a production toggle.
+	d = read_texture(renderer.transparency.transparent_depth, np.float32, 1)[30:35, 30:35, 0].astype(np.float64)
+	near, far = renderer.camera.near, renderer.camera.far
+	z = near*far/(far-d*(far-near))
+	y, x = np.mgrid[-2:3, -2:3]
+	spatial = np.exp(-(x*x+y*y)/(2*options.spatial_sigma**2))
+	raw_weights = spatial*np.exp(-0.5*((z-z[2, 2])/max(z[2, 2]*options.depth_sigma, options.min_depth_sigma))**2)
+	raw = raw_weights.sum()**2/np.square(raw_weights).sum()/25
+	assert aware > raw*2
+	assert aware > 0.85
+
+
 def test_gpu_transparent_depth_guide_is_deterministic_and_alpha_occlusion_tested(gpu_scene):
 	renderer, _ = gpu_scene
 	render_frame(renderer)
@@ -532,49 +887,80 @@ def test_gpu_transparent_depth_guide_is_deterministic_and_alpha_occlusion_tested
 	np.testing.assert_array_equal(read_texture(renderer.transparency.transparent_depth, np.float32, 1), 1)
 
 
-def test_gpu_adaptive_filter_uses_transparent_distance_and_reduces_variance(gpu_scene):
-	renderer, output = gpu_scene
-	buffer = renderer.transparency.shared["materials"]
-	buffer.content["base_color"][:3, :3] = 0
-	buffer.content["surface"][:3, 1] = 1
-	buffer.content["emission"][0, :3] = 1  # constant straight color, no lighting variance
-	buffer.content["base_color"][0, 3] = 0.1
-	buffer.content["base_color"][1, 3] = 0
-	buffer.upload()
-	options = scene.BilateralFilter(kernel_size=5, filter_near=3, filter_far=5,
-		spatial_sigma=0.8, transmittance_sigma=0.1)
-	renderer.transparency.set_bilateral_filter(options)
-	reconstruction_std = []
-	for camera_z, sigma in ((3, 0.8), (4.6, 1.4), (6, 2.0)):
-		renderer.camera.position.z = camera_z
-		renderer.transparency.set_debug_view("filter_support")
+def test_gpu_grazing_fade_angles_front_back_and_all_passes_agree(gpu_scene, monkeypatch):
+	renderer, _ = gpu_scene
+	primitives, materials, images, stored = make_layers()
+	primitive = primitives[0]
+	primitive.vertices["position"][:, 2] = 0
+	# Deliberately incorrect shading normals prove the fade uses geometry.
+	primitive.vertices["normal"] = (1, 0, 0)
+	stored = stored[:6].copy()
+	stored["position"][:, :3] = primitive.vertices["position"]
+	stored["normal"][:, :3] = primitive.vertices["normal"]
+	materials = materials[:1].copy()
+	materials["base_color"] = (0, 0, 0, 0.8)
+	materials["surface"][:, 1] = 1
+	materials["emission"][:, :3] = 1
+	monkeypatch.setattr(scene, "load_transparency_scene", lambda path: ([primitive], materials, images[:1], stored))
+	scene.init_scene(bilateral_filter=scene.BilateralFilter(kernel_size=5))
+	renderer.camera = scene.Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 3,
+		perspective=False, near=0.1, far=100)
+	# A constant .6 threshold survives p=.8 but rejects the half-faded p=.4,
+	# independently of the selected noise mode and its octave CDF.
+	RenderContext.device.queue.write_texture({"texture": renderer.transparency.noise.handle},
+		np.full((64, 64), 0.6, dtype=np.float32), {"bytes_per_row": 256}, (64, 64, 1))
+	for angle, expected in ((0, 0.8), (65, 0.8), (77.5, 0.4), (85, 0), (88, 0), (102.5, 0.4), (180, 0.8)):
+		radians = np.deg2rad(angle)
+		renderer.transparent.data.write_instance_fields(iPosition=(0, 0, 0.6),
+			iRotation=scene.pack_quaternion([0, np.sin(radians/2), 0, np.cos(radians/2)]))
+		renderer.transparency.set_grazing_fade(scene.GrazingFade())
 		render_frame(renderer)
-		support = decode_display(read_texture(output, np.uint8, 4)[4:-4, 4:-4, 0])
-		# The guide is at z=2.4/4.0/5.4; opaque depth would give incorrect blend
-		# factors at the first two distances. Flat depth/transmittance isolate the
-		# analytically known effective sample count of the spatial Gaussian.
-		y, x = np.mgrid[-2:3, -2:3]
-		weights = np.exp(-(x*x+y*y)/(2*sigma*sigma))
-		expected = weights.sum()**2/np.sum(weights*weights)/25
-		np.testing.assert_allclose(support, expected, atol=0.01)
-		renderer.transparency.set_debug_view("reconstruction")
+		baseline = read_texture(renderer.transparency.transmittance, np.float16, 4)
+		visible = baseline[:, :, 3] < 1
+		assert visible.mean() > 0.1
+		np.testing.assert_allclose(1-baseline[:, :, 3][visible], 0.8, atol=0.001)
+		target = renderer.transparency.transmittance
+		renderer.transparency.set_grazing_fade(scene.GrazingFade(enabled=True))
 		render_frame(renderer)
-		reconstruction_std.append(decode_display(read_texture(output, np.uint8, 4)[4:-4, 4:-4, 0]).std())
-	assert reconstruction_std[-1] < reconstruction_std[0]*0.9
-	payload = read_texture(renderer.transparency.winner, np.uint32, 4)
-	t = read_texture(renderer.transparency.transmittance, np.float16, 4)
-	renderer.transparency.set_bilateral_filter(scene.replace(options, adaptive=False))
-	renderer.transparency.set_debug_view("filter_support")
+		assert renderer.transparency.transmittance is target
+		t = read_texture(target, np.float16, 4)
+		np.testing.assert_allclose(1-t[visible], expected, atol=0.001)
+		guide = read_texture(renderer.transparency.transparent_guide, np.float16, 4)
+		np.testing.assert_allclose(guide[:, :, 0][visible], expected, atol=0.001)
+		payload = read_texture(renderer.transparency.winner, np.uint32, 4)
+		if expected == 0.8:
+			assert np.all(payload[:, :, 0][visible] != 0)
+		else:
+			np.testing.assert_array_equal(payload, 0)
+		if expected == 0:
+			np.testing.assert_array_equal(t, 1)
+		if angle > 85 and expected == 0:
+			# The packed rotation can place nominally 85-degree geometry just
+			# below the endpoint. Beyond it, even guide depth must disappear.
+			np.testing.assert_array_equal(guide, 0)
+			np.testing.assert_array_equal(read_texture(renderer.transparency.transparent_depth, np.float32, 1), 1)
+	# Perspective rays vary across a plane: its centre stays face-on while the
+	# edges fade. Compare the complete probability image to independent angles.
+	renderer.transparent.data.write_instance_fields(iPosition=(0, 0, 0.6),
+		iRotation=scene.pack_quaternion([0, 0, 0, 1]))
+	renderer.camera.perspective = True
+	renderer.camera.fovy_deg = 55
+	renderer.transparency.set_grazing_fade(scene.GrazingFade(enabled=True, start_angle=10, end_angle=30))
 	render_frame(renderer)
-	weights = np.exp(-(x*x+y*y)/(2*options.spatial_sigma**2))
-	expected = weights.sum()**2/np.sum(weights*weights)/25
-	np.testing.assert_allclose(decode_display(read_texture(output, np.uint8, 4)[4:-4, 4:-4, 0]), expected, atol=0.01)
-	np.testing.assert_array_equal(read_texture(renderer.transparency.winner, np.uint32, 4), payload)
-	np.testing.assert_array_equal(read_texture(renderer.transparency.transmittance, np.float16, 4), t)
+	y, x = np.indices((64, 64))
+	slope_x = (2*(x+0.5)/64-1)*np.tan(np.deg2rad(55/2))
+	slope_y = (2*(y+0.5)/64-1)*np.tan(np.deg2rad(55/2))
+	angles = np.rad2deg(np.arctan(np.sqrt(slope_x*slope_x+slope_y*slope_y)))
+	u = np.clip((angles-10)/20, 0, 1)
+	expected = 0.8*(1-u*u*(3-2*u))
+	t = read_texture(renderer.transparency.transmittance, np.float16, 4)
+	guide = read_texture(renderer.transparency.transparent_guide, np.float16, 4)
+	np.testing.assert_allclose(1-t[:, :, 3], expected, atol=0.001)
+	np.testing.assert_allclose(guide[:, :, 0], expected, atol=0.001)
 
 
 @pytest.mark.parametrize("edge", ["depth", "transmittance"])
-def test_gpu_relative_depth_edges_and_distant_transmittance_relaxation(monkeypatch, edge):
+def test_gpu_relative_depth_edges_and_transmittance_tolerance(monkeypatch, edge):
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	monkeypatch.setattr(scene, "TEXTURE_SIZE", 1)
 	monkeypatch.setattr(RenderContext, "window_dimensions", (64, 64))
@@ -596,11 +982,11 @@ def test_gpu_relative_depth_edges_and_distant_transmittance_relaxation(monkeypat
 			start = primitive.triangle_offset*3
 			vertices["position"][start:start+len(primitive.vertices), :3] = primitive.vertices["position"]
 		monkeypatch.setattr(scene, "load_transparency_scene", lambda path: (primitives, materials, images, vertices))
-		options = scene.BilateralFilter(spatial_sigma=2, far_spatial_sigma=2,
-			adaptive=edge == "transmittance", filter_near=3, filter_far=5)
+		options = scene.BilateralFilter(kernel_size=5, spatial_sigma=2,
+			transmittance_sigma=1 if edge == "transmittance" and step else (1/24)**0.5)
 		scene.init_scene(bilateral_filter=options)
 		renderer = scene
-		renderer.camera.position = scene.Vec3(0, 0, (3 if edge == "depth" else 3+3*step)*scale)
+		renderer.camera.position = scene.Vec3(0, 0, 3*scale)
 		renderer.camera.target = scene.Vec3(0, 0, 0)
 		renderer.transparency.set_debug_view("filter_support")
 		render_frame(renderer)
@@ -610,10 +996,10 @@ def test_gpu_relative_depth_edges_and_distant_transmittance_relaxation(monkeypat
 		if edge == "depth":
 			# Across x=0: depths 2.4 and 2.45 in scene 1, doubled in scene 2.
 			# Relative Gaussian weighting is invariant to this uniform rescaling.
-			weights[:, x[0] > 0] *= np.exp(-0.5*(0.05/(2.4*0.02))**2)
-		elif step == 0:
-			# Near transmittance differs by 0.7 in each of RGBA. At far distance
-			# this constraint fades to zero while the depth guide stays active.
+			weights[:, x[0] > 0] *= np.exp(-0.5*(0.05/(2.4*options.depth_sigma))**2)
+		else:
+			# Opacity-edge rejection remains active and changes only with the
+			# explicit tolerance, never with distance or acceptance randomness.
 			weights[:, x[0] > 0] *= np.exp(-4*0.7**2/(2*options.transmittance_sigma**2))
 		expected = weights.sum()**2/np.sum(weights*weights)/25
 		assert abs(actual-expected) < 0.01
@@ -624,8 +1010,8 @@ def test_gpu_relative_depth_edges_and_distant_transmittance_relaxation(monkeypat
 		assert supports[1] > supports[0]+0.2
 
 
-def test_default_filter_restores_canopy_boundary_support_and_reduces_grain(monkeypatch):
-	"""Compare actual canopy noise under restored and overly restrictive defaults.
+def test_wide_filter_reduces_canopy_boundary_grain(monkeypatch):
+	"""Compare actual canopy noise under wide and restrictive fixed footprints.
 
 	Independent static-noise offsets are used only for this diagnostic; production
 	rendering still uses a single static tile and has no temporal accumulation.
@@ -636,7 +1022,8 @@ def test_default_filter_restores_canopy_boundary_support_and_reduces_grain(monke
 	monkeypatch.setattr(RenderContext, "presentation_format", "rgba8unorm", raising=False)
 	output = Texture((320, 240), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	monkeypatch.setattr(RenderContext, "screen", lambda **kwargs: output.color_attachment())
-	scene.init_scene()
+	scene.init_scene(bilateral_filter=scene.BilateralFilter(kernel_size=9, spatial_sigma=3,
+		depth_sigma=0.02, transmittance_sigma=(1/24)**0.5))
 	renderer = scene
 	distance = renderer.radius*1.4
 	renderer.camera.position = scene.Vec3(renderer.center+distance*np.array([np.cos(0.65), 0.5, np.sin(0.65)]))
@@ -646,11 +1033,9 @@ def test_default_filter_restores_canopy_boundary_support_and_reduces_grain(monke
 	assert boundary.sum() > 100
 	noise = load_blue_noise(scene.BLUE_NOISE_PATH)
 	shifts = np.random.default_rng(12).integers(0, 64, (12, 2))
-	default = renderer.transparency.bilateral_filter
-	assert default.spatial_sigma == pytest.approx(2**0.5)
-	assert default.transmittance_sigma == pytest.approx((1/24)**0.5)
+	wide = renderer.transparency.bilateral_filter
 	deviations, supports = [], []
-	for options in (scene.replace(default, spatial_sigma=0.8, transmittance_sigma=0.1), default):
+	for options in (scene.replace(wide, kernel_size=3, spatial_sigma=0.8, transmittance_sigma=0.1), wide):
 		renderer.transparency.set_bilateral_filter(options)
 		estimates = []
 		for shift in shifts:
@@ -663,7 +1048,9 @@ def test_default_filter_restores_canopy_boundary_support_and_reduces_grain(monke
 		deviations.append(np.std(estimates, axis=0).mean())
 		renderer.transparency.set_debug_view("filter_support")
 		render_frame(renderer)
-		supports.append(decode_display(read_texture(output, np.uint8, 4)[:, :, :3])[boundary].mean())
+		# Debug support is normalized by kernel area; compare absolute effective
+		# sample counts when the two profiles have different kernel sizes.
+		supports.append(decode_display(read_texture(output, np.uint8, 4)[:, :, :3])[boundary].mean()*options.kernel_size**2)
 		renderer.transparency.set_debug_view("final")
 	assert supports[1] > supports[0]*1.5
 	assert deviations[1] < deviations[0]*0.9

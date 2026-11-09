@@ -10,7 +10,9 @@ from numpyecs.InstanceData import MESH_INSTANCE_DTYPE, pack_scale, pack_quaterni
 from numpyecs.TransparencyPass import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE, TransparencyPass
 
 
-def test_procedural_transparency_records_into_caller_commands_and_output(monkeypatch, tmp_path):
+@pytest.mark.parametrize("noise_mode", ["uv_blue_lerp", "uv_blue_correlated"])
+@pytest.mark.parametrize("sample_count", [1, 4])
+def test_procedural_transparency_records_into_caller_commands_and_output(monkeypatch, tmp_path, noise_mode, sample_count):
 	RenderContext.setup_graphics_backend(True)
 	# Shader files and includes must resolve without the repository as cwd.
 	monkeypatch.chdir(tmp_path)
@@ -36,7 +38,7 @@ def test_procedural_transparency_records_into_caller_commands_and_output(monkeyp
 	storage = BufferUsage.STORAGE | BufferUsage.COPY_DST
 	oit = TransparencyPass(materials=GpuBuffer(material, storage),
 		base_textures=white.view(dimension="2d-array"), vertices=GpuBuffer(stored, storage),
-		blue_noise=noise, target_format="rgba8unorm")
+		blue_noise=noise, target_format="rgba8unorm", noise_mode=noise_mode, sample_count=sample_count)
 	metadata = GpuBuffer(np.array([[0, 0, 42, 0]], dtype=np.uint32), storage)
 	vertex_buffer = GpuBuffer(vertices, BufferUsage.VERTEX | BufferUsage.COPY_DST)
 	instances = GpuBuffer(np.zeros(1, dtype=MESH_INSTANCE_DTYPE), storage)
