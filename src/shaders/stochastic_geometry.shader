@@ -57,30 +57,39 @@ fn vertex(input: VertexInput, @builtin(instance_index) instance_index: u32) -> V
 	return output;
 }
 
-fn surface_grazing_fade(world: vec3f) -> f32 {
+fn surface_grazing_fade(id: u32, world: vec3f) -> f32 {
 	// Geometric derivatives reflect the projected surface, independent of smooth
 	// shading normals and instance scale. Evaluate them before every discard.
 	let geometric_normal = cross(dpdxFine(world), dpdyFine(world));
-	if frame.grazing.z == 0.0 { return 1.0; }
+#if PARAMS.get("material_library") is not none
+	let grazing = library_grazing(id);
+#else
+	let grazing = frame.grazing.xyz;
+#endif
+	if grazing.z == 0.0 { return 1.0; }
 	let orthographic_to_eye = vec3f(frame.view[0].z, frame.view[1].z, frame.view[2].z);
 	let to_eye = select(frame.camera_position.xyz-world, orthographic_to_eye, frame.proj[3].w == 1.0);
 	let denominator = length(geometric_normal)*length(to_eye);
 	if denominator <= 1e-20 { return 1.0; }
-	return grazing_fade_factor(dot(geometric_normal, to_eye)/denominator, frame.grazing.x, frame.grazing.y);
+	return grazing_fade_factor(dot(geometric_normal, to_eye)/denominator, grazing.x, grazing.y);
 }
 
-fn raster_opacity(material: Material, uv: vec2f, lod: f32, world: vec3f) -> vec3f {
+fn raster_opacity(id: u32, material: Material, uv: vec2f, lod: f32, world: vec3f) -> vec3f {
 	let alpha = base_color(material, uv, lod).a;
 	let width = fwidth(alpha);
 	let coverage = select(alpha, sharpen_alpha(alpha, material.surface.w, width), material.surface.z == 1.0);
-	let fade = surface_grazing_fade(world);
-	return clamp(coverage*material.opacity_rgb.rgb, vec3f(0.0), vec3f(1.0))*fade;
+	let fade = surface_grazing_fade(id, world);
+	var result = coverage*material.opacity_rgb.rgb;
+#if PARAMS.get("material_library") is not none
+	result = library_opacity(id, material, result, uv, world, lod);
+#endif
+	return clamp(result, vec3f(0.0), vec3f(1.0))*fade;
 }
 
 @fragment
 fn opaque_prepass(input: VertexOutput, @builtin(front_facing) front: bool) {
 	let lod = raster_lod(input.uv);
-	let material = materials[metadata[input.instance].y];
+	let material = get_material(input.instance);
 	if !front && material.flags.y == 0u { discard; }
 	if material.surface.z == 1.0 && base_color(material, input.uv, lod).a < material.surface.w { discard; }
 }
@@ -88,19 +97,19 @@ fn opaque_prepass(input: VertexOutput, @builtin(front_facing) front: bool) {
 @fragment
 fn opaque(input: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4f {
 	let lod = raster_lod(input.uv);
-	let material = materials[metadata[input.instance].y];
+	let material = get_material(input.instance);
 	if !front && material.flags.y == 0u { discard; }
 	if material.surface.z == 1.0 && base_color(material, input.uv, lod).a < material.surface.w { discard; }
 	let signed_normal = select(-input.normal, input.normal, front);
 	let normal = signed_normal / max(length(signed_normal), 1e-8);
-	return vec4f(shade(material, input.uv, input.world, normal, lod), 1.0);
+	return vec4f(shade_material(input.instance, material, input.uv, input.world, normal, lod), 1.0);
 }
 
 @fragment
 fn transmittance(input: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4f {
 	let lod = raster_lod(input.uv);
-	let material = materials[metadata[input.instance].y];
-	let alpha = raster_opacity(material, input.uv, lod, input.world);
+	let material = get_material(input.instance);
+	let alpha = raster_opacity(input.instance, material, input.uv, lod, input.world);
 	if !front && material.flags.y == 0u { discard; }
 	let p = max(alpha.x, max(alpha.y, alpha.z));
 	return vec4f(vec3f(1.0)-alpha, 1.0-p);
@@ -117,8 +126,8 @@ fn raster_lod(uv: vec2f) -> f32 {
 @fragment
 fn transparent_depth(input: VertexOutput, @builtin(front_facing) front: bool, @builtin(sample_index) sample: u32) -> @location(0) vec4f {
 	let lod = raster_lod(input.uv);
-	let material = materials[metadata[input.instance].y];
-	let alpha = raster_opacity(material, input.uv, lod, input.world);
+	let material = get_material(input.instance);
+	let alpha = raster_opacity(input.instance, material, input.uv, lod, input.world);
 	// Reciprocal view depth is affine over a projected triangle. Storing its
 	// gradient permits exact planar prediction, including perspective foreshortening.
 	let reciprocal_depth = 1.0 / max(-(frame.view*vec4f(input.world, 1.0)).z, 1e-6);
@@ -150,8 +159,8 @@ fn select_winner(input: VertexOutput, @builtin(front_facing) front: bool, @built
 	let lod = raster_lod(input.uv);
 	let pixel = vec2i(input.position.xy);
 	let info = metadata[input.instance];
-	let material = materials[info.y];
-	let alpha = raster_opacity(material, input.uv, lod, input.world);
+	let material = get_material(input.instance);
+	let alpha = raster_opacity(input.instance, material, input.uv, lod, input.world);
 	// Derivatives precede every discard. The same local field follows the mesh
 	// through camera motion and instance transforms, without triangle reseeding.
 	// Opposite physical sides use separate seeds on two-sided/closed surfaces.

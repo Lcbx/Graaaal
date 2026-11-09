@@ -1,0 +1,36 @@
+// Minimal implementation of the opaque/stochastic surface interface. This
+// template requires no particular parameter names, lighting model or fade.
+#block parameters
+#endblock
+
+#block helpers
+#endblock
+
+fn surface_{{PREFIX}}(p: Params{{PREFIX}}) -> Material {
+#block surface
+	var material: Material;
+	material.base_color = vec4f(1.0);
+	material.surface = vec4f(1.0, 0.0, 2.0, 0.5);
+	material.opacity_rgb = vec4f(1.0);
+	material.flags = vec4u(0u, 1u, 0u, 0u);
+	return material;
+#endblock
+}
+
+fn grazing_{{PREFIX}}(p: Params{{PREFIX}}) -> vec3f {
+#block grazing
+	return vec3f(0.0);
+#endblock
+}
+
+fn shade_{{PREFIX}}(material: Material, p: Params{{PREFIX}}, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
+#block lighting
+	return material.base_color.rgb;
+#endblock
+}
+
+fn opacity_{{PREFIX}}(material: Material, p: Params{{PREFIX}}, alpha: vec3f, uv: vec2f, position: vec3f, lod: f32) -> vec3f {
+#block opacity
+	return alpha;
+#endblock
+}

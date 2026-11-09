@@ -1425,15 +1425,17 @@ class ShaderSource:
 			while end < len(self.source) and depth:
 				depth += (self.source[end] == "{") - (self.source[end] == "}")
 				end += 1
-			functions[match.group(1)] = set(re.findall(r"\b\w+\b", self.source[start:end]))
+			body = self.source[start:end]
+			functions[match.group(1)] = (set(re.findall(r"\b\w+\b", body)),
+				set(re.findall(r"\b(\w+)\s*\(", body)))
 		pending, visited, used = list(filter(None, entries)), set(), set()
 		while pending:
 			name = pending.pop()
 			if name in visited: continue
 			visited.add(name)
-			words = functions.get(name, set())
+			words, calls = functions.get(name, (set(), set()))
 			used.update(words.intersection(self.bindings))
-			pending.extend(words.intersection(functions) - visited)
+			pending.extend(calls.intersection(functions) - visited)
 		return {name: self.bindings[name] for name in used}
 
 	@property

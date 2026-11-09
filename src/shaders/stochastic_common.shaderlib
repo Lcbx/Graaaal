@@ -26,8 +26,26 @@ fn opacity(material: Material, uv: vec2f, lod: f32) -> vec3f {
 	return clamp(base_color(material, uv, lod).a * material.opacity_rgb.rgb, vec3f(0.0), vec3f(1.0));
 }
 
-#if PARAMS.get("material_source") is not none
+#if PARAMS.get("material_library") is not none
+{{ PARAMS.material_library }}
+#elif PARAMS.get("material_source") is not none
 {{ PARAMS.material_source }}
 #else
 #include "stochastic_material.shaderlib"
 #endif
+
+fn get_material(id: u32) -> Material {
+#if PARAMS.get("material_library") is not none
+	return library_material(id);
+#else
+	return materials[metadata[id].y];
+#endif
+}
+
+fn shade_material(id: u32, material: Material, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
+#if PARAMS.get("material_library") is not none
+	return library_shade(id, material, uv, position, normal, lod);
+#else
+	return shade(material, uv, position, normal, lod);
+#endif
+}

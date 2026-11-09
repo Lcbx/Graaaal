@@ -256,7 +256,7 @@ def test_transparency_external_opaque_inputs_and_transformed_reconstruction(monk
         render.draw(3)
     # Opaque rendering belongs to another renderer in this workflow.
     with commands.render_pass(color=opaque.color_attachment(clear=(0, 0, 0.25, 1)), depth=depth.depth_attachment(clear=1)): pass
-    for begin, spec in ((oit.guide_pass, geometry.guide), (oit.transmittance_pass, geometry.render_shader["prepass"]), (oit.selection_pass, geometry.render_shader["main"])):
+    for begin, spec in ((oit.guide_pass, geometry.guide), (oit.transmittance_pass, geometry.render_shader["transmittance"]), (oit.selection_pass, geometry.render_shader["main"])):
         with begin(commands) as render:
             render.set_pipeline(spec.pipeline)
             render.set_bind_groups(*spec.bindings, binding)

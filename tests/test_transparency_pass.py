@@ -69,7 +69,7 @@ def test_procedural_transparency_records_into_caller_commands_and_output(monkeyp
 			pass  # This caller has no opaque geometry.
 		for begin, shader_pass in (
 			(oit.guide_pass, geometry.guide),
-			(oit.transmittance_pass, geometry.render_shader['prepass']),
+			(oit.transmittance_pass, geometry.render_shader['transmittance']),
 			(oit.selection_pass, geometry.render_shader['main']),
 		):
 			with begin(commands) as render:

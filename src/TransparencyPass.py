@@ -113,7 +113,7 @@ class TransparencyPass:
 	def __init__(self, *, materials, base_textures, vertices, blue_noise,
 		material_sampler=None, bilateral_filter=None, target_format=None, noise_scale=1.0, noise_mode="uv_blue_lerp",
 		grazing_fade=None, sample_count=1,
-		opaque_color=None, opaque_depth=None, material_source=None,
+		opaque_color=None, opaque_depth=None, material_source=None, material_library=None,
 		geometry_shader=None, shading_shader=None, compose_shader=None):
 		if (geometry_shader is None) != (shading_shader is None):
 			raise ValueError("Custom deformation requires matched geometry and shading shaders")
@@ -124,6 +124,7 @@ class TransparencyPass:
 		self.sample_count = sample_count
 		self._custom_shaders = (geometry_shader, shading_shader, compose_shader)
 		self._material_source = material_source
+		self._material_library = material_library
 		self._shader_sets = {}
 		self._activate_shaders(sample_count)
 		self.depth_shader = geometry_shader or self._shader_set(1)[0]
@@ -155,7 +156,8 @@ class TransparencyPass:
 	def _shader_set(self, count):
 		if count not in self._shader_sets:
 			geometry, shading, compose = self._custom_shaders
-			params = {"material_source": self._material_source, "sample_count": count}
+			params = {"material_source": self._material_source, "sample_count": count,
+				"material_library": self._material_library}
 			self._shader_sets[count] = (
 				geometry or Shader(filepath=str(SHADERS / "stochastic_geometry.shader"), params=params),
 				shading or Shader(filepath=str(SHADERS / "stochastic_shade.shader"), params=params),
@@ -225,7 +227,9 @@ class TransparencyPass:
 			first = last = RenderPipeline(self.shader, vertex_entry="vertex", fragment_entry="opaque",
 				cull_mode="none", label="opaque", sample_count=self.sample_count)
 			guide = None
-		geometry = GeometryPasses(RenderShader({"main": ShaderPass(last, bindings), "prepass": ShaderPass(first, bindings)}),
+		# Transparent transmittance is a color pass, never an opaque depth prepass.
+		first_pass = "transmittance" if transparent else "prepass"
+		geometry = GeometryPasses(RenderShader({"main": ShaderPass(last, bindings), first_pass: ShaderPass(first, bindings)}),
 			guide, self.shading_shader.bind_group(2, **self.shared, metadata=metadata, vertices=self.vertices,
 				shading_instances=instances, **shading_resources), self, tuple(shading_bindings))
 		geometry.creation_args = dict(metadata=metadata, transparent=transparent, instances=instances,
@@ -239,7 +243,7 @@ class TransparencyPass:
 		return geometry
 
 	def _bind_targets(self, geometry):
-		bindings = geometry.render_shader['prepass'].bindings
+		bindings = geometry.render_shader['transmittance'].bindings
 		geometry.render_shader['main'].bindings = bindings + (
 			self.shader.bind_group(3, opaque_depth=self.depth, blue_noise=self.noise,
 				noise_hierarchy=self._noise_hierarchy if self._noise_hierarchy is not None else self.noise),)
@@ -297,6 +301,10 @@ class TransparencyPass:
 			raise ValueError(f"Debug view must be one of {DEBUG_VIEWS}")
 		self.debug_view = view
 		self.set_bilateral_filter(self.bilateral_filter)
+
+	@property
+	def has_external_opaque_inputs(self):
+		return self._opaque_inputs is not None
 
 	def set_opaque_inputs(self, color, depth):
 		"""Use another renderer's color/depth; pass both as None to restore defaults."""
@@ -401,10 +409,11 @@ class TransparencyPass:
 		return self.update_frame(view=camera.view(), projection=camera.projection(width/height),
 			camera_position=camera.position, near=camera.near, far=camera.far, light_dir=light_dir)
 
-	def opaque_pass(self, commands, *, clear=(0.035, 0.05, 0.08, 1)):
+	def opaque_pass(self, commands, *, clear=(0.035, 0.05, 0.08, 1), load=False):
+		"""Draw opaque geometry; load=True preserves existing color and depth."""
 		self._require_targets()
-		return commands.render_pass(color=self.main_color.color_attachment(clear=clear),
-			depth=self.depth.depth_attachment(clear=1), label="1_opaque")
+		return commands.render_pass(color=self.main_color.color_attachment(clear=None if load else clear),
+			depth=self.depth.depth_attachment(clear=None if load else 1), label="1_opaque")
 
 	def guide_pass(self, commands):
 		self._require_targets()

@@ -23,6 +23,11 @@ it. Selection clears its own depth and explicitly rejects fragments behind
 opaque geometry. Transparent geometry is rasterized three times: guide,
 transmittance, and selection. The technique requires no transparent sorting.
 
+Transparent `RenderShader` entries are `transmittance` and `main` (winner
+selection); they have no `prepass` entry, so an opaque depth-prepass draw skips
+them. The culler's internal prepass visibility buffer remains a list of frustum
+candidates, independent of which named rendering pass is drawn.
+
 ## Optional MSAA
 
 `TransparencyPass(..., sample_count=4)` enables 4x MSAA; the default is 1.

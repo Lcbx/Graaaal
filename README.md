@@ -19,6 +19,7 @@ and attributes use snake_case. Constants use UPPER_SNAKE_CASE.
 | [ECS API](src/ECS_API.md) | Components, arrays, queries, lifetimes, commands, and scheduling |
 | [Scenes](scenes/README.md) | Running interactive examples and their controls |
 | [Transparency](src/stochastic_transparency.md) | Pass order, reconstruction, and technique limits |
+| [Dictionary materials](src/materials.md) | Shader layouts, shared parameters, instance overrides, and Jinja inheritance |
 | [Benchmarks](scenes/benchmarks/README.md) | Reproduction commands and dated measurements |
 
 ## Module boundaries
@@ -39,6 +40,7 @@ and attributes use snake_case. Constants use UPPER_SNAKE_CASE.
 | `HZB` | Hierarchical depth-pyramid generation |
 | `RenderContext`, `MeshArena` | Window/event loop, command recording, GPU resources, pooled mesh allocation |
 | `TransparencyPass` | Composable stochastic transparency passes |
+| `Materials`, `DefaultMaterial`, `MaterialRenderer`, `EcsMaterials` | Generic material layouts, default shader inheritance, DrawBatches integration and ECS extraction |
 | `ImGui` | Optional Dear ImGui integration with the RenderContext window/surface |
 | `utils` | Small shared CPU helpers: `cache_last` and `higher_pow2` |
 
@@ -209,6 +211,8 @@ mapping; no temporal accumulation is used. See the
 
 Create geometry with
 `oit.create_geometry_passes(metadata, transparent=True, instances=instance_buffer)`.
+Transparent draws expose `transmittance` and `main` shader passes; they have no
+opaque `prepass` entry. Draw `transmittance` inside `oit.transmittance_pass()`.
 Metadata is a vec4u per packed instance: triangle offset, material index, stable
 surface ID, reserved. Transparent draws in a selection pass share the metadata/
 vertex address space passed to `shade_winner()`. Invalid deferred addresses yield

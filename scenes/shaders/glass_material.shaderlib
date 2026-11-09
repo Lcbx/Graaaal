@@ -1,0 +1,6 @@
+#extends "default_material.shaderlib"
+
+#block parameters
+{{ super() }}
+{{ parameter("grazing_fade", "bool", false, "instance") }}
+#endblock

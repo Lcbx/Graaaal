@@ -3,6 +3,7 @@
 import base64
 import json
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -308,6 +309,19 @@ def test_static_primitive_input_order_preserves_packed_metadata_and_shading(gpu_
 	render_frame(renderer)
 	np.testing.assert_array_equal(read_texture(output, np.uint8, 4), before)
 	np.testing.assert_array_equal(read_texture(renderer.transparency.winner, np.uint32, 4), payload)
+
+
+def test_transparent_draws_are_skipped_in_opaque_depth_prepass(gpu_scene):
+	renderer, _ = gpu_scene
+	render_frame(renderer)
+	render = Mock()
+	renderer.transparent.draw(render, "prepass")
+	render.draw_indexed_indirect.assert_not_called()
+	render.set_pipeline.assert_not_called()
+	# The separate transmittance stage still renders the transparent geometry.
+	renderer.transparent.draw(render, "transmittance")
+	assert render.draw_indexed_indirect.call_count == len(renderer.transparent.data.draw_batches)
+	assert not renderer.transparent.passes.render_shader["transmittance"].pipeline.depth_write
 
 
 def test_gpu_zero_full_rgb_and_low_opacity(gpu_scene):
@@ -913,14 +927,14 @@ def test_gpu_grazing_fade_angles_front_back_and_all_passes_agree(gpu_scene, monk
 		radians = np.deg2rad(angle)
 		renderer.transparent.data.write_instance_fields(iPosition=(0, 0, 0.6),
 			iRotation=scene.pack_quaternion([0, np.sin(radians/2), 0, np.cos(radians/2)]))
-		renderer.transparency.set_grazing_fade(scene.GrazingFade())
+		renderer.transparency.set_grazing_fade(scene.GrazingFade(enabled=False, start_angle=70, end_angle=85))
 		render_frame(renderer)
 		baseline = read_texture(renderer.transparency.transmittance, np.float16, 4)
 		visible = baseline[:, :, 3] < 1
 		assert visible.mean() > 0.1
 		np.testing.assert_allclose(1-baseline[:, :, 3][visible], 0.8, atol=0.001)
 		target = renderer.transparency.transmittance
-		renderer.transparency.set_grazing_fade(scene.GrazingFade(enabled=True))
+		renderer.transparency.set_grazing_fade(scene.GrazingFade(enabled=True, start_angle=70, end_angle=85))
 		render_frame(renderer)
 		assert renderer.transparency.transmittance is target
 		t = read_texture(target, np.float16, 4)

@@ -29,7 +29,12 @@ fn shade_payload(payload: vec4u) -> vec4f {
 	}
 	let info = metadata[instance_id];
 	let triangle_count = arrayLength(&vertices) / 3u;
-	if info.x >= triangle_count || payload.y >= triangle_count - info.x || info.y >= arrayLength(&materials) {
+#if PARAMS.get("material_library") is not none
+	let material_count = library_material_count();
+#else
+	let material_count = arrayLength(&materials);
+#endif
+	if info.x >= triangle_count || payload.y >= triangle_count - info.x || info.y >= material_count {
 		return vec4f(0.0);
 	}
 	let triangle = (info.x + payload.y) * 3u;
@@ -44,7 +49,7 @@ fn shade_payload(payload: vec4u) -> vec4f {
 	let normal = instance_normal(inst, a.normal.xyz*bary.x + b.normal.xyz*bary.y + c.normal.xyz*bary.z);
 	let uv = a.uv.xy*bary.x + b.uv.xy*bary.y + c.uv.xy*bary.z;
 	let lod_face = unpack2x16float(payload.w);
-	let color = shade(materials[info.y], uv, position, select(-normal, normal, lod_face.y > 0.0), lod_face.x);
+	let color = shade_material(instance_id, get_material(instance_id), uv, position, select(-normal, normal, lod_face.y > 0.0), lod_face.x);
 	// Straight HDR color: no multiplication or division by opacity here.
 	return vec4f(color, 1.0);
 }

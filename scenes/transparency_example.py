@@ -399,7 +399,7 @@ def render_frame():
 		with transparency.guide_pass(commands) as render:
 			transparent.draw(render, "main", pass_override=transparent.passes.guide)
 	with transparency.transmittance_pass(commands) as render:
-		transparent.draw(render, "prepass")
+		transparent.draw(render, "transmittance")
 	with transparency.selection_pass(commands) as render:
 		transparent.draw(render, "main")
 	transparency.shade_winner(commands, transparent.passes)

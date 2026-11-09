@@ -8,6 +8,7 @@ python main.py scenes/draw_batches_example.py
 python main.py scenes/direct_draw_example.py
 python main.py scenes/prototype.py
 python main.py scenes/transparency_example.py
+python main.py scenes/material_example.py
 python main.py scenes/msaa_example.py
 ```
 
@@ -17,9 +18,10 @@ python main.py scenes/msaa_example.py
 | `direct_draw_example.py` | Direct instanced drawing and shadows. Scrolling adjusts the view. |
 | `prototype.py` | ImGui actor/health panels backed by ECS data; combat resolution remains a placeholder. |
 | `transparency_example.py` | Stochastic transparency using `resources/small_scene.glb`; controls below. |
+| `material_example.py` | Shared dictionary materials, per-instance overrides and inherited rim lighting. M: MSAA; D: replace default; Space: orbit. |
 | `msaa_example.py` | Rotating triangle with resize handling. Number keys: 1 disables MSAA; 4 selects 4x MSAA (default). |
 
-All five expose `run_scene()` and can be imported without creating a window or
+All six expose `run_scene()` and can be imported without creating a window or
 GPU device. The launcher initializes scene execution and cleans up RenderContext
 on exit. Paths and asset files resolve relative to the scene modules.
 
