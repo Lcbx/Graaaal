@@ -18,13 +18,13 @@ def test_grazing_fade_rejects_invalid_or_unrepresentable_intervals(options):
 		GrazingFade(**options)
 
 
-def test_grazing_fade_accepts_full_angular_range_and_defaults_disabled():
-	assert GrazingFade() == GrazingFade(enabled=False, start_angle=70, end_angle=85)
+def test_grazing_fade_accepts_full_angular_range_and_current_defaults():
+	assert GrazingFade() == GrazingFade(enabled=True, start_angle=83, end_angle=86)
 	assert GrazingFade(enabled=True, start_angle=0, end_angle=90).enabled
 
 
 def test_grazing_settings_and_toggle_keep_angles_ordered(monkeypatch):
-	renderer = SimpleNamespace(bilateral_filter=BilateralFilter(), grazing_fade=GrazingFade())
+	renderer = SimpleNamespace(bilateral_filter=BilateralFilter(), grazing_fade=GrazingFade(False, 70, 85))
 	renderer.set_grazing_fade = lambda value: setattr(renderer, "grazing_fade", value)
 	settings = scene.FilterSettings(renderer)
 	monkeypatch.setattr(scene, "transparency", renderer, raising=False)

@@ -21,7 +21,7 @@ packages = ["numpyecs"]
 package-dir = {numpyecs = "src"}
 
 [tool.setuptools.package-data]
-numpyecs = ["shaders/*.shader", "shaders/*.shaderlib"]
+numpyecs = ["shaders/*.shader", "shaders/*.shaderlib", "data/blue_noise/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "src/tests"]

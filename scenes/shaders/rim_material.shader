@@ -1,4 +1,4 @@
-#extends "default_material.shaderlib"
+#extends "default_material.shader"
 
 #block parameters
 {{ super() }}

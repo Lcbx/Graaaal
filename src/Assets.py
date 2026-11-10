@@ -172,18 +172,24 @@ def load_gltf_scene(path: str | Path) -> tuple[list[GltfPrimitive], list[Materia
 	return primitives, materials, images
 
 
-def load_blue_noise(path: str | Path) -> np.ndarray:
-	"""Load single-channel 16-bit PNG thresholds without sRGB conversion.
+DEFAULT_BLUE_NOISE_PATH = Path(__file__).parent / "data/blue_noise/64x64.npy"
+
+
+def load_blue_noise(path: str | Path | None = None) -> np.ndarray:
+	"""Load packaged thresholds or a uint16 NPY/PNG tile without sRGB conversion.
 
 	Use quantization-bin midpoints so thresholds stay strictly inside (0, 1).
 	"""
-	from PIL import Image
-
-	with Image.open(path) as image:
-		samples = np.asarray(image)
-		if samples.ndim != 2 or samples.dtype != np.uint16:
-			raise ValueError("Blue noise must be a single-channel 16-bit PNG")
-		return np.ascontiguousarray((samples.astype(np.float32) + 0.5) / 65536)
+	path = DEFAULT_BLUE_NOISE_PATH if path is None else Path(path)
+	if path.suffix.lower() == ".npy":
+		samples = np.load(path, allow_pickle=False)
+	else:
+		from PIL import Image
+		with Image.open(path) as image:
+			samples = np.asarray(image)
+	if samples.ndim != 2 or samples.dtype != np.uint16:
+		raise ValueError("Blue noise must contain single-channel uint16 samples")
+	return np.ascontiguousarray((samples.astype(np.float32) + 0.5) / 65536)
 
 
 def load_gltf_first_mesh(glb_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:

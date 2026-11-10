@@ -33,7 +33,7 @@ python -u main.py scenes/draw_batches_example.py --frames 120
 
 The launcher presents the final submitted frame and prints the frame count.
 Closing the window early can produce fewer frames. The limit applies to
-`RenderContext.window_loop()` scenes, including the five above; it does not apply
+`RenderContext.window_loop()` scenes, including the six above; it does not apply
 to the legacy Raylib benchmark loop.
 
 ## Transparency controls
@@ -57,10 +57,8 @@ widgets, so those actions do not also move the camera or trigger scene shortcuts
 | Home | Restore startup filter settings |
 
 Arrow edits are disabled while the settings window is hidden.
-Startup uses the defaults in code; `transparency_filter.json` is read only with
-F9 or Load, so it can be deleted without affecting startup.
-MSAA, noise mode, cell size and grazing fade are live controls and are not stored in the
-filter profile. UV blue CDF lerp is the default; stochastic picking and Bayer
+Startup uses the defaults in code; controls update live without a profile file.
+UV blue CDF lerp is the default; stochastic picking and Bayer
 remain experimental comparisons. The settings window also exposes these controls.
 
 The noise dropdown additionally offers **UV blue: correlated hierarchy**,
@@ -77,8 +75,8 @@ before tone mapping. This smooths silhouettes and supplies extra stochastic samp
 at an additional GPU/memory cost. It works with every reconstruction kernel,
 including 1x1, and does not use TAA or frame history.
 
-"Fade grazing surfaces" starts disabled. Its two editable angles default to
-70 degrees (start) and 85 degrees (completely faded). Angles are measured from
+"Fade grazing surfaces" starts enabled. Its two editable angles default to
+83 degrees (start) and 86 degrees (completely faded). Angles are measured from
 the geometric surface normal: 0 is face-on, 90 is edge-on. Opacity fades smoothly
 between them on both front and back faces. The interval must satisfy
 `0 <= start < end <= 90`; drag either value or Ctrl+click to type it. The fade
@@ -112,7 +110,7 @@ the default scale is 1 pixel. Repeated UV islands within one instance can
 correlate overlapping layers, so object-hash mode remains useful for those assets.
 Normal/material maps, sampler overrides,
 material extensions, animation, and skinning are outside this example.
-[Blue-noise source and license](resources/blue_noise/README.md).
+[Blue-noise source and license](../src/data/blue_noise/README.md).
 
 ## CPU caches and checks
 

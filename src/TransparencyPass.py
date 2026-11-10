@@ -110,7 +110,7 @@ class TransparencyPass:
 	Custom deformation uses a matched geometry_shader/shading_shader pair with
 	the documented winner/metadata ABI. Animation data preparation is caller-owned.
 	"""
-	def __init__(self, *, materials, base_textures, vertices, blue_noise,
+	def __init__(self, *, materials, base_textures, vertices, blue_noise=None,
 		material_sampler=None, bilateral_filter=None, target_format=None, noise_scale=1.0, noise_mode="uv_blue_lerp",
 		grazing_fade=None, sample_count=1,
 		opaque_color=None, opaque_depth=None, material_source=None, material_library=None,
@@ -129,6 +129,9 @@ class TransparencyPass:
 		self._activate_shaders(sample_count)
 		self.depth_shader = geometry_shader or self._shader_set(1)[0]
 		self.uniforms = self.shader.uniform_buffer("frame")
+		if blue_noise is None:
+			from .TextureProcessing import get_default_blue_noise
+			blue_noise = get_default_blue_noise()
 		self.noise = blue_noise
 		self._noise_hierarchy = None
 		self._transparent_geometries = []

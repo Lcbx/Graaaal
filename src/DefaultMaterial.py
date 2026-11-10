@@ -24,7 +24,7 @@ TRANSPARENCY_INTERFACE = MaterialInterface(
 class DefaultMaterialShader(MaterialShader):
 	def __init__(self, *, transparent=False, template=None, default_material=None):
 		super().__init__(interface=TRANSPARENCY_INTERFACE, transparent=transparent,
-			template=template or "default_material.shaderlib",
+			template=template or "default_material.shader",
 			default_material={} if default_material is None else default_material)
 
 	def validate_resolved(self, values):

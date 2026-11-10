@@ -44,7 +44,7 @@ class MaterialRenderer:
 	DrawInstance lists are an optional direct-draw convenience. record() uses frustum
 	culling and caller-owned commands/output; presentation/submission remain external.
 	"""
-	def __init__(self, instances=None, *, meshes=None, shaders=(), blue_noise, base_textures=None, **transparency_options):
+	def __init__(self, instances=None, *, meshes=None, shaders=(), blue_noise=None, base_textures=None, **transparency_options):
 		self.instances = None if instances is None else list(instances)
 		self.meshes = list(dict.fromkeys(meshes if meshes is not None else (i.mesh for i in self.instances or ())))
 		if not self.meshes: raise ValueError("Register at least one mesh")

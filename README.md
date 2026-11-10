@@ -232,7 +232,8 @@ rank hierarchy and UV-independent object-space projections. Choose them through
 `set_noise_mode(...)` or the example's noise selector; sampling remains static.
 `GrazingFade(enabled=True, start_angle=70, end_angle=85)` optionally fades
 transparent-surface opacity between two angles from the geometric normal.
-Pass it as `grazing_fade=...` or call `set_grazing_fade(...)`; it starts disabled.
+Pass it as `grazing_fade=...` or call `set_grazing_fade(...)`; the current defaults
+enable fading between 83 and 86 degrees.
 MASK materials use sharpened alpha when routed through the transparent
 passes. Reconstruction uses a fixed 3x3, 5x5 or 9x9 bilateral footprint (default
 3x3 with spatial sigma 0.9), with slope correction always enabled. A 1x1 kernel

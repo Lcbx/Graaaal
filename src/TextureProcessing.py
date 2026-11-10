@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import weakref
 
 import numpy as np
 
@@ -13,6 +14,35 @@ from .RenderContext import (
     Texture,
     TextureUsage,
 )
+
+
+_default_blue_noise = None
+
+
+def get_default_blue_noise():
+	"""Lazily upload the packaged tile, sharing it among active device users.
+
+	The weak cache does not retain GPU devices after renderers are released.
+	A closed texture or a changed RenderContext device/generation is a cache miss.
+	Only NumPy is needed to decode the packaged sample data.
+	"""
+	global _default_blue_noise
+	texture = _default_blue_noise() if _default_blue_noise is not None else None
+	if texture is not None:
+		try:
+			texture._check_device()
+			return texture
+		except RuntimeError:
+			pass
+	from .Assets import load_blue_noise
+	thresholds = load_blue_noise()
+	height, width = thresholds.shape
+	texture = Texture((width, height), format="r32float",
+		usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST, label="default_blue_noise")
+	RenderContext.device.queue.write_texture({"texture": texture.handle}, thresholds,
+		{"bytes_per_row": width*4}, (width, height, 1))
+	_default_blue_noise = weakref.ref(texture)
+	return texture
 
 
 def build_material_texture_array(images, materials, size):

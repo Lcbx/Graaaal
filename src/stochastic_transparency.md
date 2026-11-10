@@ -8,6 +8,10 @@ the [interactive scene](../scenes/transparency_example.py) shows complete record
 
 ## Pass order
 
+`blue_noise` is optional. The default is a lazily uploaded, packaged 64x64 tile,
+shared among active users of the current GPU device. An explicit texture overrides
+it. The default asset and CC0 attribution are bundled under `data/blue_noise`.
+
 | Stage | API | Result |
 | --- | --- | --- |
 | Opaque color/depth | `opaque_pass()` or another renderer | HDR opaque color and depth |
@@ -101,7 +105,7 @@ Octaves may be negative; numerical guards bound them to [-24,24]. Sampling uses
 integer `textureLoad`, never bilinear noise filtering. Signed wrapping handles
 negative UVs. Per-instance/per-octave translations leave a single octave's
 threshold ranks and Fourier magnitudes unchanged; GPU tests verify both against
-the original [blue-noise tile](../scenes/resources/blue_noise/README.md).
+the original [blue-noise tile](data/blue_noise/README.md).
 Mirroring and nonuniform UV density change the footprint, not the probability.
 Grazing-angle anisotropy still distorts the spatial spectrum.
 

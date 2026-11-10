@@ -13,7 +13,7 @@ from scenes.material_example import make_instances, sphere_vertices
 
 def test_shared_dicts_defaults_and_instance_scopes(tmp_path):
 	path = tmp_path / "shared.shaderlib"
-	path.write_text('''#extends "default_material.shaderlib"
+	path.write_text('''#extends "default_material.shader"
 #block parameters
 {{ super() }}
 {{ parameter("gain", "f32", 2) }}
@@ -46,7 +46,7 @@ def test_parameters_reject_invalid_types_and_values(kind, value):
 
 def test_jinja_child_keeps_default_features_and_adds_typed_parameters(tmp_path):
 	path = tmp_path / "child.shaderlib"
-	path.write_text('''#extends "default_material.shaderlib"
+	path.write_text('''#extends "default_material.shader"
 #block parameters
 {{ super() }}
 {{ parameter("custom", "f32", 0.2) }}
@@ -64,7 +64,7 @@ return vec3f(p.custom);
 
 def test_child_template_owns_defaults_scopes_and_route_dependent_values(tmp_path):
 	path = tmp_path / "child.shaderlib"
-	path.write_text('''#extends "default_material.shaderlib"
+	path.write_text('''#extends "default_material.shader"
 #block parameters
 {{ super() }}
 {{ parameter("roughness", "f32", 0.15) }}
@@ -115,7 +115,7 @@ def test_layout_changes_require_relinking_but_default_edits_do_not():
 
 def test_builtin_types_and_grazing_intervals_are_checked(tmp_path):
 	path = tmp_path / "bad.shaderlib"
-	path.write_text('''#extends "default_material.shaderlib"
+	path.write_text('''#extends "default_material.shader"
 #block parameters
 {{ super() }}
 {{ parameter("base_color", "f32", 1) }}

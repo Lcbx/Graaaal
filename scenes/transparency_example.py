@@ -19,7 +19,7 @@ from pathlib import Path
 import glfw
 import numpy as np
 
-from numpyecs.Assets import load_blue_noise
+from numpyecs.Assets import DEFAULT_BLUE_NOISE_PATH, load_blue_noise
 from numpyecs.DrawBatches import DrawBatches, FrustumCuller, HiZCuller, ShaderPass
 from numpyecs.HZB import HZB
 from numpyecs.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
@@ -39,7 +39,7 @@ from numpyecs.TransparencyPass import BilateralFilter, DEBUG_VIEWS, GrazingFade,
 
 
 PATH = Path(__file__).parent / "resources/small_scene.glb"
-BLUE_NOISE_PATH = Path(__file__).parent / "resources/blue_noise/HDR_L_0.png"
+BLUE_NOISE_PATH = DEFAULT_BLUE_NOISE_PATH
 TEXTURE_SIZE = 512
 
 
@@ -183,12 +183,11 @@ def _item_tooltip(text):
 
 
 class FilterSettings:
-	"""ImGui filter controls, keyboard shortcuts, and validated JSON profiles."""
+	"""Live ImGui filter controls and keyboard shortcuts."""
 
-	def __init__(self, renderer, profile_path=None):
+	def __init__(self, renderer):
 		self.renderer = renderer
 		self.defaults = renderer.bilateral_filter
-		self.profile_path = Path(profile_path) if profile_path else Path(__file__).with_name("transparency_filter.json")
 		self.selected = 0
 		self.visible = True
 		self.message = ""
@@ -301,7 +300,7 @@ class FilterSettings:
 			changed, enabled = imgui.checkbox("Fade grazing surfaces (G)", fade.enabled)
 			_item_tooltip("Smoothly reduce transparent-surface opacity between the two angles below. "
 				"0 degrees is face-on; 90 is edge-on. Uses geometric normals on both sides. "
-				"Fade and noise controls are live; F5/F9 store filter values.")
+				"Fade and noise controls update immediately.")
 			if changed:
 				self.renderer.set_grazing_fade(replace(fade, enabled=enabled))
 			for name, label in (("start_angle", "Fade start (degrees)"), ("end_angle", "Fully faded (degrees)")):

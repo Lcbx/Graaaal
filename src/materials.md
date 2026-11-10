@@ -30,7 +30,7 @@ from numpyecs.EcsMaterials import (
 
 glass = DefaultMaterialShader(
     transparent=True,
-    template="scenes/shaders/glass_material.shaderlib",
+    template="scenes/shaders/glass_material.shader",
     default_material={"roughness": 0.3},
 )
 shared = {"base_color": (0.2, 0.6, 0.9, 0.5)}
@@ -44,7 +44,7 @@ world.add(left, MaterialInstance(mesh, overrides={"grazing_fade": True}),
 world.add(right, MaterialInstance(mesh, overrides={"tint": (1, 0.6, 0.3, 1)}),
           MaterialTransform(position=Vec3(1, 0, 0)))
 
-renderer = MaterialRenderer(meshes=[mesh], blue_noise=noise_texture)
+renderer = MaterialRenderer(meshes=[mesh])
 adapter = EcsMaterialAdapter(renderer, world)
 
 # Before recording each frame:
@@ -111,7 +111,7 @@ alpha_mode or grazing parameters.
 Declare types, defaults and scope inside a Jinja parameters block:
 
 ```jinja
-#extends "default_material.shaderlib"
+#extends "default_material.shader"
 #block parameters
 {{ super() }}
 {{ parameter("rim_strength", "f32", 0.8) }}
@@ -128,7 +128,7 @@ available as p.name in WGSL; declarations produce no WGSL text themselves.
 ```python
 rim = DefaultMaterialShader(
     transparent=True,
-    template="scenes/shaders/rim_material.shaderlib",
+    template="scenes/shaders/rim_material.shader",
     default_material={"rim_strength": 1.5},
 )
 ```
@@ -144,7 +144,7 @@ material or instance scope. Shared dictionaries are deduplicated by identity per
 shader. Each field occupies an aligned 16-byte slot preserving float/integer bits.
 Overrides of shared fields are rejected; declare instance scope when needed.
 
-The default_material.shaderlib template declares base_color, emission, roughness, metallic, opacity_rgb,
+The default_material.shader template declares base_color, emission, roughness, metallic, opacity_rgb,
 alpha_mode, alpha_cutoff, texture_layer, double_sided, ambient, diffuse, specular,
 grazing_fade, grazing_start and grazing_end. Tint and opacity_multiplier have
 instance scope by default. Built-in scopes may change while retaining their
@@ -159,10 +159,16 @@ Texture selection uses texture_layer in a renderer-owned texture array, supplied
 through base_textures. A white array is supplied when omitted. Camera and
 directional lighting remain frame data.
 
+The blue_noise argument is optional on MaterialRenderer and TransparencyPass.
+By default, the packaged 64x64 tile is uploaded lazily and shared among active
+renderers on the same GPU device. Device changes or closed textures trigger a
+fresh upload. The weak cache does not retain old devices. Loading requires no
+Pillow or scene assets. Supply blue_noise explicitly to use a caller-owned tile.
+
 ## Template inheritance
 
-The example's [rim shader](../scenes/shaders/rim_material.shaderlib) extends
-default_material.shaderlib. That template extends material_surface.shaderlib,
+The example's [rim shader](../scenes/shaders/rim_material.shader) extends
+default_material.shader. That template extends material_surface.shaderlib,
 the minimal opaque/stochastic surface contract.
 
 Available blocks:
@@ -176,7 +182,7 @@ Available blocks:
 - helpers: defines additional WGSL functions.
 
 ```jinja
-#extends "default_material.shaderlib"
+#extends "default_material.shader"
 #block parameters
 {{ super() }}
 {{ parameter("rim_strength", "f32", 0.8) }}

@@ -10,13 +10,12 @@ from math import cos, sin
 
 import numpy as np
 
-from numpyecs.Assets import load_blue_noise
 from numpyecs.DefaultMaterial import DefaultMaterialShader
 from numpyecs.ECS import ECS
 from numpyecs.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
 from numpyecs.MaterialRenderer import MaterialMesh, DrawInstance, MaterialRenderer
 from numpyecs.Math import Camera, Vec3
-from numpyecs.RenderContext import RenderContext, Texture, TextureUsage
+from numpyecs.RenderContext import RenderContext
 from numpyecs.TransparencyData import VERTEX_DTYPE
 
 
@@ -34,8 +33,8 @@ def make_instances():
 	"""CPU-only setup; materials and overrides are ordinary mutable dictionaries."""
 	vertices = sphere_vertices()
 	opaque = DefaultMaterialShader(default_material={"base_color": (0.8, 0.2, 0.08, 1)})
-	glass = DefaultMaterialShader(transparent=True, template=Path(__file__).parent / "shaders/glass_material.shaderlib")
-	rim = DefaultMaterialShader(transparent=True, template=Path(__file__).parent / "shaders/rim_material.shaderlib",
+	glass = DefaultMaterialShader(transparent=True, template=Path(__file__).parent / "shaders/glass_material.shader")
+	rim = DefaultMaterialShader(transparent=True, template=Path(__file__).parent / "shaders/rim_material.shader",
 		default_material={"base_color": (0.25, 0.6, 0.8, 0.45)})
 	shared_glass = {"base_color": (0.08, 0.35, 0.55, 0.65), "roughness": 0.2, "specular": 3.0,
 		"metallic": 0.65, "ambient": 0.08, "diffuse": 0.35,
@@ -71,10 +70,7 @@ def run_scene():
 	RenderContext.init_window(1100, 760, "Materials | M: MSAA | D: default | Space: orbit",
 		required_gpu_features=["indirect-first-instance"])
 	world, entities, meshes, shared, opaque = make_world()
-	noise = load_blue_noise(Path(__file__).parent / "resources/blue_noise/HDR_L_0.png")
-	tile = Texture((64, 64), format="r32float", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
-	RenderContext.device.queue.write_texture({"texture": tile.handle}, noise, {"bytes_per_row": 256}, (64, 64, 1))
-	renderer = MaterialRenderer(meshes=meshes, blue_noise=tile)
+	renderer = MaterialRenderer(meshes=meshes)
 	adapter = EcsMaterialAdapter(renderer, world)
 	overrides = world.get(MaterialInstance)[entities].overrides
 	camera = Camera((0, 1.3, 9), (0, 1.3, 0), (0, 1, 0), 50, near=0.05, far=100)

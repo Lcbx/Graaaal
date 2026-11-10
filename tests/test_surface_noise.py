@@ -1,5 +1,4 @@
 """GPU checks of the production 3D threshold field and its scale transitions."""
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -39,7 +38,7 @@ def thresholds():
 		}
 	''')
 	pipeline = ComputePipeline(shader, entry="evaluate")
-	pixels = load_blue_noise(Path(__file__).resolve().parents[1] / "scenes/resources/blue_noise/HDR_L_0.png")
+	pixels = load_blue_noise()
 	noise = Texture((64, 64), format="r32float", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
 	RenderContext.device.queue.write_texture({"texture": noise.handle}, pixels, {"bytes_per_row": 256}, (64, 64, 1))
 	hierarchy = None
@@ -127,7 +126,7 @@ def test_gpu_uv_octaves_preserve_opacity_under_magnification_and_minification(th
 def test_gpu_single_uv_octave_retains_blue_tile_ranks_and_spectrum(thresholds, mode):
 	y, x = np.indices((64, 64))
 	positions = np.zeros((4096, 3))
-	noise = load_blue_noise(Path(__file__).resolve().parents[1] / "scenes/resources/blue_noise/HDR_L_0.png")
+	noise = load_blue_noise()
 	for octave in (-3, 0, 3):
 		uv = np.stack((x-64+0.5, y-64+0.5), axis=-1).reshape(-1, 2)/64*2.0**octave
 		u = thresholds(positions, uv=uv, mode=mode, log_scale=octave).reshape(64, 64)
@@ -171,7 +170,7 @@ def test_gpu_uv_blue_modes_decorrelate_overlapping_instances(thresholds, mode):
 
 def test_gpu_hierarchy_levels_are_unique_ranks_ordered_by_their_child_averages(monkeypatch):
 	RenderContext.setup_graphics_backend(True)
-	pixels = load_blue_noise(Path(__file__).resolve().parents[1] / "scenes/resources/blue_noise/HDR_L_0.png")
+	pixels = load_blue_noise()
 	noise = Texture((64, 64), format="r32float", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
 	RenderContext.device.queue.write_texture({"texture": noise.handle}, pixels, {"bytes_per_row": 256}, (64, 64, 1))
 	monkeypatch.setattr(texture_processing, "Texture", lambda *a, usage, **kw:

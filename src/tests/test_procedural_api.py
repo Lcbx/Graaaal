@@ -112,6 +112,8 @@ def test_switching_between_arrays_and_ecs_invalidates_order(draws):
 def frame_state():
     oit = transparency.TransparencyPass.__new__(transparency.TransparencyPass)
     oit.size = (32, 16)
+    oit.noise_scale = 1.0
+    oit.noise_mode = "uv_blue_lerp"
     oit.uniforms = NS(content={}, upload=Mock())
     return oit
 
