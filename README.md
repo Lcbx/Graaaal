@@ -6,9 +6,8 @@ glTF/image loading, UI, and bundled scenes use the `render`, `assets`, `ui`, and
 `examples` extras. Install development dependencies with
 `pip install -e ".[render,assets,ui,examples,test]"`.
 
-RenderContext remains the convenient window, event-loop, presentation, and GPU
-resource manager. There is one shared device; callers do not need to pass it
-through each API. Systems remain ordinary functions; command order is explicit.
+RenderContext manages windows, events, presentation, and GPU resources through
+one shared device. Systems are ordinary functions; command order is explicit.
 Import the manager with `from numpyecs.RenderContext import RenderContext`.
 
 Public subsystem modules and classes use PascalCase; internal helpers, functions,
@@ -22,27 +21,40 @@ and attributes use snake_case. Constants use UPPER_SNAKE_CASE.
 | [Dictionary materials](src/materials.md) | Plain WGSL materials, shared parameters, instance overrides, and Jinja inheritance |
 | [Benchmarks](scenes/benchmarks/README.md) | Reproduction commands and dated measurements |
 
-## Module boundaries
+## Modules and useful APIs
 
-| Module | Responsibility |
+Import modules as `numpyecs.<Module>`. This non-exhaustive overview covers useful
+classes, methods, and helpers; the linked guides explain their contracts.
+
+| CPU module | Useful APIs and purpose |
 | --- | --- |
-| `ECS`, `ecs_*` | Worlds, schemas, checked selections, queries, commands, scheduling |
-| `Math` | NumPy vectors, cameras, projection and frustum helpers |
-| `Assets` | CPU glTF/image loading; optional dependencies load when called |
-| `InstanceData` | Default instance dtype, quaternion/scale/color packing |
-| `TransparencyData` | Transparency layouts and `load_transparency_scene()` |
-| `DrawList` | Pure NumPy grouping and instance permutations |
-| `Geometry` | Geometry helpers; GPU construction imports the renderer when called |
-| `Diagnostics` | Optional timing and memory helpers |
-| `TextureProcessing` | GPU material mip generation |
-| `EcsDrawing` | Optional ECS-to-array drawing adapter |
-| `DrawBatches` | Shared draw resources, named shader passes, and per-view visibility |
-| `HZB` | Hierarchical depth-pyramid generation |
-| `RenderContext`, `MeshArena` | Window/event loop, command recording, GPU resources, pooled mesh allocation |
-| `TransparencyPass` | Composable stochastic transparency passes |
-| `Materials`, `DefaultMaterial`, `MaterialRenderer`, `EcsMaterials` | Generic material layouts, default shader inheritance, DrawBatches integration and ECS extraction |
-| `ImGui` | Optional Dear ImGui integration with the RenderContext window/surface |
-| `utils` | Small shared CPU helpers: `cache_last` and `higher_pow2` |
+| [ECS](src/ECS_API.md) | `component`, `array_field`, `columns` define data; `ECS.register/create/add/set/remove/delete` manage it; `ECS.query` joins stores. `ComponentAccessor.version/touch` track edits; `ComponentSelection.read/assign` gather and write; accessor `edit_dense` borrows store columns. |
+| `ecs_commands`, `ecs_schedule` | Re-exported by `ECS`: `CommandBuffer.flush/clear` apply or discard deferred edits; `DeferredEntities.resolve` retrieves created IDs; `Scheduler.add/compile/run` orders synchronous systems. |
+| `Math` | `Vec2/Vec3/Vec4` are NumPy vectors; `Camera.view/projection/direction` supplies camera values; `extract_frustum_planes` derives culling planes. |
+| `Assets` | `load_gltf_scene` returns static triangle lists, materials and images; `read_gltf_accessor` reads attributes; `load_gltf_first_mesh_interleaved` loads one local-space primitive; `load_blue_noise` returns CPU thresholds. |
+| `InstanceData` | `MESH_INSTANCE_DTYPE` defines transforms/tint; `pack_quaternion`, `pack_scale`, `pack_rgba8_srgb` encode fields; `make_instances` packs separate component columns. |
+| `TransparencyData` | `load_transparency_scene` returns primitives, material records and images; `VERTEX_DTYPE`, `SHADING_VERTEX_DTYPE`, `MATERIAL_DTYPE` define the rendering ABI. |
+| `DrawList` | `DrawList.build(lod_ids, shader_ids)` returns `.order` and `SourceBatch` ranges for CPU grouping. |
+| `Geometry` | `make_cube_mesh` creates a GPU mesh when called; importing the module needs no graphics backend. |
+| `Diagnostics` | `WatchTimer` times scopes; `WatchTimer.capture` formats reports; `setup_gc_monitor` logs collections; `setup_memory_monitor` returns a report callback and requires separately installed `psutil`. |
+| `utils` | `cache_last` caches an instance method's most recent keyed call; `higher_pow2` returns the next strictly greater power of two. |
+
+| Rendering module | Useful APIs and purpose |
+| --- | --- |
+| `RenderContext` | Singleton `RenderContext.init_window/setup_graphics_backend`, `window_loop`, `screen`, `commands/submit`, `subscribe_event`, `cleanup` manage the backend and frames; `enable_statistics/inspect_resources` expose counters. |
+| `RenderContext` resources | `GpuBuffer.write/write_changed/upload_range/reserve/set_count`, `Texture.view/color_attachment/depth_attachment`, `Sampler`, and `Mesh.release` manage GPU data. |
+| `RenderContext` recording/shaders | `CommandContext.render_pass/compute_pass/finish`, `RenderPass.draw_mesh`, `ComputePass.dispatch`, `Shader.uniform_buffer/bind_group`, `RenderPipeline`, `ComputePipeline`, `BindGroupLayout`, and `PipelineLayout` compose work. `ShaderSource` reflects WGSL; `ShaderInterface` supplies explicit metadata. |
+| `MeshArena` | `MeshArena.allocate/compact/inspect/close` pools mesh storage; `MeshAllocation.release` returns a range for reuse. |
+| `DrawBatches` | `DrawBatches.register_mesh/register_lod_group/register_shader`, `sync`, `write_instances`, `create_visibility`, `draw` manage shared draws. `RenderShader` maps names to `ShaderPass`; `Visibility.all_visible/write` prepares visibility; `FrustumCuller.record` and `HiZCuller.record` record GPU culling. |
+| `EcsDrawing` | `EcsDrawAdapter.sync` extracts ECS mesh references; `mesh_field` returns attributes in draw order. |
+| `HZB` | `HZB.resize` allocates `.depth_texture` and pyramid; `build` records reductions; `.view` feeds Hi-Z culling. |
+| [TransparencyPass](src/stochastic_transparency.md#useful-apis) | `TransparencyPass.resize/update_frame/create_geometry_passes` prepares inputs; `opaque_pass/guide_pass/transmittance_pass/selection_pass/shade_winner/compose` records stages. `TransparencyTargets`, `BilateralFilter`, `GrazingFade` configure resources and settings. |
+| `TextureProcessing` | `get_default_blue_noise` shares a GPU tile; `build_material_texture_array` generates alpha-aware mips; `build_correlated_noise_hierarchy` builds ranked noise levels. These helpers upload and submit GPU work when creating textures. |
+| [Materials](src/materials.md#useful-apis) | `MaterialShader`, `MaterialInterface`, `ShaderHook`, `FrameParameter` define shader families; `MaterialBinding` selects dictionaries/overrides; `MaterialLibrary.pack` produces CPU tables and `.source` supplies linked WGSL. |
+| `DefaultMaterial` | `DefaultMaterialShader` supplies lit opaque/transparent defaults, validation, and shader hooks. |
+| `MaterialRenderer` | `MaterialMesh` describes geometry; `DrawInstance` is a direct-draw input; `MaterialRenderer.update/update_transforms/record/set_sample_count` uploads arrays and records rendering. |
+| `EcsMaterials` | `MaterialInstance` and `MaterialTransform` are components; `EcsMaterialAdapter.sync/touch_materials` extracts changes and invalidates edited dictionaries. |
+| `ImGui` | `ImGui.render(callback)` draws a UI overlay and routes input; `close` removes handlers and releases its context. |
 
 Simulation, math, asset-data, packing, grouping, and utility modules import without
 graphics dependencies. Asset decoders load their optional dependencies when called.
@@ -131,8 +143,9 @@ Prepare visibility again after regrouping or invalidating instance order; stale
 or unprepared results raise `RuntimeError` when drawn or accessed.
 Use `visibility.all_visible(lod=0)` for CPU/direct preparation, or
 `visibility.write(uint32_indices, indirect_records)` for a custom culler;
-`INDIRECT_DTYPE` describes those command records. After
-drawing depth, build `HZB` (imported from `numpyecs.HZB`) and call
+`INDIRECT_DTYPE` describes those command records. For Hi-Z culling, create `HZB`
+(from `numpyecs.HZB`), call `resize(size)`, render occluder depth into
+`hzb.depth_texture`, call `hzb.build(commands)`, then call
 `HiZCuller().record(commands, main_view, hzb_view=hzb.view)` to refine that view's
 frustum results.
 
@@ -158,8 +171,9 @@ content; `write_range()` offsets are bytes.
 
 `reserve(count)` preserves active data without changing count. GPU-only
 preservation requires `COPY_SRC | COPY_DST`; CPU-backed preservation needs
-`COPY_DST`. `resize(count)` discards GPU contents on growth. `set_count()` changes
-the active range within capacity and any CPU mirror.
+`COPY_DST`. `resize(count)` grows capacity and discards GPU contents without
+changing the active count. `set_count()` changes the active count within GPU
+capacity and the existing CPU mirror's size; it does not resize that mirror.
 
 Resources retain their device/generation and reject reuse after device replacement
 or cleanup. Raw WGPU handles remain available. `close()` releases wrapper ownership
@@ -192,67 +206,33 @@ caller's full binding ABI.
 
 ## Composable transparency
 
-Create `TransparencyPass` with material/vertex/texture/noise resources and an
-explicit offscreen `target_format` where appropriate. Existing opaque inputs can
-be supplied as `opaque_color=...`, `opaque_depth=...`, or by `set_opaque_inputs()`.
-They must be sampleable textures with matching dimensions and the configured sample count.
-`resize(size, targets=TransparencyTargets(...))` accepts caller-owned targets;
-otherwise reconstruction targets are allocated internally.
-The guide pass writes both `transparent_depth` and an rgba16float
-`transparent_guide` containing nearest acceptance and reciprocal-depth gradients.
-Supply both when using caller-owned `TransparencyTargets`.
+`TransparencyPass` records opaque, guide, transmittance, winner-selection,
+deferred-shading, and composition stages into caller-owned commands. Call
+`resize(size)` before `update_frame(...)` or `update_camera(camera)`, then record
+the stages and submit. It does not submit or present frames itself.
 
-MSAA is optional: `sample_count=4` enables it, and `set_sample_count(1 or 4)`
-switches the default shader set live. The example uses **M** or its MSAA dropdown;
-the default is off. At 4x, winner payloads use two `rgba16uint` MSAA targets and
-shaded colors use a four-layer array. Composition resolves linear HDR before tone
-mapping; no temporal accumulation is used. See the
-[target requirements](src/stochastic_transparency.md#optional-msaa) for custom targets.
+Use `create_geometry_passes(metadata, transparent=True, instances=buffer)` to
+create transparent `transmittance` and `main` shader passes plus a guide override.
+Keep metadata in packed instance order, and share its vertex/material address
+space across all transparent draws in a selection target. Raster and deferred
+vertices use the same local coordinates and packed instance transforms.
 
-Create geometry with
-`oit.create_geometry_passes(metadata, transparent=True, instances=instance_buffer)`.
-Transparent draws expose `transmittance` and `main` shader passes; they have no
-opaque `prepass` entry. Draw `transmittance` inside `oit.transmittance_pass()`.
-Metadata is a vec4u per packed instance: triangle offset, material index, stable
-surface ID, reserved. Transparent draws in a selection pass share the metadata/
-vertex address space passed to `shade_winner()`. Invalid deferred addresses yield
-empty samples; geometry bindings cannot be mixed between technique owners.
+`TransparencyTargets` accepts caller-owned attachments. Existing sampleable
+opaque color/depth can be supplied through `opaque_color` and `opaque_depth`;
+they must match the target dimensions and sample count. Otherwise targets are
+allocated internally. Set `target_format` to match the output attachment.
 
-Raster and deferred vertices share local coordinates. Both apply packed instance
-translation, rotation, and scale; normals use inverse scale and rotation. CPU
-loading can still bake glTF node transforms before instance transforms apply.
-Noise defaults to point-sampled UV blue-noise octaves with CDF-corrected lerp.
-`noise_mode` / `set_noise_mode(name)` also selects stochastic octave picking,
-object-space hashing or diagnostic Bayer noise. UV modes fall back to object
-hashing for missing/degenerate UVs; no cards or triangle reseeding are assumed.
-`noise_scale=1.0` / `set_noise_scale(pixels)` controls grain size. Guide and
-transmittance passes are independent of these selection-only options.
-`uv_blue_correlated`, `triplanar_blue`, and `triplanar_correlated` add a GPU-built
-rank hierarchy and UV-independent object-space projections. Choose them through
-`set_noise_mode(...)` or the example's noise selector; sampling remains static.
-`GrazingFade(enabled=True, start_angle=70, end_angle=85)` optionally fades
-transparent-surface opacity between two angles from the geometric normal.
-Pass it as `grazing_fade=...` or call `set_grazing_fade(...)`; the current defaults
-enable fading between 83 and 86 degrees.
-MASK materials use sharpened alpha when routed through the transparent
-passes. Reconstruction uses a fixed 3x3, 5x5 or 9x9 bilateral footprint (default
-3x3 with spatial sigma 0.9), with slope correction always enabled. A 1x1 kernel
-bypasses neighborhood reconstruction and retains the unfiltered stochastic estimator.
+Defaults are single-sample rendering, UV blue-noise CDF lerp at a one-pixel grain
+size, grazing fade from 83 to 86 degrees, and 3x3 bilateral reconstruction with
+spatial sigma 0.9. `set_sample_count(1 or 4)`, `set_noise_mode`, `set_noise_scale`,
+`set_grazing_fade`, `set_bilateral_filter`, and `set_debug_view` update live
+settings. A 1x1 kernel bypasses reconstruction; 4x MSAA remains available.
+No temporal accumulation is used.
 
-`material_source` replaces `shade(material, uv, position, normal, lod) -> vec3f`
-without changing selection/reconstruction. A matched `geometry_shader` and
-`shading_shader` pair can customize deformation under the same winner ABI.
-`create_geometry_passes()` accepts additional group-2 resources and higher-numbered
-binding groups. Animation data preparation remains caller-owned; no animation or
-skinning system is supplied.
-
-Use `update_frame(view=..., projection=..., camera_position=..., near=..., far=...)`
-or the `update_camera(camera)` adapter. The row-vector matrix convention remains
-`view @ projection`. Record opaque (skip when inputs already exist), guide,
-transmittance, selection, shading, and composition explicitly in caller commands.
-Call `resize()` before updating camera uniforms or recording passes. The technique
-does not submit or present. See the [transparency notes](src/stochastic_transparency.md)
-and [scene implementation](scenes/transparency_example.py) for complete pass order.
+The [transparency guide](src/stochastic_transparency.md) covers pass order,
+custom targets, noise choices, shader contracts and limitations. The
+[material guide](src/materials.md) covers dictionary materials and vertex hooks;
+[transparency_example.py](scenes/transparency_example.py) shows a full frame.
 
 ## Examples and diagnostics
 

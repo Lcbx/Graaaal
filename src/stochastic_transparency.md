@@ -6,6 +6,25 @@ materials, camera values, targets, and command submission. The
 [engine guide](../README.md#composable-transparency) documents its resource API;
 the [interactive scene](../scenes/transparency_example.py) shows complete recording.
 
+## Useful APIs
+
+Import from `numpyecs.TransparencyPass`. This overview is non-exhaustive; initialize
+RenderContext before constructing GPU resources.
+
+| Class or method | Purpose |
+| --- | --- |
+| `TransparencyPass(...)` | Owns persistent pipelines and size-dependent targets; accepts material, vertex, texture and optional opaque inputs. |
+| `resize(size, targets=...)` | Allocates or adopts targets; call before updating camera data or recording. `targets` is keyword-only. |
+| `update_frame(...)`, `update_camera(camera, ...)` | Upload explicit arrays or camera-object values and return `view @ projection`; accept `time` and `light_dir`. |
+| `create_geometry_passes(metadata, transparent=..., instances=...)` | Returns `GeometryPasses`: `.render_shader` for DrawBatches, `.guide` for the guide override, and deferred bindings for `shade_winner`. |
+| `opaque_pass`, `guide_pass`, `transmittance_pass`, `selection_pass` | Open raster passes on caller-owned commands; issue draws inside each scope. |
+| `shade_winner(commands, geometry)`, `compose(commands, output)` | Record deferred shading and composition; `output` is a matching `ColorAttachment`. Neither submits work. |
+| `set_opaque_inputs(color, depth)` | Uses caller-owned opaque textures; pass `None, None` to restore internal targets. |
+| `set_sample_count`, `set_noise_mode`, `set_noise_scale`, `set_debug_view` | Update live sampling and diagnostic settings. |
+| `BilateralFilter`, `set_bilateral_filter` | Configure reconstruction footprint and tolerances. |
+| `GrazingFade`, `set_grazing_fade` | Configure angular opacity fade; default enabled from 83 to 86 degrees. |
+| `TransparencyTargets` | Describes caller-owned color, depth, guide, transmittance and winner textures. |
+
 ## Pass order
 
 `blue_noise` is optional. The default is a lazily uploaded, packaged 64x64 tile,
@@ -25,12 +44,49 @@ The guide pass rejects opaque occlusion and fully transparent texels while
 retaining low nonzero opacity. Transmittance tests opaque depth without writing
 it. Selection clears its own depth and explicitly rejects fragments behind
 opaque geometry. Transparent geometry is rasterized three times: guide,
-transmittance, and selection. The technique requires no transparent sorting.
+transmittance, and selection. The 1x1 reconstruction mode can skip the guide.
+The technique requires no transparent sorting.
 
 Transparent `RenderShader` entries are `transmittance` and `main` (winner
 selection); they have no `prepass` entry, so an opaque depth-prepass draw skips
 them. The culler's internal prepass visibility buffer remains a list of frustum
 candidates, independent of which named rendering pass is drawn.
+
+## Geometry and caller-owned targets
+
+The default geometry uses `VERTEX_DTYPE` and packed `MESH_INSTANCE_DTYPE`
+transforms. Raster and deferred vertices share local coordinates; both apply
+translation, rotation and scale, with inverse-scale normal transformation.
+`metadata` contains one `vec4u` per packed instance: triangle offset, material
+index, stable surface ID, and a reserved word. The dictionary-material adapter
+uses that fourth word as its instance-parameter slot offset. All transparent draws
+sharing a selection target must share metadata/vertex addressing; pass the matching
+`GeometryPasses` to `shade_winner()`. Geometry from another technique owner is rejected.
+
+`material_source` can replace the direct-material
+`shade(material, uv, position, normal, lod) -> vec3f` implementation. A matched
+`geometry_shader`/`shading_shader` pair can customize deformation under the winner
+ABI. `create_geometry_passes()` accepts extra group-2 resources through
+`geometry_resources`/`shading_resources`; additional binding groups start at 4 for
+geometry and 3 for shading, subject to device limits. Animation/skinning data
+preparation remains application-owned. Dictionary materials have higher-level
+[vertex hooks](materials.md#time-and-vertex-displacement).
+
+At 1x, `TransparencyTargets` requires these formats, each with one layer:
+
+| Targets | Format and usage |
+| --- | --- |
+| `main_color`, `transparent_guide`, `transmittance` | `rgba16float`, render attachment + texture binding |
+| `depth`, `transparent_depth`, `selection_depth` | `depth32float`, render attachment + texture binding |
+| `winner` | `rgba32uint`, render attachment + texture binding |
+| `winner_color` | `rgba16float`, storage binding + texture binding |
+
+All targets must match `resize(size)` and the configured sample count, except the
+always-single-sample `winner_color`. The next section describes 4x formats/layers.
+Alternatively, supply only existing opaque inputs through `set_opaque_inputs()`
+and let the pass allocate its other targets. Opaque inputs must be sampleable and
+match size/sample count; drawing into them also requires render-attachment usage.
+Set `target_format` to match the output `ColorAttachment` passed to `compose()`.
 
 ## Optional MSAA
 
@@ -252,11 +308,11 @@ sending MASK to the opaque pass retains the conventional hard-cutoff behavior.
 
 ## Grazing-angle opacity fade
 
-`GrazingFade(enabled=False, start_angle=83, end_angle=86)` configures an optional
+`GrazingFade(enabled=True, start_angle=83, end_angle=86)` configures an optional
 fade for transparent surfaces. Supply `grazing_fade=...` when constructing the
 pass or call `set_grazing_fade(options)` to update it without reallocating targets.
 The example exposes a checkbox, two degree fields and the G shortcut. These are
-live controls outside the filter-only JSON profile.
+live controls; the example does not save settings to a profile file.
 
 Angles are measured from the geometric normal to the view direction: 0 degrees
 is face-on and 90 is edge-on. The absolute dot product makes front and back faces
@@ -346,14 +402,13 @@ depth differences under tight tolerances, while the depth-step regression checks
 that card discontinuities remain protected. Its benefit is support on tilted
 surfaces, not surface anchoring or direct temporal stabilization.
 
-The caller-owned `TransparencyTargets` set includes the new `transparent_guide`
+The caller-owned `TransparencyTargets` set includes the `transparent_guide`
 rgba16float attachment, storing `(pNearest, d(1/z)/dx, d(1/z)/dy, 1/z)` and cleared
 to zero. It shares the nearest-depth test with `transparent_depth`. Custom
 geometry shaders must output this guide data as well as depth, reserving
-`pNearest == 1` for exact certainty before half-float conversion. The card-unit
-attributes have been removed from `VERTEX_DTYPE`; raster geometry needs only
-position, normal, UV, barycentric coordinates and triangle ID. Deferred shading's
-vertex ABI is unchanged.
+`pNearest == 1` for exact certainty before half-float conversion. Raster
+`VERTEX_DTYPE` contains position, normal, UV, barycentric coordinates and triangle
+ID; `SHADING_VERTEX_DTYPE` stores the original vertices for deferred shading.
 
 ## Diagnostic views and limits
 

@@ -36,6 +36,21 @@ Closing the window early can produce fewer frames. The limit applies to
 `RenderContext.window_loop()` scenes, including the six above; it does not apply
 to the legacy Raylib benchmark loop.
 
+## Useful scene APIs
+
+These are examples to adapt, not a stable library API. This list is non-exhaustive;
+import paths start with `scenes.` when running from the repository root.
+
+| Module | Useful classes and functions |
+| --- | --- |
+| All six scenes | `run_scene()` starts the interactive example; importing the module creates no window or device. |
+| `draw_batches_example` | `Transform`, `Velocity`, `MeshRef` define components; `movement_system(world, dt)` updates motion; `update_instances(world, data)` packs drawing columns. Other scene systems use state initialized by `run_scene()`. |
+| `direct_draw_example` | `CubeInstances.update()` refreshes `.content` only when component versions or query membership change. |
+| `prototype` | `create_world()` returns sample actors; `actor_statuses(world, query)` returns `ActorStatus` records; `.health_fraction` clamps UI health; `ActorCache.update()` refreshes displayed values on change. |
+| `transparency_example` | `init_scene(...)` builds GPU resources; `render_frame()` records/submits a frame using scene state; `FilterSettings.set_value/reset` edits/restores reconstruction controls. |
+| `material_example` | `sphere_vertices()`, `make_instances()`, and `make_world()` build CPU geometry/material/ECS inputs without opening a device. |
+| `msaa_example` | `run_scene()` contains the minimal window, resize and sample-count switching loop. |
+
 ## Transparency controls
 
 The settings window is visible at startup. Drag values or Ctrl+click to type;
@@ -61,19 +76,11 @@ Startup uses the defaults in code; controls update live without a profile file.
 UV blue CDF lerp is the default; stochastic picking and Bayer
 remain experimental comparisons. The settings window also exposes these controls.
 
-The noise dropdown additionally offers **UV blue: correlated hierarchy**,
-**Triplanar blue: CDF lerp**, and **Triplanar: correlated hierarchy**. The hierarchy
-is generated once on the GPU when first selected. Its levels share a spatial
-origin and are re-ranked after downsampling to retain threshold coverage.
-Triplanar modes use object-space projections with smooth local-normal weights
-and work independently of UV islands. All sampling is static, without TAA.
-The previous default and existing modes remain available.
-
-**MSAA (M)** switches between off and 4x. Four independent samples cover geometry,
-opacity and winner selection. Composition averages their linear HDR contributions
-before tone mapping. This smooths silhouettes and supplies extra stochastic samples,
-at an additional GPU/memory cost. It works with every reconstruction kernel,
-including 1x1, and does not use TAA or frame history.
+The noise selector includes correlated UV hierarchies and triplanar object-space
+projection for meshes with unsuitable UVs. Hierarchies build once on first use.
+**MSAA (M)** smooths silhouettes and adds four stochastic samples at extra GPU and
+memory cost. It works with every reconstruction kernel, including 1x1.
+Sampling is static; there is no TAA or frame history.
 
 "Fade grazing surfaces" starts enabled. Its two editable angles default to
 83 degrees (start) and 86 degrees (completely faded). Angles are measured from
@@ -84,12 +91,8 @@ affects MASK/BLEND surfaces consistently in guide, transmittance and selection.
 
 Default reconstruction uses a fixed 3x3 footprint, spatial sigma 0.9, relative
 depth sigma 0.05, transmittance sigma 0.3, and minimum depth tolerance 0.01.
-The five controls are kernel size, spatial sigma, relative depth sigma,
-transmittance sigma, and minimum depth tolerance. Slope correction is always
-enabled: tilted cards keep their filter support while depth breaks remain protected.
-Certain nearest winners bypass the blur; all fractional pixels use the complete
-normalized filter. The 1x1 option skips neighborhood reconstruction and shows the
-unfiltered stochastic result without an extra opacity multiplication.
+Slope correction is always enabled. The 1x1 option shows the unfiltered stochastic
+result; certain fully opaque nearest winners also bypass reconstruction.
 See the [transparency notes](../src/stochastic_transparency.md) for the pass order,
 filter parameters, and interpretation of diagnostic views.
 
@@ -99,15 +102,12 @@ emissive factors. Static primitives go directly into DrawBatches arrays; metadat
 follows its packed instance order. It builds 512x512 material texture layers with repeat/trilinear
 sampling and alpha-aware mipmaps. The tree's `Simple_foliage.001` material is
 explicitly treated as MASK, with coverage-preserving mips and sharpened alpha
-shared across guide, transmittance and selection. Thresholds are anchored to UV
-octaves, with object-space fallback for missing or rank-one UVs. A single UV
-octave preserves the tile spectrum; fractional-octave mixtures do not guarantee
-it. There is no card inference or projected-size cutoff. The independent surface
-selector, CDF lerp, and Bayer options are compared in the
-[sampling notes](../src/stochastic_transparency.md#acceptance-and-winner-data).
-`transparency.set_noise_scale(2)` trades coarser grain for greater stability;
-the default scale is 1 pixel. Repeated UV islands within one instance can
-correlate overlapping layers, so object-hash mode remains useful for those assets.
+shared across guide, transmittance and selection. UV noise falls back to object
+hashing for missing or degenerate UVs. Grain size defaults to 1 pixel;
+`transparency.set_noise_scale(2)` makes it coarser. Repeated UV islands can correlate
+overlapping layers; compare object-hash or triplanar modes on those assets.
+See the [sampling notes](../src/stochastic_transparency.md#acceptance-and-winner-data)
+for threshold construction and its limits.
 Normal/material maps, sampler overrides,
 material extensions, animation, and skinning are outside this example.
 [Blue-noise source and license](../src/data/blue_noise/README.md).

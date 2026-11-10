@@ -7,12 +7,15 @@ checked-in [results](results/).
 
 ## Reproduction
 
-| Script | Measures |
+The table lists main entry points and selected reusable helpers, not every
+function. `main()` parses command-line arguments; the CPU helpers need no window.
+
+| Script | Measures and useful functions |
 | --- | --- |
-| `benchmark_ecs.py` | Queries, gather/scatter, removals, membership churn, appends, and array-memory estimates |
-| `benchmark_ecs_query_pairs.py` | Alternating baseline/current scans to investigate between-run noise |
-| `benchmark_ecs_uploads.py` | CPU instance packing and buffer-upload submission during a bounded direct-draw scene |
-| `../../src/tests/benchmark_array_access.py` | Copying, reusable gathers, and dense editing for equivalent movement |
+| `benchmark_ecs.py` | `main()` measures queries, gather/scatter, removals, churn, appends and array bytes. `measure(setup, action, repeat, loops=1)` times actions; `make_world(n, rare_count=None)` builds test data. |
+| `benchmark_ecs_query_pairs.py` | `main()` alternates baseline/current scans to investigate between-run noise; uses private query internals. |
+| `benchmark_ecs_uploads.py` | `main()` instruments `CubeInstances.update` and `GpuBuffer.upload` in a bounded direct-draw scene, including initialization. |
+| `../../src/tests/benchmark_array_access.py` | `benchmark(count=100000, samples=7, iterations=30)` returns JSON-compatible measurements of copies, reusable gathers and dense edits. |
 
 ```powershell
 python scenes/benchmarks/benchmark_ecs.py --entities 100000 --repeat 11 --loops 50 --output ecs_cpu_run.json
@@ -27,19 +30,23 @@ module. Current `ECS.py` uses package-relative `ecs_*` imports, so it cannot be
 copied alone and passed directly; use a self-contained historical snapshot or an
 export adapted to the loader.
 
-CPU timing excludes setup and reports medians after warmup. Read/update actions
-repeat within samples; mutation samples start with fresh worlds. Tracemalloc
+CPU ECS/array timing excludes setup and reports medians after warmup. Read/update
+actions repeat within samples; mutation samples start with fresh worlds. Tracemalloc
 peaks come from separate action-only runs, exclude retained storage, and are not
-process RSS. Array `nbytes` estimates exclude Python objects/overhead. Upload
-durations measure CPU submission, not GPU completion or frame-time guarantees;
-check the actual frame count if the window closes early.
+process RSS. Array `nbytes` estimates exclude Python objects/overhead. The upload
+script includes initialization and wraps full `upload()` calls only; direct
+`write_range()`/`upload_range()` calls are not separately counted. Its byte counts
+use full CPU array sizes. Durations measure CPU submission, not GPU completion or
+frame-time guarantees; check the actual frame count if the window closes early.
 
 ## Recorded ECS snapshots
 
 These are historical observations, not measurements of the current checkout.
-Raw JSON retains interpreter, NumPy, platform, sampling configuration, and source
-hashes. The recorded CPU environment was Windows 11, AMD64 Family 25 Model 97,
-Python 3.14.6, and NumPy 2.4.4, with 100,000 entities, 11 samples, and 50 loops
+CPU suite JSON records interpreter, NumPy, platform, sampling configuration and
+the selected ECS file's hash. Paired-scan JSON records baseline hash and samples;
+upload JSON records environment and counters. The recorded CPU environment was
+Windows 11, AMD64 Family 25 Model 97, Python 3.14.6, and NumPy 2.4.4,
+with 100,000 entities, 11 samples, and 50 loops
 for repeated actions. Small differences across runs are not evidence of a win.
 
 | Series | Artifacts |
@@ -49,8 +56,10 @@ for repeated actions. Small differences across runs are not evidence of a win.
 
 The review baseline was exported from revision
 `72b28d57baa79e7ee9c294570d562aa2429bb38d`. The two baseline files belong to
-different comparisons. Match source/dependency hashes before attributing results
-to an implementation; later package/API changes are not represented by these runs.
+different comparisons. Match recorded sources and dependency versions before
+comparing results. The current CPU script hashes `ECS.py` alone, so its hash does
+not identify changes in imported `ecs_*` helpers. Later package/API changes are
+not represented by these runs.
 
 Selected original optimization results (milliseconds per action):
 
@@ -76,8 +85,9 @@ Selected 2026-11-04 review results (milliseconds per action):
 An apparent sparse-query slowdown in separate runs did not recur in alternating
 scans: 1,000-match medians were 0.01126/0.01128 ms. Batch appends remain much
 cheaper than repeated calls. The 120-frame upload snapshot recorded 4.259 ms total
-packing time and 2.709 ms CPU submission time for 3,843,840 instance bytes; these
-values exclude setup and do not measure GPU completion.
+packing time and 2.709 ms CPU submission time for 3,843,840 instance bytes;
+the packing counter includes an initialization call (121 calls for 120 frames).
+These counters do not measure GPU completion.
 
 ## Array access
 

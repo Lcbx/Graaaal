@@ -26,8 +26,8 @@ Related documents: [engine guide](../README.md) and
 - [Diagnostics reference](#diagnostics-reference)
 - [API inventory and errors](#api-inventory-and-error-reference)
 
-Import the public API from `ECS`. Schema conversion lives in `ecs_schema`, input
-types/validation in `ecs_types`, deferred edits in `ecs_commands`, scheduling in
+Import the public API from `numpyecs.ECS`. Schema conversion lives in `ecs_schema`,
+input types/validation in `ecs_types`, deferred edits in `ecs_commands`, scheduling in
 `ecs_schedule`, and inspection in `ecs_diagnostics`. Storage and joins remain
 together in `ECS.py` because they share row lifetime and cache contracts.
 
@@ -114,8 +114,29 @@ inputs require nonnegative integers representable by their uint64/uint32 dtype:
 invalid types raise `TypeError`, negative values `ValueError`, overflow
 `OverflowError`. Representable stale handles keep the existing liveness behavior.
 Systems must execute synchronously; coroutine/generator callbacks are rejected at
-registration. Command failure, flush visibility, and dependency ordering retain
-their established contracts.
+registration. See [deferred commands](#deferred-commands-and-recovery) and
+[scheduling](#scheduling) for failure and visibility rules.
+
+## Explicit arrays and reusable field reads
+
+Use `array_field(np.float32, shape=(3,))` as a dataclass field declaration when
+the annotation alone does not describe the storage shape. `object` explicitly
+selects Python-reference storage; unsupported annotations raise `TypeError`.
+
+`selection.read(name, out=array)` gathers into an exact dtype/shape output and
+retains the same output object. Storage aliases and read-only outputs are rejected.
+The selection caches its index conversion after the first reusable read.
+
+`with accessor.edit_dense(*fields) as columns:` borrows numeric columns in storage
+order. Structural edits to the store, nested writable scopes, and multi-store
+mutations affecting the borrowed store are rejected before applying changes.
+Fields are touched on exit even after exceptions; writes are not rolled back.
+Exported views must not escape the scope. Compact multicomponent holes first.
+Independent component stores still require joins/gathers to align their rows.
+
+See [the engine guide](../README.md#arrays-and-ordinary-systems) for a complete
+shaped-field example and [array measurements](../scenes/benchmarks/README.md#array-access)
+for scratch-memory tradeoffs.
 
 ## Inspection and allocation control
 
@@ -747,7 +768,8 @@ owners; `rows` counts active instances; `span` includes multicomponent holes;
 itself, so snapshots are not directly JSON-serializable without adapting that key.
 Invariant checking verifies live handles, recycled indices, ownership, masks,
 sparse mappings, contiguous multicomponent blocks/counts, and inactive reference
-cleanup. Its scans are for debugging and are disabled by Python's `-O` assertions.
+cleanup. Run without `-O`: optimized Python removes the assertions, while some
+scanning/allocation work still runs.
 
 ## API inventory and error reference
 
@@ -805,25 +827,3 @@ request. They do not roll back arbitrary callback effects, allocation failures,
 earlier successful buffered commands, or earlier systems' work. The ECS provides
 no thread synchronization. Relationships, serialization, resource injection,
 automatic parallel scheduling, and more than 64 component types are outside this API.
-
-
-## Explicit arrays and reusable field reads
-
-Use `array_field(np.float32, shape=(3,))` as a dataclass field declaration when
-the annotation alone does not describe the storage shape. `object` explicitly
-selects Python-reference storage; unsupported annotations raise `TypeError`.
-
-`selection.read(name, out=array)` gathers into an exact dtype/shape output and
-retains the same output object. Storage aliases and read-only outputs are rejected.
-The selection caches its index conversion after the first reusable read.
-
-`with accessor.edit_dense(*fields) as columns:` borrows numeric columns in storage
-order. Structural edits to the store, nested writable scopes, and multi-store
-mutations affecting the borrowed store are rejected before applying changes.
-Fields are touched on exit even after exceptions; writes are not rolled back.
-Exported views must not escape the scope. Compact multicomponent holes first.
-Independent component stores still require joins/gathers to align their rows.
-
-See [the engine guide](../README.md#arrays-and-ordinary-systems) for a complete
-shaped-field example and [array measurements](../scenes/benchmarks/README.md#array-access)
-for scratch-memory tradeoffs.

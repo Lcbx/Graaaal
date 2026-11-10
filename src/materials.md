@@ -20,13 +20,39 @@ The top-middle sphere uses a procedural striped shader written in the Python
 script; its stripes and time-driven vertex displacement have live controls for
 frequency, color, displacement amplitude and speed, plus an animation pause.
 
+## Useful APIs
+
+This non-exhaustive map covers the material modules. Import from
+`numpyecs.<Module>`; CPU packing needs no initialized GPU device.
+
+| Module | Classes and methods |
+| --- | --- |
+| `Materials` | `MaterialShader(interface=..., source/filepath/template=...)` declares a family; `.parameters` exposes its schema; `.validate(values)` checks dictionary fields. `MaterialBinding(shader, material, overrides)` selects values. |
+| `Materials` | `MaterialLibrary(shaders).pack(bindings)` returns headers, shared slots, instance slots, material IDs and instance offsets; `.source` contains linked WGSL; `.parameter_layouts` exposes slot/lane offsets. |
+| `Materials` | `MaterialInterface`, `ShaderHook`, and `FrameParameter` describe a rendering adapter's dispatch and frame-data contract; `ParameterLayout.pack` applies a declared slot layout. |
+| `DefaultMaterial` | `DefaultMaterialShader` provides the lit schema, shader hooks, alpha routing and semantic validation used in this guide. |
+| `MaterialRenderer` | `MaterialMesh(vertices, shader, ...)` registers geometry; `DrawInstance` describes optional direct inputs. `MaterialRenderer.record` records a frame; `update` accepts explicit arrays; `update_transforms` skips material packing; `set_sample_count` switches 1x/4x passes. |
+| `EcsMaterials` | `MaterialInstance` stores mesh/material references and overrides; `MaterialTransform` stores numeric transforms. `EcsMaterialAdapter.sync` extracts changed ECS data; `touch_materials(*dicts)` marks nested edits for repacking. |
+
+The default adapter uses `TransparencyPass` for rendering and `DrawBatches` for
+grouping/culling. See the [engine API overview](../README.md#modules-and-useful-apis)
+for lower-level resources and commands.
+
 ## ECS usage
+
+This integration excerpt assumes an initialized RenderContext device with
+`indirect-first-instance` enabled, triangle-list `vertices` with `position`,
+`normal`, and `uv` fields, and matching `indices`. The frame inputs `size`, `camera`,
+and `output_attachment` belong to the application; the output format must match
+the renderer's `target_format`. Run from the repository root to resolve the glass
+template. See [material_example.py](../scenes/material_example.py) for complete setup.
 
 ```python
 from numpyecs.ECS import ECS
 from numpyecs.Math import Vec3
 from numpyecs.DefaultMaterial import DefaultMaterialShader
 from numpyecs.MaterialRenderer import MaterialMesh, MaterialRenderer
+from numpyecs.RenderContext import RenderContext
 from numpyecs.EcsMaterials import (
     MaterialInstance, MaterialTransform, EcsMaterialAdapter,
 )
@@ -57,7 +83,7 @@ renderer.record(commands, size, camera, output_attachment)
 RenderContext.submit(commands.finish())
 ```
 
-MaterialInstance is a registered multicomponent: an entity can own multiple
+`MaterialInstance` uses `@component(multiples=True)`: an entity can own multiple
 renderables. Mesh, shader, dictionary and override references use explicit object
 fields; transforms use separate numeric columns. The adapter also accepts
 application component types exposing the same fields through its material_type
@@ -278,9 +304,8 @@ rim = DefaultMaterialShader(
 )
 ```
 
-The parameters attribute exposes read-only declaration metadata. Python no longer
-accepts a parameters constructor argument. Adding/changing declarations requires
-creating a new shader and renderer; ordinary dictionary value edits use the
+The `parameters` attribute exposes read-only declaration metadata. Changing
+declarations requires a new shader and renderer; ordinary dictionary edits use the
 existing explicit invalidation path. TRANSPARENT is available in templates for
 route-dependent defaults, as used by the default alpha_mode declaration.
 
@@ -435,11 +460,8 @@ Shaders that previously read `frame.light_dir` should read
 `lighting.light_dir`. Rebuild custom uniform dtypes from the shared include or
 reflection rather than retaining the earlier Frame byte offsets.
 
-Future local-light distribution can produce per-instance light-index lists in
-separate storage buffers, with scene light records owned by the lighting system.
-Those compute outputs belong alongside instance/scene resources; they should not
-be copied into every material dictionary or packed transform. This change adds
-the `Lighting` boundary only; no light distribution compute pass is implemented.
+Lighting currently supports a scene directional light; no local-light distribution
+compute pass is implemented.
 
 ## Bind-group convention and lifetime
 
@@ -469,7 +491,6 @@ multiple views recorded before the same submission; each such view needs its
 own buffer or aligned range. `upload_changed()` on reflected uniform buffers
 tracks raw bytes, including padding; ordinary `upload()` remains available.
 
-For the six-sphere example, compact packing uses 512 shared-material bytes and
-192 instance-parameter bytes. A glass roughness edit uploads four bytes, advancing
-only time uploads four bytes, and an unchanged paused frame uploads no buffer data.
-See the [audit and implementation measurements](materials_audit.md).
+The [dated material audit](materials_audit.md) records storage and upload
+measurements for the six-sphere example. These describe that setup, not general
+performance guarantees.
