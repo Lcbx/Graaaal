@@ -44,22 +44,28 @@ def test_parameters_reject_invalid_types_and_values(kind, value):
 	with pytest.raises(ValueError): Parameter(kind, value)
 
 
-def test_jinja_child_keeps_default_features_and_adds_typed_parameters(tmp_path):
-	path = tmp_path / "child.shaderlib"
-	path.write_text('''#extends "default_material.shader"
-#block parameters
-{{ super() }}
-{{ parameter("custom", "f32", 0.2) }}
-#endblock
-#block lighting
-return vec3f(p.custom);
-#endblock
+def test_plain_wgsl_keeps_default_features_and_adds_typed_parameters(tmp_path, monkeypatch):
+	monkeypatch.chdir(tmp_path)
+	shader = DefaultMaterialShader(transparent=True, source='''
+struct MaterialParameters { custom: f32, }
+const default_custom = 0.2;
+fn shade(material: Material, p: Params, uv: vec2<f32>, position: vec3<f32>, normal: vec3f, lod: f32) -> vec3<f32> {
+    return vec3f(p.custom);
+}
 ''')
-	shader = DefaultMaterialShader(transparent=True, template=path)
 	source = MaterialLibrary([shader]).source
 	assert "return vec3f(p.custom)" in source
 	assert "fn default_lighting_0" in source and "fn opacity_0" in source
 	assert "custom: f32" in source
+	assert shader.parameters["custom"].default == 0.2
+	assert shader.parameters["alpha_mode"].default == 2
+
+
+def test_material_source_and_template_are_mutually_exclusive():
+	with pytest.raises(ValueError, match="exactly one"):
+		DefaultMaterialShader(template="default_material.shader", source="")
+	with pytest.raises(ValueError, match="exactly one"):
+		MaterialShader(interface=TRANSPARENCY_INTERFACE)
 
 
 def test_child_template_owns_defaults_scopes_and_route_dependent_values(tmp_path):
@@ -160,9 +166,11 @@ def test_gpu_shared_and_inherited_materials_compose_and_update_without_recompili
 		return read(output)
 	before = render()
 	assert np.ptp(before[..., :3]) > 100
-	assert len(renderer.headers.content) == 4  # shared glass pair occupies one record
-	assert len(renderer.draws.draw_batches) == 3  # different instance values stay batched
+	assert len(renderer.headers.content) == 5  # shared glass pair occupies one record
+	assert len(renderer.draws.draw_batches) == 4  # different instance values stay batched
 	shader = renderer.transparency.shader
+	instances[-1].mesh.shader.default_material["stripe_frequency"] = 3.0
+	assert not np.array_equal(before, render())
 	shared["base_color"] = (0.9, 0.05, 0.1, 0.65)
 	instances[3].overrides["opacity_multiplier"] = 0.3
 	instances[2].overrides["grazing_fade"] = False
@@ -172,7 +180,7 @@ def test_gpu_shared_and_inherited_materials_compose_and_update_without_recompili
 	opaque.default_material = {"base_color": (0, 0, 1, 1)}
 	assert not np.array_equal(after, render())
 	# A different instance shader changes routing, retaining shared winner addressing.
-	instances[0].shader = instances[-1].mesh.shader
+	instances[0].shader = instances[4].mesh.shader
 	assert not np.array_equal(after, render())
 	renderer.set_sample_count(5-count)
 	assert np.ptp(render()[..., :3]) > 100

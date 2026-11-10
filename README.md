@@ -19,7 +19,7 @@ and attributes use snake_case. Constants use UPPER_SNAKE_CASE.
 | [ECS API](src/ECS_API.md) | Components, arrays, queries, lifetimes, commands, and scheduling |
 | [Scenes](scenes/README.md) | Running interactive examples and their controls |
 | [Transparency](src/stochastic_transparency.md) | Pass order, reconstruction, and technique limits |
-| [Dictionary materials](src/materials.md) | Shader layouts, shared parameters, instance overrides, and Jinja inheritance |
+| [Dictionary materials](src/materials.md) | Plain WGSL materials, shared parameters, instance overrides, and Jinja inheritance |
 | [Benchmarks](scenes/benchmarks/README.md) | Reproduction commands and dated measurements |
 
 ## Module boundaries

@@ -19,21 +19,25 @@ def renderer(meshes, **kwargs):
 	return MaterialRenderer(meshes=meshes, blue_noise=noise, target_format="rgba8unorm", **kwargs)
 
 
-def test_minimal_shader_requires_no_default_material_fields(tmp_path):
-	path = tmp_path / "unlit.shaderlib"
-	path.write_text('''#extends "material_surface.shaderlib"
-#block parameters
-{{ parameter("color", "vec4f", (0.1, 0.3, 0.8, 0.6)) }}
-#endblock
-#block surface
+def test_minimal_plain_shader_requires_no_default_material_fields():
+	shader = MaterialShader(interface=TRANSPARENCY_INTERFACE, transparent=True, source='''
+struct MaterialParameters { color: vec4f, }
+const default_color = vec4f(0.1, 0.3, 0.8, 0.6);
+fn surface(p: Params) -> Material {
     var m = Material();
     m.base_color = p.color;
     m.opacity_rgb = vec4f(1.0);
     m.flags = vec4u(0u, 1u, 0u, 0u);
     return m;
-#endblock
+}
+fn shade(material: Material, p: Params, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
+    return material.base_color.rgb;
+}
+fn opacity(material: Material, p: Params, alpha: vec3f, uv: vec2f, position: vec3f, lod: f32) -> vec3f {
+    return alpha;
+}
+fn grazing(p: Params) -> vec3f { return vec3f(0.0); }
 ''')
-	shader = MaterialShader(interface=TRANSPARENCY_INTERFACE, template=path, transparent=True)
 	assert set(shader.parameters) == {"color"}
 	r = renderer([MaterialMesh(sphere_vertices(), shader)])
 	world = ECS()
@@ -63,8 +67,8 @@ def test_ecs_versions_mutations_spawn_despawn_and_compaction(monkeypatch):
 	assert pack.call_count == 1
 	refs = world.get(MaterialInstance)
 	initial = {int(owner): int(sid) for owner, sid in zip(refs.owner_ids(refs[entities]), refs[entities].surface_id)}
-	assert all(initial.values()) and len(set(initial.values())) == 5
-	assert dict(zip(map(int, r.draws.entities), map(int, r.metadata.content[:5, 2]))) == initial
+	assert all(initial.values()) and len(set(initial.values())) == len(entities)
+	assert dict(zip(map(int, r.draws.entities), map(int, r.metadata.content[:len(entities), 2]))) == initial
 	assert not adapter.sync()
 	assert pack.call_count == 1
 	world.get(MaterialTransform)[entities[0]].position = Vec3(-2, 3, 0)

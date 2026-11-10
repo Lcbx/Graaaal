@@ -4,6 +4,7 @@ Run: python main.py scenes/material_example.py [--frames 120]
 M toggles MSAA; Space toggles orbit; D replaces the opaque shader's default.
 The bottom-left pair shares a dictionary; the bottom-right transparent sphere
 adds rim lighting through a Jinja child template. No transparency code is copied.
+The top-middle sphere uses the plain WGSL shader below, without templating.
 """
 from pathlib import Path
 from math import cos, sin
@@ -17,6 +18,25 @@ from numpyecs.MaterialRenderer import MaterialMesh, DrawInstance, MaterialRender
 from numpyecs.Math import Camera, Vec3
 from numpyecs.RenderContext import RenderContext
 from numpyecs.TransparencyData import VERTEX_DTYPE
+
+
+STRIPED_SHADER = '''
+// Extra shared parameters are reflected just like other shader structs.
+<MaterialParameters> stripe_color: vec3f;
+<MaterialParameters> stripe_frequency: f32;
+
+const default_stripe_color = vec3f(1.0, 0.15, 0.03);
+const default_stripe_frequency = 8.0;
+
+fn shade(material: Material, p: Params, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
+	// UV-based bands work in both fragment and compute shading without derivatives.
+	let band = smoothstep(-0.2, 0.2, sin(uv.y*p.stripe_frequency*6.2831853));
+	let color = mix(material.base_color.rgb, p.stripe_color, band);
+	var striped = material;
+	striped.base_color = vec4f(color, material.base_color.a);
+	return default_lighting(striped, p, uv, position, normal, lod);
+}
+'''
 
 
 def sphere_vertices():
@@ -36,17 +56,20 @@ def make_instances():
 	glass = DefaultMaterialShader(transparent=True, template=Path(__file__).parent / "shaders/glass_material.shader")
 	rim = DefaultMaterialShader(transparent=True, template=Path(__file__).parent / "shaders/rim_material.shader",
 		default_material={"base_color": (0.25, 0.6, 0.8, 0.45)})
+	striped = DefaultMaterialShader(source=STRIPED_SHADER,
+		default_material={"base_color": (0.08, 0.2, 0.75, 1), "roughness": 0.3})
 	shared_glass = {"base_color": (0.08, 0.35, 0.55, 0.65), "roughness": 0.2, "specular": 3.0,
 		"metallic": 0.65, "ambient": 0.08, "diffuse": 0.35,
 		"grazing_start": 55.0, "grazing_end": 85.0}
 	glass_mesh = MaterialMesh(vertices, glass, material=shared_glass)
 	opaque_mesh = MaterialMesh(vertices, opaque)
 	instances = [
-		DrawInstance(opaque_mesh, position=(-1.3, 2.6, 0), scale=(0.8, 0.8, 0.8)),
-		DrawInstance(opaque_mesh, material={"base_color": (0.15, 0.65, 0.2, 1)}, position=(1.3, 2.6, 0), scale=(0.8, 0.8, 0.8)),
+		DrawInstance(opaque_mesh, position=(-2.6, 2.6, 0), scale=(0.8, 0.8, 0.8)),
+		DrawInstance(opaque_mesh, material={"base_color": (0.15, 0.65, 0.2, 1)}, position=(2.6, 2.6, 0), scale=(0.8, 0.8, 0.8)),
 		DrawInstance(glass_mesh, overrides={"grazing_fade": True}, position=(-2.6, 0, 0)),
 		DrawInstance(glass_mesh, overrides={"tint": (1, 0.7, 0.45, 1)}, position=(0, 0, 0)),
 		DrawInstance(MaterialMesh(vertices, rim), position=(2.6, 0, 0)),
+		DrawInstance(MaterialMesh(vertices, striped), position=(0, 2.6, 0), scale=(0.8, 0.8, 0.8)),
 	]
 	return instances, shared_glass, opaque
 
@@ -73,6 +96,7 @@ def run_scene():
 	renderer = MaterialRenderer(meshes=meshes)
 	adapter = EcsMaterialAdapter(renderer, world)
 	overrides = world.get(MaterialInstance)[entities].overrides
+	striped = meshes[-1].shader.default_material
 	camera = Camera((0, 1.3, 9), (0, 1.3, 0), (0, 1, 0), 50, near=0.05, far=100)
 	orbit, angle, alternate = False, 0.0, False
 	def on_char(code):
@@ -89,7 +113,7 @@ def run_scene():
 		width, height = imgui.get_io().display_size
 		vp = camera.view() @ camera.projection(width/height)
 		labels = ("Default material (D)", "Explicit green override", "Shared glass A: instance fade",
-			"Shared glass B: instance tint", "Inherited rim shader")
+			"Shared glass B: instance tint", "Inherited rim shader", "Inline striped shader")
 		transforms = world.get(MaterialTransform)[entities]
 		for position, scale, label in zip(transforms.position, transforms.scale, labels):
 			anchor = np.array((*position, 1.0))
@@ -100,10 +124,10 @@ def run_scene():
 			x, y = (xy[0]*0.5+0.5)*width, (0.5-xy[1]*0.5)*height
 			imgui.get_background_draw_list().add_text((x-imgui.calc_text_size(label).x/2, y), 0xffffffff, label)
 		imgui.set_next_window_pos((12, 12), imgui.Cond_.first_use_ever)
-		imgui.set_next_window_size((340, 330), imgui.Cond_.first_use_ever)
+		imgui.set_next_window_size((340, 410), imgui.Cond_.first_use_ever)
 		imgui.begin("Dictionary materials")
 		try:
-			imgui.text_wrapped("Five spheres: two opaque above, three transparent below. The bottom-left and bottom-middle spheres share the sliders below.")
+			imgui.text_wrapped("Six spheres: three opaque above, three transparent below. The bottom-left and bottom-middle spheres share the sliders below.")
 			changed, value = imgui.slider_float("Shared roughness", shared["roughness"], 0.02, 1)
 			if changed:
 				shared["roughness"] = value
@@ -120,7 +144,17 @@ def run_scene():
 			if changed:
 				overrides[3]["opacity_multiplier"] = value
 				adapter.touch_materials()
-			imgui.text_wrapped("D changes only the top-left sphere: it inherits the default. Top-right has an explicit green material. Bottom-right adds inherited rim lighting. M: MSAA; Space: orbit.")
+			imgui.separator()
+			imgui.text("Top-middle: shader written in this script")
+			changed, value = imgui.slider_float("Stripe frequency", striped.get("stripe_frequency", 8.0), 1, 20)
+			if changed:
+				striped["stripe_frequency"] = value
+				adapter.touch_materials()
+			changed, value = imgui.color_edit3("Stripe color", striped.get("stripe_color", (1.0, 0.15, 0.03)))
+			if changed:
+				striped["stripe_color"] = tuple(value)
+				adapter.touch_materials()
+			imgui.text_wrapped("D changes only the top-left default. Top-right has an explicit green material. Bottom-right adds inherited rim lighting. M: MSAA; Space: orbit.")
 		finally: imgui.end()
 	RenderContext.subscribe_event("char", on_char)
 	try:

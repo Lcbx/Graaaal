@@ -22,10 +22,14 @@ TRANSPARENCY_INTERFACE = MaterialInterface(
 
 
 class DefaultMaterialShader(MaterialShader):
-	def __init__(self, *, transparent=False, template=None, default_material=None):
+	def __init__(self, *, transparent=False, template=None, source=None, filepath=None, default_material=None):
 		super().__init__(interface=TRANSPARENCY_INTERFACE, transparent=transparent,
-			template=template or "default_material.shader",
+			template=template if any(value is not None for value in (template, source, filepath)) else "default_material.shader",
+			source=source, filepath=filepath,
 			default_material={} if default_material is None else default_material)
+
+	def source_template(self):
+		return "default_material.shader"
 
 	def validate_resolved(self, values):
 		if not 0 <= np.float32(values["grazing_start"]) < np.float32(values["grazing_end"]) <= 90:

@@ -64,9 +64,11 @@ class MaterialInterface:
 @dataclass(eq=False)
 class MaterialShader:
 	interface: MaterialInterface
-	template: str | Path
+	template: str | Path | None = None
 	default_material: dict = field(default_factory=dict)
 	transparent: bool = False
+	source: str | None = field(default=None, kw_only=True)
+	filepath: str | Path | None = field(default=None, kw_only=True)
 	_parameters: dict = field(init=False, repr=False)
 
 	@property
@@ -75,13 +77,24 @@ class MaterialShader:
 
 	def __post_init__(self):
 		if type(self.transparent) is not bool: raise ValueError("transparent must be boolean")
-		path = Path(self.template).resolve()
-		env = Environment(loader=FileSystemLoader([str(path.parent), str(SHADERS)]),
+		if sum(value is not None for value in (self.template, self.source, self.filepath)) != 1:
+			raise ValueError("Supply exactly one of template, source or filepath")
+		self._wgsl = None
+		if self.template is None:
+			from .MaterialSource import MaterialSource
+			self._wgsl = MaterialSource(self.source if self.source is not None else Path(self.filepath).read_text(encoding="utf-8"))
+		base = self.template if self.template is not None else self.source_template()
+		path = None if base is None else Path(base).resolve()
+		env = Environment(loader=FileSystemLoader(([str(path.parent)] if path else [])+[str(SHADERS)]),
 			undefined=StrictUndefined, autoescape=False, line_statement_prefix="#")
-		self._template = env.get_template(path.name)
+		self._template = None if path is None else env.get_template(path.name)
 		_, declarations = self._render(0)
 		self._parameters = MappingProxyType(declarations)
 		self.validate(self.default_material)
+
+	def source_template(self):
+		"""Optional adapter defaults for plain WGSL; generic shaders own all hooks."""
+		return None
 
 	def _render(self, prefix):
 		declarations = {}
@@ -93,7 +106,10 @@ class MaterialShader:
 				raise ValueError(f"Inherited parameter {name} requires {declarations[name].kind}")
 			declarations[name] = value
 			return ""
-		code = self._template.render(PREFIX=prefix, TRANSPARENT=self.transparent, parameter=parameter)
+		code = "" if self._template is None else self._template.render(PREFIX=prefix, TRANSPARENT=self.transparent, parameter=parameter)
+		if self._wgsl is not None:
+			declarations = self._wgsl.declarations(declarations)
+			code = self._wgsl.link(prefix, code)
 		return code, declarations
 
 	def render(self, prefix):
@@ -141,12 +157,12 @@ class MaterialLibrary:
 		self.source = self._source()
 
 	def _layout_keys(self):
-		return tuple((s.transparent, str(s.template), s.interface, tuple((name, p.kind, p.scope)
+		return tuple((s.transparent, str(s.template), s.source, str(s.filepath), s.interface, tuple((name, p.kind, p.scope)
 			for name, p in s.parameters.items())) for s in self.shaders)
 
 	def pack(self, bindings):
 		if self._layouts != self._layout_keys():
-			raise ValueError("Shader layout, template or routing changed; create a new MaterialLibrary")
+			raise ValueError("Shader layout, source or routing changed; create a new MaterialLibrary")
 		headers, shared, instances, ids, offsets, seen = [], [], [], [], [], {}
 		defaults = {}
 		for binding in bindings:

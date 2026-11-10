@@ -7,7 +7,7 @@ import re
 import time
 from collections import OrderedDict, defaultdict
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import isfinite
 from operator import index as integer_index
 from threading import Lock
@@ -22,6 +22,7 @@ from wgpu import BufferUsage, TextureUsage  # type: ignore[import-untyped]
 from wgpu.utils.glfw_present_info import get_glfw_present_info  # type: ignore[import-untyped]
 
 from .utils import higher_pow2
+from .ShaderSyntax import ShaderSyntax, SourceSpan, strip_comments
 
 
 Color = tuple[float, float, float, float]
@@ -1250,6 +1251,7 @@ class ShaderField:
 	name: str
 	type_name: str
 	attributes: tuple[ShaderAttribute, ...] = ()
+	name_span: SourceSpan | None = field(default=None, compare=False, repr=False)
 
 	def attribute(self, name: str) -> ShaderAttribute | None:
 		return next(
@@ -1277,10 +1279,12 @@ class BindingInfo:
 @dataclass(frozen=True)
 class EntryPointInfo:
 	name: str
-	stage: str
+	stage: str | None
 	parameters: tuple[ShaderField, ...]
 	return_type: str | None
 	return_attributes: tuple[ShaderAttribute, ...]
+	name_span: SourceSpan | None = field(default=None, compare=False, repr=False)
+	body_start: int | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -1323,8 +1327,7 @@ def _round_up(alignment: int, value: int) -> int:
 	return (value + alignment - 1) // alignment * alignment
 
 def _strip_wgsl_comments(source: str) -> str:
-	source = re.sub(r"/\*[\s\S]*?\*/", "", source)
-	return re.sub(r"//.*", "", source)
+	return strip_comments(source)
 
 def _normalise_wgsl_type(type_name: str) -> str:
 	type_name = re.sub(r"\s+", "", type_name)
@@ -1386,7 +1389,7 @@ class ShaderSource:
 	_parameter_pattern: ClassVar[re.Pattern[str]] = re.compile(
 		rf"(?P<attributes>{_ATTRIBUTES})(?P<name>\w+)\s*:\s*"
 		rf"(?P<type>.+?)" 
-		rf"(?=,\s*(?:{_ATTRIBUTE}\s*)*\w+\s*:|\s*$)",
+		rf"(?=,\s*(?:{_ATTRIBUTE}\s*)*\w+\s*:|,\s*$|\s*$)",
 		re.S,
 	)
 
@@ -1403,13 +1406,36 @@ class ShaderSource:
 
 	def __init__(self, source: str):
 
-		code = _strip_wgsl_comments(source)
+		# Reflect the expanded text so every recorded span addresses .source,
+		# including fields introduced through the compact struct declaration DSL.
+		code = self._process_dsl(_strip_wgsl_comments(source))
+		self.source = code
 		self.structs  = self._parse_structs(code)
 		self.bindings = self._parse_bindings(code)
-		self.entry_points = self._parse_entry_points(code)
-		self.source = self._process_dsl(code)
-		#print(self.source)
+		# Material libraries also reflect ordinary functions. Pipeline entry points
+		# remain restricted to functions carrying a vertex/fragment/compute stage.
+		self.functions = self._parse_functions(code)
+		self.entry_points = {name: function for name, function in self.functions.items() if function.stage is not None}
 		self.uniforms = self._uniforms()
+		self._syntax = None
+
+	def _source_syntax(self):
+		if self._syntax is None:
+			self._syntax = ShaderSyntax(self.source, self.functions, self.structs)
+		return self._syntax
+
+	@property
+	def declarations(self):
+		"""Module declarations and initializers, with spans in the expanded source."""
+		return self._source_syntax().declarations
+
+	def rename_symbols(self, names: dict[str, str]) -> str:
+		"""Return source with module/free names renamed, preserving lexical scope.
+
+		Locals which would capture a generated name receive a fresh name. Struct
+		members, attributes and comment text are not treated as module references.
+		"""
+		return self._source_syntax().rename_symbols(names)
 
 	def used_bindings(self, entries):
 		"""Conservative function-call traversal for automatic pipeline layouts.
@@ -1417,17 +1443,7 @@ class ShaderSource:
 		Explicit ShaderInterface.active_bindings handles interfaces requiring
 		more precise control, such as constants eliminating conditional code.
 		"""
-		functions = {}
-		for match in re.finditer(r"\bfn\s+(\w+)\s*\(", self.source):
-			start = self.source.find("{", match.end())
-			if start < 0: continue
-			depth, end = 1, start + 1
-			while end < len(self.source) and depth:
-				depth += (self.source[end] == "{") - (self.source[end] == "}")
-				end += 1
-			body = self.source[start:end]
-			functions[match.group(1)] = (set(re.findall(r"\b\w+\b", body)),
-				set(re.findall(r"\b(\w+)\s*\(", body)))
+		functions = self._source_syntax().function_references()
 		pending, visited, used = list(filter(None, entries)), set(), set()
 		while pending:
 			name = pending.pop()
@@ -1522,7 +1538,9 @@ class ShaderSource:
 				fields.append( ShaderField(
 					name=field_match.group("name"),
 					type_name=field_match.group("type").strip(),
-					attributes=tuple(attrs.values())
+					attributes=tuple(attrs.values()),
+					name_span=SourceSpan(struct_match.start("body")+field_match.start("name"),
+						struct_match.start("body")+field_match.end("name")),
 				))
 			structs[struct_name] = ShaderStruct(struct_name, tuple(fields))
 			
@@ -1555,7 +1573,7 @@ class ShaderSource:
 		return bindings
 
 
-	def _parse_entry_points(self, source: str) -> dict[str, EntryPointInfo]:
+	def _parse_functions(self, source: str) -> dict[str, EntryPointInfo]:
 		entry_points = {}
 
 		for match in self._entry_pattern.finditer(source):
@@ -1566,11 +1584,8 @@ class ShaderSource:
 				None,
 			)
 
-			if stage is None:
-				continue
-
 			parameters = tuple(
-				self._field(parameter)
+				self._field(parameter, offset=match.start("parameters"))
 				for parameter in self._parameter_pattern.finditer(match.group("parameters"))
 			)
 
@@ -1585,6 +1600,8 @@ class ShaderSource:
 				return_attributes=tuple(
 					self._attributes(match.group("return_attributes") or "").values()
 				),
+				name_span=SourceSpan(*match.span("name")),
+				body_start=match.end()-1,
 			)
 
 		return entry_points
@@ -1613,7 +1630,6 @@ class ShaderSource:
 		injected_wgsl = []
 		
 		for struct_name, fields in dsl_fields.items():
-			parsed_fields = []
 			lines = [f"struct {struct_name} {{"]
 			
 			is_io_struct = "Input" in struct_name or "Output" in struct_name
@@ -1631,16 +1647,8 @@ class ShaderSource:
 						loc_idx = attrs["location"].int_value() + 1
 						
 				lines.append(f"	{attr_str}{' ' if attr_str else ''}{field_name}: {wgsl_type},")
-				parsed_fields.append(ShaderField(
-					name=field_name,
-					type_name=wgsl_type,
-					attributes=tuple(attrs.values())
-				))
-				
 			lines.append("};")
 			injected_wgsl.append("\n".join(lines))
-			
-			self.structs[struct_name] = ShaderStruct(struct_name, tuple(parsed_fields))
 
 		return "\n\n".join(injected_wgsl) + "\n\n" + source
 
@@ -1655,11 +1663,12 @@ class ShaderSource:
 
 		return match.group("storage"), match.group("access")
 
-	def _field(self, match: re.Match) -> ShaderField:
+	def _field(self, match: re.Match, *, offset=0) -> ShaderField:
 		return ShaderField(
 			name=match.group("name"),
 			type_name=self._type_name(match.group("type")),
 			attributes=tuple(self._attributes(match.group("attributes")).values()),
+			name_span=SourceSpan(offset+match.start("name"), offset+match.end("name")),
 		)
 
 	def _attributes(self, text: str) -> dict[str, ShaderAttribute]:
