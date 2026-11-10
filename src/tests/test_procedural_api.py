@@ -113,6 +113,7 @@ def frame_state():
     oit = transparency.TransparencyPass.__new__(transparency.TransparencyPass)
     oit.size = (32, 16)
     oit.noise_scale = 1.0
+    oit.sample_count = 1
     oit.noise_mode = "uv_blue_lerp"
     oit.uniforms = NS(content={}, upload_changed=Mock())
     oit.lighting_uniforms = NS(content={}, upload_changed=Mock())

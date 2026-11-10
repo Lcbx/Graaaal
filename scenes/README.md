@@ -81,6 +81,28 @@ projection for meshes with unsuitable UVs. Hierarchies build once on first use.
 **MSAA (M)** smooths silhouettes and adds four stochastic samples at extra GPU and
 memory cost. It works with every reconstruction kernel, including 1x1.
 Sampling is static; there is no TAA or frame history.
+The noise-cell slider stores the 1x width; 4x MSAA halves the effective target
+(1 px becomes 0.5 px), and disabling MSAA restores the chosen width. The effective
+target is shown below the slider. Sizes remain approximate at oblique angles.
+**UV footprint balance** is an experimental compromise: 0 keeps maximum-derivative
+sizing (default), 0.5 uses a geometric mean, and 1 uses the minimum estimate.
+Increasing it makes tilted grain finer along both axes, including subpixel cells
+along the compressed axis. It applies to UV modes and retains existing fallback
+and triplanar behavior. See the [tilt diagnostic](../src/stochastic_transparency.md#uv-footprint-compromise-experiment)
+for measured screen-space autocorrelation widths and limitations.
+The balancing shader feature is disabled by default. Check **Enable UV footprint
+balancing** to compile/cache it and show the editable UV slider. Its value can be
+adjusted in any noise mode, but only affects UV modes. Settings are separated by
+feature; disabled features hide their parameters. Selecting the 1 x 1 kernel
+hides the reconstruction tolerances, and disabling grazing fade hides its angles.
+
+**Anchored blue: pixel lattice** is available through the noise selector or N.
+It reads pixel-sized grain around rest-space coarse anchors, without requiring
+UVs. Its anchor target defaults to 24 pixels and shift subdivisions to 4. Higher
+subdivisions reduce close-layer correlation at the cost of more shift seams.
+The mode keeps grain much more isotropic at tilt, but can reshuffle more during
+orbit/dolly. It is experimental; UV CDF lerp remains the default. See the
+[anchored noise audit](../src/stochastic_transparency.md#pixel-lattice-anchored-blue).
 
 "Fade grazing surfaces" starts enabled. Its two editable angles default to
 83 degrees (start) and 86 degrees (completely faded). Angles are measured from
@@ -103,7 +125,7 @@ follows its packed instance order. It builds 512x512 material texture layers wit
 sampling and alpha-aware mipmaps. The tree's `Simple_foliage.001` material is
 explicitly treated as MASK, with coverage-preserving mips and sharpened alpha
 shared across guide, transmittance and selection. UV noise falls back to object
-hashing for missing or degenerate UVs. Grain size defaults to 1 pixel;
+hashing for missing or degenerate UVs. The grain target defaults to 1 pixel at 1x;
 `transparency.set_noise_scale(2)` makes it coarser. Repeated UV islands can correlate
 overlapping layers; compare object-hash or triplanar modes on those assets.
 See the [sampling notes](../src/stochastic_transparency.md#acceptance-and-winner-data)

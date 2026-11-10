@@ -688,6 +688,34 @@ def test_gpu_fixed_footprint_is_distance_and_noise_independent(gpu_scene):
 	np.testing.assert_array_equal(read_texture(output, np.uint8, 4), before)
 
 
+def test_gpu_noise_footprint_balance_validates_without_changing_guides_or_resources(gpu_scene):
+	renderer, _ = gpu_scene
+	oit = renderer.transparency
+	render_frame(renderer)
+	transmittance = read_texture(oit.transmittance, np.float16, 4)
+	guide = read_texture(oit.transparent_guide, np.float16, 4)
+	compiled, target, options = oit.shader, oit.winner, oit.bilateral_filter
+	assert not oit.noise_footprint_balancing
+	assert "let fmin" not in compiled.info.source
+	assert oit.set_noise_footprint_balancing(True)
+	assert not oit.set_noise_footprint_balancing(True)
+	assert "let fmin" in oit.shader.info.source
+	assert oit.winner is target
+	balanced_shader = oit.shader
+	for invalid in (-0.1, 1.1, float("nan"), float("inf"), True, "0.5"):
+		with pytest.raises(ValueError): oit.set_noise_footprint_balance(invalid)
+		assert oit.noise_footprint_balance == 0
+	for balance in (0.5, 1.0, 0.0):
+		oit.set_noise_footprint_balance(balance)
+		render_frame(renderer)
+		assert oit.uniforms.content["noise_footprint_balance"] == balance
+		np.testing.assert_array_equal(read_texture(oit.transmittance, np.float16, 4), transmittance)
+		np.testing.assert_array_equal(read_texture(oit.transparent_guide, np.float16, 4), guide)
+		assert oit.shader is balanced_shader and oit.winner is target and oit.bilateral_filter is options
+	assert oit.set_noise_footprint_balancing(False)
+	assert oit.shader is compiled and oit.winner is target
+
+
 def test_gpu_noise_scale_changes_sampling_without_affecting_opacity_or_filter(gpu_scene):
 	renderer, _ = gpu_scene
 	render_frame(renderer)
@@ -709,7 +737,7 @@ def test_gpu_noise_scale_changes_sampling_without_affecting_opacity_or_filter(gp
 
 
 @pytest.mark.parametrize("usable_uvs", [False, True])
-@pytest.mark.parametrize("noise_mode", ["uv_blue_lerp", "uv_blue_correlated", "triplanar_blue", "triplanar_correlated"])
+@pytest.mark.parametrize("noise_mode", ["uv_blue_lerp", "uv_blue_correlated", "triplanar_blue", "triplanar_correlated", "anchored_blue"])
 def test_gpu_curved_mesh_noise_tracks_pan_and_rigid_object_transforms(gpu_scene, monkeypatch, usable_uvs, noise_mode):
 	renderer, _ = gpu_scene
 	primitives, materials, images, _ = make_layers()

@@ -185,6 +185,13 @@ def test_gpu_shared_and_inherited_materials_compose_and_update_without_recompili
 	assert not np.array_equal(after, render())
 	renderer.set_sample_count(5-count)
 	assert np.ptp(render()[..., :3]) > 100
+	baseline = renderer.transparency.shader
+	renderer.set_noise_footprint_balancing(True)
+	assert renderer.transparency.shader is not baseline
+	assert renderer.draws.shaders[1]["main"].pipeline is renderer.geometry[1].render_shader["main"].pipeline
+	assert np.ptp(render()[..., :3]) > 100
+	renderer.set_noise_footprint_balancing(False)
+	assert renderer.transparency.shader is baseline
 
 
 def test_example_shared_highlights_are_visible_and_default_replacement_is_local():

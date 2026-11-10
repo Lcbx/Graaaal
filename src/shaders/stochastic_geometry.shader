@@ -166,12 +166,28 @@ fn select_winner(input: VertexOutput, @builtin(front_facing) front: bool, @built
 	// through camera motion and instance transforms, without triangle reseeding.
 	// Opposite physical sides use separate seeds on two-sided/closed surfaces.
 	var seed = hash_u32(info.z ^ select(0xa511e9b3u, 0u, front));
+	let mode = u32(frame.clip.w);
 #if PARAMS.get("sample_count", 1) > 1
-	// Static per-sample decorrelation; no frame counter or temporal history.
-	seed = hash_u32(seed ^ hash_u32(sample + 0x68bc21ebu));
+	// Anchored blue reads one spatial field at the native sample positions.
+	if mode != 7u { seed = hash_u32(seed ^ hash_u32(sample + 0x68bc21ebu)); }
 #endif
-	let u = surface_noise_threshold(blue_noise, noise_hierarchy, input.local, dpdxFine(input.local), dpdyFine(input.local), input.local_normal,
-		input.uv, dpdxFine(input.uv), dpdyFine(input.uv), frame.clip.z, seed, u32(frame.clip.w));
+	let local_dx = dpdxFine(input.local);
+	let local_dy = dpdyFine(input.local);
+	let uv_dx = dpdxFine(input.uv);
+	let uv_dy = dpdyFine(input.uv);
+	var u: f32;
+	if mode == 7u {
+		u = anchored_blue_threshold(blue_noise, input.position.xy, input.local, local_dx, local_dy,
+			frame.clip.z, seed, frame.noise_anchor.x, frame.noise_anchor.y);
+	} else {
+#if FEATURES.NOISE_FOOTPRINT_BALANCE
+		u = surface_noise_threshold_balanced(blue_noise, noise_hierarchy, input.local, local_dx, local_dy, input.local_normal,
+			input.uv, uv_dx, uv_dy, frame.clip.z, seed, mode, frame.noise_footprint_balance);
+#else
+		u = surface_noise_threshold(blue_noise, noise_hierarchy, input.local, local_dx, local_dy, input.local_normal,
+			input.uv, uv_dx, uv_dy, frame.clip.z, seed, mode);
+#endif
+	}
 	// Selection has its own writable depth; reject opaque occlusion explicitly.
 	if input.position.z >= textureLoad(opaque_depth, pixel, i32(sample)) { discard; }
 	if !front && material.flags.y == 0u { discard; }

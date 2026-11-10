@@ -30,7 +30,7 @@ DEBUG_VIEWS = ("final", "transmittance", "winner", "reconstruction", "filter_sup
 KERNEL_SIZES = (1, 3, 5, 9)
 MSAA_SAMPLE_COUNTS = (1, 4)
 NOISE_MODES = ("object_hash", "uv_blue_lerp", "uv_blue_pick", "uv_bayer",
-	"uv_blue_correlated", "triplanar_blue", "triplanar_correlated")
+	"uv_blue_correlated", "triplanar_blue", "triplanar_correlated", "anchored_blue")
 
 
 @dataclass(frozen=True)
@@ -112,16 +112,20 @@ class TransparencyPass:
 	"""
 	def __init__(self, *, materials, base_textures, vertices, blue_noise=None,
 		material_sampler=None, bilateral_filter=None, target_format=None, noise_scale=1.0, noise_mode="uv_blue_lerp",
-		grazing_fade=None, sample_count=1,
+		grazing_fade=None, sample_count=1, noise_footprint_balance=0.0, noise_footprint_balancing=False,
+		noise_anchor_pixels=24.0, noise_anchor_subdivisions=4,
 		opaque_color=None, opaque_depth=None, material_source=None, material_library=None,
 		geometry_shader=None, shading_shader=None, compose_shader=None):
 		if (geometry_shader is None) != (shading_shader is None):
 			raise ValueError("Custom deformation requires matched geometry and shading shaders")
 		if type(sample_count) is not int or sample_count not in MSAA_SAMPLE_COUNTS:
 			raise ValueError("Transparency sample_count must be 1 or 4")
+		if type(noise_footprint_balancing) is not bool:
+			raise ValueError("Noise footprint balancing must be boolean")
 		target_format = target_format or getattr(RenderContext, "presentation_format", "rgba8unorm")
 		self.target_format = target_format
 		self.sample_count = sample_count
+		self.noise_footprint_balancing = noise_footprint_balancing
 		self._custom_shaders = (geometry_shader, shading_shader, compose_shader)
 		self._material_source = material_source
 		self._material_library = material_library
@@ -142,6 +146,8 @@ class TransparencyPass:
 		self._geometries = []
 		self.size = None
 		self.set_noise_scale(noise_scale)
+		self.set_noise_footprint_balance(noise_footprint_balance)
+		self.set_noise_anchor(noise_anchor_pixels, noise_anchor_subdivisions)
 		self.set_noise_mode(noise_mode)
 		self.set_grazing_fade(grazing_fade if grazing_fade is not None else GrazingFade())
 		self.bilateral_uniforms = self.compose_shader.uniform_buffer("bilateral")
@@ -163,11 +169,13 @@ class TransparencyPass:
 			self.set_opaque_inputs(opaque_color, opaque_depth)
 
 	def _geometry_shader(self, count):
-		if count not in self._geometry_shaders:
-			self._geometry_shaders[count] = self._custom_shaders[0] or Shader(
+		key = (count, self.noise_footprint_balancing)
+		if key not in self._geometry_shaders:
+			self._geometry_shaders[key] = self._custom_shaders[0] or Shader(
 				filepath=str(SHADERS / "stochastic_geometry.shader"),
+				features=("NOISE_FOOTPRINT_BALANCE",) if self.noise_footprint_balancing else (),
 				params={"material_source": self._material_source, "sample_count": count, "material_library": self._material_library})
-		return self._geometry_shaders[count]
+		return self._geometry_shaders[key]
 
 	@property
 	def depth_shader(self):
@@ -188,17 +196,18 @@ class TransparencyPass:
 		return self._pipeline_layouts[key]
 
 	def _shader_set(self, count):
-		if count not in self._shader_sets:
+		key = (count, self.noise_footprint_balancing)
+		if key not in self._shader_sets:
 			geometry, shading, compose = self._custom_shaders
 			params = {"material_source": self._material_source, "sample_count": count,
 				"material_library": self._material_library}
-			self._shader_sets[count] = (
+			self._shader_sets[key] = (
 				self._geometry_shader(count),
 				shading or Shader(filepath=str(SHADERS / "stochastic_shade.shader"), params=params),
 				compose or Shader(filepath=str(SHADERS / "stochastic_compose.shader"),
 					params={"srgb_surface": self.target_format.endswith("-srgb"), "sample_count": count}),
 			)
-		return self._shader_sets[count]
+		return self._shader_sets[key]
 
 	def _activate_shaders(self, count):
 		self.shader, self.shading_shader, self.compose_shader = self._shader_set(count)
@@ -215,7 +224,13 @@ class TransparencyPass:
 			raise ValueError("External opaque inputs must match the selected sample count")
 		self._activate_shaders(count)
 		self.sample_count = count
+		self.set_noise_scale(self.noise_scale)
+		self._rebuild_geometry()
+		return True
+
+	def _rebuild_geometry(self, *, preserve_targets=False):
 		size, geometries = self.size, self._geometries
+		targets = self._targets if preserve_targets and size is not None else None
 		self.size = None
 		self._geometries, self._transparent_geometries = [], []
 		for geometry in geometries:
@@ -233,8 +248,7 @@ class TransparencyPass:
 			layout=self._pipeline_layout(self.compose_shader, "fullscreen", "compose"))
 		self.shade_frame = self._frame_group(self.shading_shader)
 		if size is not None:
-			self.resize(size)
-		return True
+			self.resize(size, targets=targets)
 
 	def create_geometry_passes(self, metadata, *, transparent, instances,
 		geometry_resources=None, shading_resources=None, geometry_bindings=(), shading_bindings=()):
@@ -298,17 +312,53 @@ class TransparencyPass:
 		self.bilateral_uniforms.upload_changed()
 		self.bilateral_filter = options
 
+	@property
+	def effective_noise_scale(self):
+		"""Approximate cell width after MSAA sample-density adjustment."""
+		return self.noise_scale / self.sample_count**0.5
+
 	def set_noise_scale(self, pixels):
-		"""Set approximate surface noise-cell width in pixels (default 1).
+		"""Set approximate 1x surface noise-cell width in pixels (default 1).
 
 		Larger cells trade coarser grain for fewer threshold changes under motion.
-		No history or geometry preprocessing is required.
+		4x MSAA halves the effective width; the chosen base value is preserved.
 		"""
 		limits = np.finfo(np.float32)
 		if not np.isfinite(pixels) or not float(limits.tiny) <= pixels <= float(limits.max):
 			raise ValueError("Noise scale must be a finite, positive normalized float32")
 		self.noise_scale = float(pixels)
-		self.uniforms.content["clip"][..., 2] = pixels
+		self.uniforms.content["clip"][..., 2] = self.effective_noise_scale
+		self.uniforms.upload_changed()
+
+	def set_noise_footprint_balance(self, value):
+		"""UV footprint blend: 0=max derivative, .5=geometric mean, 1=min."""
+		if (isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.integer, np.floating))
+			or not np.isfinite(value) or not 0 <= value <= 1):
+			raise ValueError("Noise footprint balance must be finite and between 0 and 1")
+		self.noise_footprint_balance = float(value)
+		self.uniforms.content["noise_footprint_balance"] = self.noise_footprint_balance
+		self.uniforms.upload_changed()
+
+	def set_noise_footprint_balancing(self, enabled):
+		"""Compile/cache the optional UV compromise feature; disabled by default."""
+		if type(enabled) is not bool: raise ValueError("Noise footprint balancing must be boolean")
+		if enabled == self.noise_footprint_balancing: return False
+		if any(shader is not None for shader in self._custom_shaders):
+			raise ValueError("Runtime shader-feature switching requires the default shader set")
+		self.noise_footprint_balancing = enabled
+		self._activate_shaders(self.sample_count)
+		self._rebuild_geometry(preserve_targets=True)
+		return True
+
+	def set_noise_anchor(self, pixels=24.0, subdivisions=4):
+		"""Coarse anchor target and independent shift cells per coarse-cell axis."""
+		if (not isinstance(pixels, (int, float, np.integer, np.floating)) or isinstance(pixels, (bool, np.bool_))
+			or not np.isfinite(pixels) or not 1 <= pixels <= 256):
+			raise ValueError("Noise anchor size must be finite and between 1 and 256 pixels")
+		if type(subdivisions) is not int or not 1 <= subdivisions <= 32:
+			raise ValueError("Noise anchor subdivisions must be an integer between 1 and 32")
+		self.noise_anchor_pixels, self.noise_anchor_subdivisions = float(pixels), subdivisions
+		self.uniforms.content["noise_anchor"] = (pixels, subdivisions, 0, 0)
 		self.uniforms.upload_changed()
 
 	def set_noise_mode(self, mode):
@@ -450,7 +500,7 @@ class TransparencyPass:
 		if not np.isfinite(seconds) or abs(seconds) > float(np.finfo(np.float32).max):
 			raise ValueError("Frame time must be finite float32 seconds")
 		values = dict(view=view, proj=projection,
-			camera_position=(*position, 1), clip=(near, far, self.noise_scale, NOISE_MODES.index(self.noise_mode)), time=seconds).items()
+			camera_position=(*position, 1), clip=(near, far, self.effective_noise_scale, NOISE_MODES.index(self.noise_mode)), time=seconds).items()
 		for name, value in values: self.uniforms.content[name] = value
 		if "light_dir" in (getattr(getattr(self.uniforms.content, "dtype", None), "names", ()) or ()):
 			self.uniforms.content["light_dir"] = (*light, 0)

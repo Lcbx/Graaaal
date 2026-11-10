@@ -138,6 +138,62 @@ fn triplanar_noise_threshold(noise: texture_2d<f32>, hierarchy: texture_2d<f32>,
 fn surface_noise_threshold(noise: texture_2d<f32>, hierarchy: texture_2d<f32>,
 	position: vec3f, dx: vec3f, dy: vec3f, normal: vec3f,
 	uv: vec2f, uv_dx: vec2f, uv_dy: vec2f, pixels: f32, seed: u32, mode: u32) -> f32 {
+	return surface_noise_threshold_balanced(noise, hierarchy, position, dx, dy, normal,
+		uv, uv_dx, uv_dy, pixels, seed, mode, 0.0);
+}
+
+fn anchored_blue_octave(noise: texture_2d<f32>, pixel: vec2f, local: vec3f,
+	inverse_x: vec3f, inverse_y: vec3f, octave: i32, pixels: f32, subdivisions: f32, seed: u32) -> f32 {
+	let width = exp2(f32(octave));
+	let center = (floor(local/width)+vec3f(0.5))*width;
+	let delta = center-local;
+	// First-order projection of a rest-space cell center on the deformed surface.
+	let anchor = round(pixel+vec2f(dot(inverse_x, delta), dot(inverse_y, delta)));
+	let fine = bitcast<vec3u>(floor(local*(subdivisions/width))+vec3f(0.0));
+	let phase = hash3d_u32(fine, seed ^ hash_u32(bitcast<u32>(octave)) ^ 0x4f1bbcdcu);
+	let dimensions = textureDimensions(noise);
+	let shift = vec2u(phase, hash_u32(phase ^ 0x68bc21ebu)) % dimensions;
+	// Grain is measured in screen pixels independently of the coarse anchor grid.
+	let cell = floor((pixel-anchor)/max(pixels, 1e-8));
+	let index = (wrap_noise_cell(cell, dimensions)+shift) % dimensions;
+	return textureLoad(noise, vec2i(index), 0).r;
+}
+
+fn anchored_blue_threshold(noise: texture_2d<f32>, pixel: vec2f, local: vec3f, dx: vec3f, dy: vec3f,
+	pixels: f32, seed: u32, anchor_pixels: f32, subdivisions: f32) -> f32 {
+	let scale = max(max(abs(dx.x), max(abs(dx.y), abs(dx.z))),
+		max(abs(dy.x), max(abs(dy.y), abs(dy.z))));
+	if !(scale > 1e-20 && scale < 1e20) {
+		return object_noise_threshold(noise, local, dx, dy, pixels, seed);
+	}
+	let x = dx/scale;
+	let y = dy/scale;
+	let aa = dot(x, x);
+	let ab = dot(x, y);
+	let bb = dot(y, y);
+	let area_vector = cross(x, y);
+	let determinant = dot(area_vector, area_vector);
+	// A near-singular Gram matrix cannot provide a stable screen-space anchor.
+	if !(determinant > 1e-8) {
+		return object_noise_threshold(noise, local, dx, dy, pixels, seed);
+	}
+	let inverse_x = (bb*x-ab*y)/(determinant*scale);
+	let inverse_y = (aa*y-ab*x)/(determinant*scale);
+	let area_footprint = scale*sqrt(sqrt(determinant));
+	let grid_scale = log2(max(anchor_pixels*area_footprint, 1e-20));
+	if !(grid_scale >= -24.0 && grid_scale < 24.0) {
+		return object_noise_threshold(noise, local, dx, dy, pixels, seed);
+	}
+	let octave = i32(floor(grid_scale));
+	let a = anchored_blue_octave(noise, pixel, local, inverse_x, inverse_y, octave, pixels, subdivisions, seed);
+	let b = anchored_blue_octave(noise, pixel, local, inverse_x, inverse_y, octave+1, pixels, subdivisions, seed);
+	// Both octaves read the same pixel-sized lattice with independent phases.
+	return clamp(blend_uniform_thresholds(vec2f(a, b), fract(grid_scale)), 0.0, 0.9999999403953552);
+}
+
+fn surface_noise_threshold_balanced(noise: texture_2d<f32>, hierarchy: texture_2d<f32>,
+	position: vec3f, dx: vec3f, dy: vec3f, normal: vec3f,
+	uv: vec2f, uv_dx: vec2f, uv_dy: vec2f, pixels: f32, seed: u32, mode: u32, balance: f32) -> f32 {
 	if mode == 5u || mode == 6u {
 		return triplanar_noise_threshold(noise, hierarchy, position, dx, dy, normal, pixels, seed, mode == 6u);
 	}
@@ -146,8 +202,21 @@ fn surface_noise_threshold(noise: texture_2d<f32>, hierarchy: texture_2d<f32>,
 	if mode == 0u || abs(determinant) <= 1e-20 {
 		return object_noise_threshold(noise, position, dx, dy, pixels, seed);
 	}
-	if mode == 4u {
-		return correlated_noise_threshold(hierarchy, uv, uv_dx, uv_dy, pixels, seed);
+	var adjusted_dx = uv_dx;
+	var adjusted_dy = uv_dy;
+#if FEATURES.NOISE_FOOTPRINT_BALANCE
+	if balance > 0.0 {
+		// Retain the existing max-column-length estimate at balance=0. The
+		// determinant supplies the other axis; blend scales logarithmically.
+		let fmax = max(max(length(uv_dx), length(uv_dy)), 1e-20);
+		let fmin = clamp(abs(determinant)/fmax, 1e-20, fmax);
+		let f = exp2(mix(log2(fmax), log2(fmin), clamp(balance, 0.0, 1.0)));
+		adjusted_dx *= f/fmax;
+		adjusted_dy *= f/fmax;
 	}
-	return uv_noise_threshold(noise, uv, uv_dx, uv_dy, pixels, seed, mode);
+#endif
+	if mode == 4u {
+		return correlated_noise_threshold(hierarchy, uv, adjusted_dx, adjusted_dy, pixels, seed);
+	}
+	return uv_noise_threshold(noise, uv, adjusted_dx, adjusted_dy, pixels, seed, mode);
 }

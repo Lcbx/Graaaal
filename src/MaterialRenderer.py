@@ -150,6 +150,10 @@ class MaterialRenderer:
 		if self.transparency.set_sample_count(count):
 			self._register_passes()
 
+	def set_noise_footprint_balancing(self, enabled):
+		if self.transparency.set_noise_footprint_balancing(enabled):
+			self._register_passes()
+
 	def record(self, commands, size, camera, output, *, time=None, light_dir=(0.4, 0.8, 0.3)):
 		"""Record a frame; time overrides elapsed seconds for deterministic animation."""
 		self.sync()

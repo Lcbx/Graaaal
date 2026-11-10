@@ -15,14 +15,31 @@ function. `main()` parses command-line arguments; the CPU helpers need no window
 | `benchmark_ecs.py` | `main()` measures queries, gather/scatter, removals, churn, appends and array bytes. `measure(setup, action, repeat, loops=1)` times actions; `make_world(n, rare_count=None)` builds test data. |
 | `benchmark_ecs_query_pairs.py` | `main()` alternates baseline/current scans to investigate between-run noise; uses private query internals. |
 | `benchmark_ecs_uploads.py` | `main()` instruments `CubeInstances.update` and `GpuBuffer.upload` in a bounded direct-draw scene, including initialization. |
+| `diagnose_noise_tilt.py` | GPU threshold-image x/y autocorrelation at 0/60/75/83 degrees for UV footprint balances 0/0.5/1. Reports spatial FWHM in screen pixels, not timing. |
+| `diagnose_anchored_noise.py` | Same-ID rear-layer win rates at 0.1–2 coarse-cell separations, plus point-to-pixel-to-anchor pan/orbit/dolly/wind comparisons. |
 | `../../src/tests/benchmark_array_access.py` | `benchmark(count=100000, samples=7, iterations=30)` returns JSON-compatible measurements of copies, reusable gathers and dense edits. |
 
 ```powershell
 python scenes/benchmarks/benchmark_ecs.py --entities 100000 --repeat 11 --loops 50 --output ecs_cpu_run.json
 python scenes/benchmarks/benchmark_ecs_query_pairs.py --implementation path/to/exported/ECS.py --output ecs_query_pairs_run.json
 python scenes/benchmarks/benchmark_ecs_uploads.py --frames 120 --output ecs_uploads_run.json
+python scenes/benchmarks/diagnose_noise_tilt.py --output noise_tilt.csv --images noise_tilt.npz
+python scenes/benchmarks/diagnose_noise_tilt.py --mode anchored_blue --output anchored_tilt.csv
+python scenes/benchmarks/diagnose_anchored_noise.py --output anchored_audit.json
 python src/tests/benchmark_array_access.py
 ```
+
+The tilt diagnostic uses an analytic orthographic projection and the production
+noise shader. It needs rendering dependencies but opens no window. `--oversample`
+sets diagnostic samples per screen pixel (default 8); widths below two such
+samples are flagged. `--samples 4` halves the effective noise size without
+emulating hardware MSAA sample positions. `--mode` selects a UV noise mode.
+`--mode anchored_blue` selects pixel-lattice anchored sampling instead, with
+`--anchor-pixels` and `--subdivisions` exposing its grid controls. The UV balance
+diagnostic explicitly compiles the balancing shader feature; the engine default
+has it disabled.
+NPZ image storage is optional; increasing oversampling helps resolve compressed
+grain but raises GPU/readback/FFT costs. It does not measure camera-motion swim.
 
 The paired script requires a compatible saved baseline. `benchmark_ecs.py` also
 accepts `--implementation path/to/exported/ECS.py`. Both loaders expect a standalone

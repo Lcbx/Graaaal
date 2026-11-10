@@ -153,7 +153,7 @@ SETTING_HELP = {
 }
 
 NOISE_LABELS = ("Object hash", "UV blue: CDF lerp", "UV blue: stochastic pick", "UV Bayer: stochastic pick",
-	"UV blue: correlated hierarchy", "Triplanar blue: CDF lerp", "Triplanar: correlated hierarchy")
+	"UV blue: correlated hierarchy", "Triplanar blue: CDF lerp", "Triplanar: correlated hierarchy", "Anchored blue: pixel lattice")
 
 
 DEBUG_VIEW_HELP = {
@@ -276,6 +276,7 @@ class FilterSettings:
 					"Filter support shows whether edge rejection leaves too few neighbors.")
 				imgui.text_wrapped("Filter controls smooth reconstruction; noise controls choose winners; grazing fade reduces opacity at steep view angles. "
 					"There is no smoothing across frames, so some noise can remain during camera movement.")
+			imgui.separator_text("Rendering")
 			changed, index = imgui.combo("Diagnostic view", DEBUG_VIEWS.index(self.renderer.debug_view), DEBUG_VIEWS)
 			_item_tooltip(DEBUG_VIEW_HELP[DEBUG_VIEWS[index]])
 			if changed:
@@ -285,6 +286,7 @@ class FilterSettings:
 				"Reconstruction resolves linear HDR before tone mapping. Costs additional GPU time and memory; no temporal accumulation.")
 			if changed:
 				self.renderer.set_sample_count((1, 4)[index])
+			imgui.separator_text("Noise sampling")
 			changed, index = imgui.combo("Noise sampling (N)", NOISE_MODES.index(self.renderer.noise_mode), NOISE_LABELS)
 			_item_tooltip("UV modes point-sample two surface-anchored octaves and use object hashing when UVs are degenerate. "
 				"Stochastic pick uses an independent surface hash as selector; CDF lerp is the smoother alternative. "
@@ -292,10 +294,32 @@ class FilterSettings:
 				"and smooth normal weights, ignoring UVs. Bayer is an ordered comparison with possible crosshatching. ")
 			if changed:
 				self.renderer.set_noise_mode(NOISE_MODES[index])
-			changed, value = imgui.drag_float("Noise cell size (px)", self.renderer.noise_scale, 0.05, 0.25, 4.0, "%.3g")
-			_item_tooltip("Approximate noise-cell width in pixels. Larger values give coarser, more stable grain. [ / ] also adjust it.")
+			changed, value = imgui.drag_float("Noise cell size at 1x (px)", self.renderer.noise_scale, 0.05, 0.25, 4.0, "%.3g")
+			_item_tooltip("Base width at 1x; 4x MSAA halves the effective width. "
+				"Size is approximate and cells can stretch at grazing angles. Larger values give coarser, more stable grain. [ / ] also adjust it.")
 			if changed and np.isfinite(value):
 				self.renderer.set_noise_scale(max(0.25, min(4.0, value)))
+			imgui.text(f"Target cell size: {self.renderer.effective_noise_scale:.3g} px ({self.renderer.sample_count}x MSAA)")
+			imgui.separator_text("UV footprint balancing")
+			changed, enabled = imgui.checkbox("Enable UV footprint balancing", self.renderer.noise_footprint_balancing)
+			_item_tooltip("Optional shader feature, off by default. Enabling it allows the compromise below; shader variants are cached.")
+			if changed: self.renderer.set_noise_footprint_balancing(enabled)
+			if self.renderer.noise_footprint_balancing:
+				changed, value = imgui.slider_float("UV footprint balance", self.renderer.noise_footprint_balance, 0.0, 1.0, "%.2f")
+				_item_tooltip("0: maximum derivative (current sizing). 0.5: geometric mean/area. 1: minimum derivative. "
+					"Finer grain reduces the long cells at tilt but makes the compressed axis subpixel. UV modes only.")
+				if changed: self.renderer.set_noise_footprint_balance(value)
+				if not self.renderer.noise_mode.startswith("uv_"):
+					imgui.text_wrapped("Select a UV noise mode to see the effect of footprint balancing.")
+			if self.renderer.noise_mode == "anchored_blue":
+				imgui.separator_text("Surface anchor")
+				changed, value = imgui.drag_float("Anchor target (px)", self.renderer.noise_anchor_pixels, 0.5, 8.0, 64.0, "%.1f")
+				_item_tooltip("Coarse rest-space anchor grid, sized by projected area. Grain itself remains pixel-sized.")
+				if changed: self.renderer.set_noise_anchor(value, self.renderer.noise_anchor_subdivisions)
+				changed, value = imgui.slider_int("Shift subdivisions", self.renderer.noise_anchor_subdivisions, 1, 32)
+				_item_tooltip("Finer rest cells select independent tile shifts without changing the anchor. More subdivisions reduce layer correlation but add seams. Layers within one fine cell can still share thresholds.")
+				if changed: self.renderer.set_noise_anchor(self.renderer.noise_anchor_pixels, value)
+			imgui.separator_text("Grazing fade")
 			fade = self.renderer.grazing_fade
 			changed, enabled = imgui.checkbox("Fade grazing surfaces (G)", fade.enabled)
 			_item_tooltip("Smoothly reduce transparent-surface opacity between the two angles below. "
@@ -303,14 +327,17 @@ class FilterSettings:
 				"Fade and noise controls update immediately.")
 			if changed:
 				self.renderer.set_grazing_fade(replace(fade, enabled=enabled))
-			for name, label in (("start_angle", "Fade start (degrees)"), ("end_angle", "Fully faded (degrees)")):
-				changed, value = imgui.drag_float(label, getattr(self.renderer.grazing_fade, name), 0.5, 0.0, 90.0, "%.2f")
-				_item_tooltip("Angle from the geometric surface normal. Opacity is unchanged at start and zero at the end, "
-					"with a smooth fade between them. The start must be below the end.")
-				if changed:
-					self.set_grazing_angle(name, value)
-			imgui.separator()
+			if self.renderer.grazing_fade.enabled:
+				for name, label in (("start_angle", "Fade start (degrees)"), ("end_angle", "Fully faded (degrees)")):
+					changed, value = imgui.drag_float(label, getattr(self.renderer.grazing_fade, name), 0.5, 0.0, 90.0, "%.2f")
+					_item_tooltip("Angle from the geometric surface normal. Opacity is unchanged at start and zero at the end, "
+						"with a smooth fade between them. The start must be below the end.")
+					if changed:
+						self.set_grazing_angle(name, value)
+			imgui.separator_text("Reconstruction")
 			for index, (name, label, step, minimum, maximum) in enumerate(SETTINGS):
+				if name != "kernel_size" and self.renderer.bilateral_filter.kernel_size == 1:
+					continue
 				value = getattr(self.renderer.bilateral_filter, name)
 				label = ("> " if index == self.selected else "") + label + "###" + name
 				if name == "kernel_size":
