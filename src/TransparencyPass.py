@@ -385,7 +385,7 @@ class TransparencyPass:
 
 	def update_frame(self, *, view: ArrayLike, projection: ArrayLike,
 		camera_position: ArrayLike, near: float, far: float,
-		light_dir: ArrayLike = (0.4, 0.8, 0.3)) -> NDArray[np.float32]:
+		light_dir: ArrayLike = (0.4, 0.8, 0.3), time: float = 0.0) -> NDArray[np.float32]:
 		"""Upload explicit camera values and return view @ projection for culling.
 
 		Matrices follow the existing row-vector convention. No camera class is
@@ -400,17 +400,23 @@ class TransparencyPass:
 			raise ValueError("Expected finite 4x4 view/projection matrices and vec3 camera/light values")
 		if not (np.isfinite(near) and np.isfinite(far) and 0 < near < far):
 			raise ValueError("Camera clip distances must satisfy 0 < near < far")
+		if isinstance(time, (bool, np.bool_)) or not isinstance(time, (int, float, np.integer, np.floating)):
+			raise ValueError("Frame time must be finite float32 seconds")
+		try: seconds = float(time)
+		except OverflowError: raise ValueError("Frame time must be finite float32 seconds") from None
+		if not np.isfinite(seconds) or abs(seconds) > float(np.finfo(np.float32).max):
+			raise ValueError("Frame time must be finite float32 seconds")
 		for name, value in dict(view=view, proj=projection, light_dir=(*light, 0),
-			camera_position=(*position, 1), clip=(near, far, self.noise_scale, NOISE_MODES.index(self.noise_mode))).items():
+			camera_position=(*position, 1), clip=(near, far, self.noise_scale, NOISE_MODES.index(self.noise_mode)), time=seconds).items():
 			self.uniforms.content[name] = value
 		self.uniforms.upload()
 		return view @ projection
 
-	def update_camera(self, camera, *, light_dir=(0.4, 0.8, 0.3)):
+	def update_camera(self, camera, *, light_dir=(0.4, 0.8, 0.3), time=0.0):
 		"""Convenience adapter for camera objects; update_frame accepts plain arrays."""
 		width, height = self._require_targets()
 		return self.update_frame(view=camera.view(), projection=camera.projection(width/height),
-			camera_position=camera.position, near=camera.near, far=camera.far, light_dir=light_dir)
+			camera_position=camera.position, near=camera.near, far=camera.far, light_dir=light_dir, time=time)
 
 	def opaque_pass(self, commands, *, clear=(0.035, 0.05, 0.08, 1), load=False):
 		"""Draw opaque geometry; load=True preserves existing color and depth."""

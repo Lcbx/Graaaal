@@ -123,9 +123,10 @@ def test_frame_values_need_no_camera_and_preserve_matrix_convention():
     view, projection = np.eye(4), np.diag([2, 3, 4, 1])
     view[3, 0] = 5
     result = oit.update_frame(view=view, projection=projection,
-        camera_position=[1, 2, 3], near=0.1, far=100)
+        camera_position=[1, 2, 3], near=0.1, far=100, time=2.5)
     np.testing.assert_array_equal(result, view @ projection)
     assert result.dtype == np.float32
+    assert oit.uniforms.content["time"] == 2.5
     np.testing.assert_array_equal(oit.uniforms.content["camera_position"], [1, 2, 3, 1])
     oit.uniforms.upload.assert_called_once()
     camera = NS(view=lambda: view, projection=Mock(return_value=projection),
@@ -135,6 +136,7 @@ def test_frame_values_need_no_camera_and_preserve_matrix_convention():
 
 
 @pytest.mark.parametrize("overrides", [
+    {"time": np.nan}, {"time": np.inf}, {"time": 1e40}, {"time": 1j}, {"time": True},
     {"view": np.eye(3)}, {"projection": np.full((4, 4), np.nan)},
     {"camera_position": [0, 0]}, {"light_dir": [0, np.inf, 0]},
     {"near": 0}, {"near": 100}, {"far": np.inf},

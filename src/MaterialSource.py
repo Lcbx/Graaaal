@@ -32,7 +32,8 @@ def _literal(expression, kind):
 class MaterialSource:
 	"""Reflect declarations and namespace functions before the usual Shader compile.
 
-	MaterialParameters/InstanceParameters declare extra dictionary fields. Optional
+	MaterialParameters/InstanceParameters declare dictionary fields. FrameParameters
+	opt into renderer-owned values, without allocating dictionary buffer slots. Optional
 	const default_NAME declarations supply literal defaults in the WGSL itself.
 	The rendering adapter supplies Params, frame data and the material functions.
 	"""
@@ -53,7 +54,7 @@ class MaterialSource:
 		result = dict(inherited)
 		seen = set()
 		from .Materials import Parameter
-		for struct_name, scope in (("MaterialParameters", "material"), ("InstanceParameters", "instance")):
+		for struct_name, scope in (("MaterialParameters", "material"), ("InstanceParameters", "instance"), ("FrameParameters", "frame")):
 			struct = self.info.structs.get(struct_name)
 			for field in struct.fields if struct else ():
 				name = field.name

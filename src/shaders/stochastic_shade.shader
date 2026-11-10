@@ -38,9 +38,13 @@ fn shade_payload(payload: vec4u) -> vec4f {
 		return vec4f(0.0);
 	}
 	let triangle = (info.x + payload.y) * 3u;
-	let a = vertices[triangle];
-	let b = vertices[triangle + 1u];
-	let c = vertices[triangle + 2u];
+	let raw_a = vertices[triangle];
+	let raw_b = vertices[triangle + 1u];
+	let raw_c = vertices[triangle + 2u];
+	// Deform each original vertex before interpolating, exactly as rasterization.
+	let a = deform_vertex(instance_id, raw_a.position.xyz, raw_a.normal.xyz, raw_a.uv.xy);
+	let b = deform_vertex(instance_id, raw_b.position.xyz, raw_b.normal.xyz, raw_b.uv.xy);
+	let c = deform_vertex(instance_id, raw_c.position.xyz, raw_c.normal.xyz, raw_c.uv.xy);
 	let xy = unpack2x16unorm(payload.z);
 	var bary = max(vec3f(xy, 1.0-xy.x-xy.y), vec3f(0.0));
 	bary /= max(bary.x+bary.y+bary.z, 1e-6);

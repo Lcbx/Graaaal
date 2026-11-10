@@ -6,6 +6,7 @@
 <Frame> camera_position: vec4f;
 <Frame> clip: vec4f;
 <Frame> grazing: vec4f;
+<Frame> time: f32;
 @group(0) @binding(0) var<uniform> frame: Frame;
 #if PARAMS.get("sample_count", 1) > 1
 @group(0) @binding(1) var main_color: texture_multisampled_2d<f32>;

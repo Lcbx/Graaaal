@@ -1,6 +1,7 @@
 """DrawBatches integration for dictionary materials and inherited shading code."""
 from dataclasses import dataclass, field
 from itertools import count
+from time import perf_counter
 
 import numpy as np
 
@@ -21,6 +22,7 @@ class MaterialMesh:
 	shader: MaterialShader
 	indices: np.ndarray | None = None
 	material: dict | None = None
+	bounds: tuple | None = None
 
 
 @dataclass(eq=False)
@@ -65,7 +67,7 @@ class MaterialRenderer:
 			raster["triangle"] = np.repeat(np.arange(len(source)//3), 3)
 			raster["barycentric"] = np.tile(((1, 0), (0, 1), (0, 0)), (len(source)//3, 1))
 			vertices.append(stored)
-			self.draws.register_mesh(index, Mesh(raster, np.arange(len(source), dtype=np.uint32)))
+			self.draws.register_mesh(index, Mesh(raster, np.arange(len(source), dtype=np.uint32)), bounds=mesh.bounds)
 			self.draws.register_lod_group(index, (index,))
 		usage = BufferUsage.STORAGE | BufferUsage.COPY_DST
 		headers, shared, per_instance, _, _ = self.library.pack([])
@@ -86,6 +88,7 @@ class MaterialRenderer:
 		self._register_passes()
 		self.visibility = self.draws.create_visibility()
 		if self.instances is not None: self.sync()
+		self._clock_start = perf_counter()
 
 	def _bindings(self, instances):
 		return [MaterialBinding(i.shader or i.mesh.shader,
@@ -148,12 +151,13 @@ class MaterialRenderer:
 		if self.transparency.set_sample_count(count):
 			self._register_passes()
 
-	def record(self, commands, size, camera, output):
+	def record(self, commands, size, camera, output, *, time=None):
+		"""Record a frame; time overrides elapsed seconds for deterministic animation."""
 		self.sync()
 		oit = self.transparency
 		if size[0] <= 0 or size[1] <= 0: return
 		oit.resize(size)
-		vp = oit.update_camera(camera)
+		vp = oit.update_camera(camera, time=perf_counter()-self._clock_start if time is None else time)
 		FrustumCuller().record(commands, self.visibility, camera_position=camera.position, view_projection=vp)
 		external = oit.has_external_opaque_inputs
 		if not external or any(batch.shader_id == 0 and batch.mesh_id is not None for batch in self.draws.draw_batches):

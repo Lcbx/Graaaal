@@ -23,8 +23,8 @@ class Parameter:
 	scope: str = "material"
 
 	def __post_init__(self):
-		if self.kind not in KINDS or self.scope not in ("material", "instance"):
-			raise ValueError("Expected a supported parameter type and material/instance scope")
+		if self.kind not in KINDS or self.scope not in ("material", "instance", "frame"):
+			raise ValueError("Expected a supported parameter type and material/instance/frame scope")
 		self.pack(self.default)
 
 	def pack(self, value):
@@ -52,6 +52,14 @@ class ShaderHook:
 	arguments: str
 	expression: str
 	fallback: str
+	optional_function: str | None = None
+
+
+@dataclass(frozen=True)
+class FrameParameter:
+	name: str
+	kind: str
+	expression: str
 
 
 @dataclass(frozen=True)
@@ -59,6 +67,7 @@ class MaterialInterface:
 	"""Rendering adapter contract; expressions address an instance's material data."""
 	address: str
 	hooks: tuple[ShaderHook, ...]
+	frame_parameters: tuple[FrameParameter, ...] = ()
 
 
 @dataclass(eq=False)
@@ -90,6 +99,10 @@ class MaterialShader:
 		self._template = None if path is None else env.get_template(path.name)
 		_, declarations = self._render(0)
 		self._parameters = MappingProxyType(declarations)
+		frame_parameters = {p.name: p for p in self.interface.frame_parameters}
+		for name, p in declarations.items():
+			if p.scope == "frame" and (name not in frame_parameters or frame_parameters[name].kind != p.kind):
+				raise ValueError(f"Unsupported frame parameter: {name} ({p.kind})")
 		self.validate(self.default_material)
 
 	def source_template(self):
@@ -122,6 +135,7 @@ class MaterialShader:
 		for name, value in values.items():
 			if name not in self.parameters: raise ValueError(f"Unknown material parameter: {name}")
 			parameter = self.parameters[name]
+			if parameter.scope == "frame": raise ValueError(f"{name} is a renderer-owned frame parameter")
 			if overrides and parameter.scope != "instance":
 				raise ValueError(f"{name} is shared; declare it with instance scope to override it")
 			try: parameter.pack(value)
@@ -195,11 +209,16 @@ class MaterialLibrary:
 			"@group(2) @binding(7) var<storage, read> instance_parameters: array<vec4u>;",
 			"@group(2) @binding(8) var<storage, read> material_headers: array<vec4u>;",
 			"fn library_material_count() -> u32 { return arrayLength(&material_headers); }"]
+		functions = []
+		frame_parameters = {p.name: p for p in self.interface.frame_parameters}
 		for index, shader in enumerate(self.shaders):
 			fields, assignments = [], []
 			counts = dict(material=0, instance=0)
 			for name, p in shader.parameters.items():
 				fields.append(f"{name}: {p.kind},")
+				if p.scope == "frame":
+					assignments.append(f"p.{name} = {frame_parameters[name].expression};")
+					continue
 				base = "material_headers[material_id].y" if p.scope == "material" else "instance_offset"
 				buffer = "material_parameters" if p.scope == "material" else "instance_parameters"
 				value = f"{buffer}[{base}+{counts[p.scope]}u]"
@@ -210,10 +229,16 @@ class MaterialLibrary:
 				assignments.append(f"p.{name} = {value};")
 			parts.append(f"struct Params{index} {{ {' '.join(fields) if fields else '_unused: u32,'} }}")
 			parts.append(f"fn parameters_{index}(material_id: u32, instance_offset: u32) -> Params{index} {{ var p: Params{index}; {' '.join(assignments)} return p; }}")
-			parts.append(shader.render(index))
+			code = shader.render(index)
+			parts.append(code)
+			from .RenderContext import ShaderSource
+			functions.append(ShaderSource(code).functions if any(h.optional_function for h in self.interface.hooks) else {})
 		for hook in self.interface.hooks:
 			parts.append(f"fn {hook.name}(id: u32{', ' if hook.arguments else ''}{hook.arguments}) -> {hook.result} {{ let key = {self.interface.address}; switch material_headers[key.x].x {{")
 			for index in range(len(self.shaders)):
-				parts.append(f"case {index}u: {{ return {hook.expression.format(i=index)}; }}")
+				expression = hook.expression.format(i=index)
+				if hook.optional_function and hook.optional_function.format(i=index) not in functions[index]:
+					expression = hook.fallback
+				parts.append(f"case {index}u: {{ return {expression}; }}")
 			parts.append(f"default: {{ return {hook.fallback}; }} }} }}")
 		return "\n".join(parts)

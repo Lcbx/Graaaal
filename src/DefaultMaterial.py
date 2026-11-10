@@ -3,7 +3,7 @@
 MaterialLibrary does not know these parameters or their meaning. A different
 shader may implement the same interface with an entirely different schema.
 """
-from .Materials import MaterialInterface, MaterialShader, ShaderHook
+from .Materials import FrameParameter, MaterialInterface, MaterialShader, ShaderHook
 import numpy as np
 
 
@@ -16,7 +16,11 @@ TRANSPARENCY_INTERFACE = MaterialInterface(
 		ShaderHook("library_opacity", "vec3f", "material: Material, alpha: vec3f, uv: vec2f, position: vec3f, lod: f32",
 			"opacity_{i}(material, parameters_{i}(key.x, key.y), alpha, uv, position, lod)", "alpha"),
 		ShaderHook("library_grazing", "vec3f", "", "grazing_{i}(parameters_{i}(key.x, key.y))", "vec3f(0.0)"),
+		ShaderHook("library_vertex", "MaterialVertex", "position: vec3f, normal: vec3f, uv: vec2f",
+			"vertex_{i}(parameters_{i}(key.x, key.y), position, normal, uv)",
+			"MaterialVertex(position, normal, uv)", optional_function="vertex_{i}"),
 	),
+	frame_parameters=(FrameParameter("time", "f32", "frame.time"),),
 )
 
 

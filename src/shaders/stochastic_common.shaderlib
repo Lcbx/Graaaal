@@ -6,6 +6,7 @@
 <Frame> clip: vec4f;
 // grazing: start angle (degrees), end angle (degrees), enabled, reserved.
 <Frame> grazing: vec4f;
+<Frame> time: f32;
 @group(0) @binding(0) var<uniform> frame: Frame;
 
 <Material> base_color: vec4f;
@@ -13,6 +14,9 @@
 <Material> surface: vec4f;
 <Material> opacity_rgb: vec4f;
 <Material> flags: vec4u;
+<MaterialVertex> position: vec3f;
+<MaterialVertex> normal: vec3f;
+<MaterialVertex> uv: vec2f;
 @group(2) @binding(0) var<storage, read> metadata: array<vec4u>;
 @group(2) @binding(1) var<storage, read> materials: array<Material>;
 @group(2) @binding(2) var base_textures: texture_2d_array<f32>;
@@ -33,6 +37,14 @@ fn opacity(material: Material, uv: vec2f, lod: f32) -> vec3f {
 #else
 #include "stochastic_material.shaderlib"
 #endif
+
+fn deform_vertex(id: u32, position: vec3f, normal: vec3f, uv: vec2f) -> MaterialVertex {
+#if PARAMS.get("material_library") is not none
+	return library_vertex(id, position, normal, uv);
+#else
+	return MaterialVertex(position, normal, uv);
+#endif
+}
 
 fn get_material(id: u32) -> Material {
 #if PARAMS.get("material_library") is not none

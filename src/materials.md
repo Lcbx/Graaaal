@@ -17,7 +17,8 @@ transparent examples below. Only the bottom-left and bottom-middle spheres share
 the roughness/specular sliders. D replaces the top-left default material; the
 top-right sphere has an explicit green override. M toggles MSAA; Space orbits.
 The top-middle sphere uses a procedural striped shader written in the Python
-script; its stripe frequency and color have their own live controls.
+script; its stripes and time-driven vertex displacement have live controls for
+frequency, color, displacement amplitude and speed, plus an animation pause.
 
 ## ECS usage
 
@@ -144,7 +145,8 @@ are scalar literals or float-vector constructors with literal components
 explicit default, inherited fields keep their defaults and new fields start at
 zero/false. Supported types match template parameters below. A declaration can
 change a built-in field's scope while retaining its type. Duplicate fields
-across the two structs are rejected.
+across parameter structs are rejected. `FrameParameters` additionally opts into
+renderer-owned values such as `time`, as described below.
 
 The renderer provides the combined `Params` type, including inherited fields,
 and passes the selected shared and instance values to each function. Custom
@@ -171,18 +173,20 @@ fn shade(material: Material, p: Params, uv: vec2f,
 fn opacity(material: Material, p: Params, alpha: vec3f,
            uv: vec2f, position: vec3f, lod: f32) -> vec3f
 fn grazing(p: Params) -> vec3f
+fn vertex(p: Params, position: vec3f, normal: vec3f, uv: vec2f) -> MaterialVertex
 ```
 
 `shade` returns straight linear HDR color. `opacity` returns RGB opacity used
 consistently in guide, transmittance and selection. `grazing` returns start angle,
 end angle and enabled state. The existing implementations are callable as
-`default_surface`, `default_shade`, `default_opacity`, `default_grazing`, and
+`default_surface`, `default_shade`, `default_opacity`, `default_grazing`, `default_vertex`, and
 `default_lighting`, with their corresponding signatures. Function names starting
 with `default_` are reserved. Generic MaterialShader has no implicit defaults:
-its source must supply the functions expected by its MaterialInterface.
+its source must supply the functions expected by its MaterialInterface. The
+vertex hook is optional on this interface and falls back to unchanged geometry.
 
 Frame uniforms (`frame.view`, `frame.proj`, `frame.light_dir`,
-`frame.camera_position`, `frame.clip`, `frame.grazing`), the Material type,
+`frame.camera_position`, `frame.clip`, `frame.grazing`, `frame.time`), the Material type,
 `base_color(material, uv, lod)`, `base_textures`, and `material_sampler` are
 provided by the existing opaque/stochastic shaders. Reference these resources
 directly; material source must not redeclare bindings or GPU entry points.
@@ -190,6 +194,51 @@ Geometry entry points and pass outputs remain renderer-owned. Shading functions
 must work in fragment and compute stages: sample textures with explicit LOD and
 avoid fragment-only derivatives. Transparency, reconstruction and MSAA remain
 shared across custom and default materials.
+
+## Time and vertex displacement
+
+Time is an optional frame-scope parameter, declared in the shader:
+
+```wgsl
+struct FrameParameters { time: f32, }
+
+fn vertex(p: Params, position: vec3f, normal: vec3f, uv: vec2f) -> MaterialVertex {
+    let offset = 0.1*sin(p.time*2.0);
+    return MaterialVertex(position+vec3f(offset, 0.0, 0.0), normal, uv);
+}
+```
+
+The compact form `<FrameParameters> time: f32;` is also supported by the existing
+ShaderSource struct syntax. Jinja templates declare the same value with
+`parameter("time", "f32", 0.0, "frame")` in their parameters block.
+
+`p.time` is elapsed seconds since the MaterialRenderer was created. Supply
+`renderer.record(..., time=seconds)` to use an application clock, seek, pause or
+render reproducibly. The example accumulates RenderContext.frame_time and stops
+advancing its clock while paused. Low-level TransparencyPass.update_frame() and
+update_camera() accept `time=seconds`, defaulting to zero.
+
+Frame parameters are read directly from the frame uniform. They do not occupy
+shared/instance parameter slots or require material dictionaries to be repacked,
+and cannot be assigned through those dictionaries. `time: f32` is currently the
+frame parameter exposed by the opaque/stochastic MaterialInterface. The generic
+MaterialLibrary takes frame expressions from its adapter's FrameParameter metadata.
+
+The vertex hook receives object-space position/normal and UVs, and returns
+`MaterialVertex(position, normal, uv)` before the instance transform. Update the
+normal when deformation changes the surface orientation. The example computes
+an analytic normal for its radial ripple. Static materials retain the identity
+hook. A Jinja child can override the `vertex` block with the same behavior.
+
+All raster passes use the hook, and transparent winner shading applies it to
+each original triangle vertex before barycentric interpolation. This keeps
+positions, normals and UVs consistent with rasterization, including MSAA.
+Object-space noise anchors retain the original rest positions.
+
+GPU displacement does not change CPU mesh bounds. Pass conservative local
+`bounds=(center, extents)` to MaterialMesh when vertices can move outside the
+original bounds. Bounds must include every allowed amplitude and time; the
+example reserves a 1.3 radius for its maximum 0.3 displacement.
 
 ## Template parameter declarations
 
@@ -226,8 +275,8 @@ existing explicit invalidation path. TRANSPARENT is available in templates for
 route-dependent defaults, as used by the default alpha_mode declaration.
 
 Supported types are f32, vec2f, vec3f, vec4f, u32 and bool. Each parameter declares
-material or instance scope. Shared dictionaries are deduplicated by identity per
-shader. Each field occupies an aligned 16-byte slot preserving float/integer bits.
+material, instance or frame scope. Shared dictionaries are deduplicated by identity per
+shader. Each material/instance field occupies an aligned 16-byte slot preserving float/integer bits.
 Overrides of shared fields are rejected; declare instance scope when needed.
 
 The default_material.shader template declares base_color, emission, roughness, metallic, opacity_rgb,
@@ -261,6 +310,7 @@ Available blocks:
 
 - parameters: declares typed fields, default values and sharing scope.
 - surface: converts typed parameters into the rendering technique's Material.
+- vertex: returns object-space position, normal and UVs as MaterialVertex.
 - lighting: returns straight linear HDR color.
 - opacity: modifies evaluated RGB opacity consistently in guide, transmittance
   and selection, before clamping and grazing fade.

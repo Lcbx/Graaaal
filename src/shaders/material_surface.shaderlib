@@ -6,6 +6,12 @@
 #block helpers
 #endblock
 
+fn vertex_{{PREFIX}}(p: Params{{PREFIX}}, position: vec3f, normal: vec3f, uv: vec2f) -> MaterialVertex {
+#block vertex
+	return MaterialVertex(position, normal, uv);
+#endblock
+}
+
 fn surface_{{PREFIX}}(p: Params{{PREFIX}}) -> Material {
 #block surface
 	var material: Material;

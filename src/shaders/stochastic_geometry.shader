@@ -42,13 +42,14 @@
 @vertex
 fn vertex(input: VertexInput, @builtin(instance_index) instance_index: u32) -> VertexOutput {
 	let id = visible_instances[instance_index];
-	let world = instance_position(instances[id], input.position);
+	let deformed = deform_vertex(id, input.position, input.normal, input.uv);
+	let world = instance_position(instances[id], deformed.position);
 	var output: VertexOutput;
 	output.position = frame.proj * frame.view * vec4f(world, 1.0);
 	output.world = world;
 	// Keep inverse-transformed normals unnormalized until after interpolation.
-	output.normal = instance_normal_vector(instances[id], input.normal);
-	output.uv = input.uv;
+	output.normal = instance_normal_vector(instances[id], deformed.normal);
+	output.uv = deformed.uv;
 	output.barycentric = input.barycentric;
 	output.triangle = input.triangle;
 	output.instance = id;
