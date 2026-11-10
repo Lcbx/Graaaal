@@ -1,33 +1,26 @@
 #include "utils.shaderlib"
 
-<Frame> view: mat4x4f;
-<Frame> proj: mat4x4f;
-<Frame> light_dir: vec4f;
-<Frame> camera_position: vec4f;
-<Frame> clip: vec4f;
-<Frame> grazing: vec4f;
-<Frame> time: f32;
-@group(0) @binding(0) var<uniform> frame: Frame;
+#include "frame.shaderlib"
 #if PARAMS.get("sample_count", 1) > 1
-@group(0) @binding(1) var main_color: texture_multisampled_2d<f32>;
-@group(0) @binding(2) var transmittance: texture_multisampled_2d<f32>;
-@group(0) @binding(3) var winner_color: texture_2d_array<f32>;
-@group(0) @binding(4) var opaque_depth: texture_depth_multisampled_2d;
+@group(1) @binding(1) var main_color: texture_multisampled_2d<f32>;
+@group(1) @binding(2) var transmittance: texture_multisampled_2d<f32>;
+@group(1) @binding(3) var winner_color: texture_2d_array<f32>;
+@group(1) @binding(4) var opaque_depth: texture_depth_multisampled_2d;
 #else
-@group(0) @binding(1) var main_color: texture_2d<f32>;
-@group(0) @binding(2) var transmittance: texture_2d<f32>;
-@group(0) @binding(3) var winner_color: texture_2d<f32>;
-@group(0) @binding(4) var opaque_depth: texture_depth_2d;
+@group(1) @binding(1) var main_color: texture_2d<f32>;
+@group(1) @binding(2) var transmittance: texture_2d<f32>;
+@group(1) @binding(3) var winner_color: texture_2d<f32>;
+@group(1) @binding(4) var opaque_depth: texture_depth_2d;
 #endif
 <BilateralSettings> sigmas: vec4f;
 <BilateralSettings> kernel: vec4u;
-@group(0) @binding(5) var<uniform> bilateral: BilateralSettings;
+@group(1) @binding(5) var<uniform> bilateral: BilateralSettings;
 #if PARAMS.get("sample_count", 1) > 1
-@group(0) @binding(6) var transparent_depth: texture_depth_multisampled_2d;
-@group(0) @binding(7) var transparent_guide: texture_multisampled_2d<f32>;
+@group(1) @binding(6) var transparent_depth: texture_depth_multisampled_2d;
+@group(1) @binding(7) var transparent_guide: texture_multisampled_2d<f32>;
 #else
-@group(0) @binding(6) var transparent_depth: texture_depth_2d;
-@group(0) @binding(7) var transparent_guide: texture_2d<f32>;
+@group(1) @binding(6) var transparent_depth: texture_depth_2d;
+@group(1) @binding(7) var transparent_guide: texture_2d<f32>;
 #endif
 
 @vertex

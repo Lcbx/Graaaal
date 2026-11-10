@@ -114,7 +114,8 @@ def frame_state():
     oit.size = (32, 16)
     oit.noise_scale = 1.0
     oit.noise_mode = "uv_blue_lerp"
-    oit.uniforms = NS(content={}, upload=Mock())
+    oit.uniforms = NS(content={}, upload_changed=Mock())
+    oit.lighting_uniforms = NS(content={}, upload_changed=Mock())
     return oit
 
 
@@ -128,7 +129,7 @@ def test_frame_values_need_no_camera_and_preserve_matrix_convention():
     assert result.dtype == np.float32
     assert oit.uniforms.content["time"] == 2.5
     np.testing.assert_array_equal(oit.uniforms.content["camera_position"], [1, 2, 3, 1])
-    oit.uniforms.upload.assert_called_once()
+    oit.uniforms.upload_changed.assert_called_once()
     camera = NS(view=lambda: view, projection=Mock(return_value=projection),
         position=[1, 2, 3], near=0.1, far=100)
     np.testing.assert_array_equal(oit.update_camera(camera), result)
@@ -148,7 +149,7 @@ def test_invalid_frame_values_do_not_write_or_upload(overrides):
     with pytest.raises(ValueError):
         oit.update_frame(**values)
     assert not oit.uniforms.content
-    oit.uniforms.upload.assert_not_called()
+    oit.uniforms.upload_changed.assert_not_called()
 
 
 @pytest.mark.parametrize("method,args", [

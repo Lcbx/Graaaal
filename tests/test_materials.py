@@ -55,7 +55,8 @@ fn shade(material: Material, p: Params, uv: vec2<f32>, position: vec3<f32>, norm
 ''')
 	source = MaterialLibrary([shader]).source
 	assert "return vec3f(p.custom)" in source
-	assert "fn default_lighting_0" in source and "fn opacity_0" in source
+	assert "fn default_lighting_0" in source
+	assert "fn opacity_0" in source
 	assert "custom: f32" in source
 	assert shader.parameters["custom"].default == 0.2
 	assert shader.parameters["alpha_mode"].default == 2

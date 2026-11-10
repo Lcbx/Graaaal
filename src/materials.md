@@ -82,11 +82,11 @@ Plain dictionaries do not track nested writes. Notify the adapter explicitly:
 
 ```python
 shared["roughness"] = 0.8
-adapter.touch_materials()
+adapter.touch_materials(shared)
 
 # Replacing a shader's default also needs notification:
 glass.default_material = {"roughness": 0.5}
-adapter.touch_materials()
+adapter.touch_materials(glass.default_material)
 
 # Alternatively, notify through the ECS accessor:
 refs = world.get(MaterialInstance)
@@ -97,11 +97,20 @@ refs.touch("overrides")
 world.get(MaterialTransform)[left].position = Vec3(-2, 0, 0)
 ```
 
-Unchanged frames perform no material packing or uploads. Transform-only edits
-update transforms without packing materials. A material update packs the selected
-rows once; unchanged GPU buffers retain their contents. Dictionary edits and
-default replacement require no shader compilation. Instance values do not split
-draw batches.
+`touch_materials(*dictionaries)` invalidates the named shared/default/override
+dictionaries. Unaffected shared records reuse their resolved values and packed
+data. Editing a shader-default dictionary invalidates all records inheriting it;
+replacing that dictionary also invalidates those records. `touch_materials()`
+with no arguments remains a full invalidation, as do ECS material field edits.
+Notify every dictionary edited since the previous sync; dictionaries remain
+ordinary mutable objects, without automatic nested change tracking.
+
+Unchanged ECS frames perform no material packing or uploads. Transform-only edits
+update transforms without packing materials. Material updates compare GPU buffer
+contents by words and upload coalesced changed ranges; nearby changes may share
+an upload to reduce queue overhead. Membership changes can rebuild record
+addresses. Dictionary edits and default replacement require no shader compilation.
+Instance values do not split draw batches.
 
 ## Shader-defined schemas
 
@@ -185,8 +194,9 @@ with `default_` are reserved. Generic MaterialShader has no implicit defaults:
 its source must supply the functions expected by its MaterialInterface. The
 vertex hook is optional on this interface and falls back to unchanged geometry.
 
-Frame uniforms (`frame.view`, `frame.proj`, `frame.light_dir`,
+Frame uniforms (`frame.view`, `frame.proj`,
 `frame.camera_position`, `frame.clip`, `frame.grazing`, `frame.time`), the Material type,
+the separate lighting uniform (`lighting.light_dir`),
 `base_color(material, uv, lod)`, `base_textures`, and `material_sampler` are
 provided by the existing opaque/stochastic shaders. Reference these resources
 directly; material source must not redeclare bindings or GPU entry points.
@@ -276,7 +286,11 @@ route-dependent defaults, as used by the default alpha_mode declaration.
 
 Supported types are f32, vec2f, vec3f, vec4f, u32 and bool. Each parameter declares
 material, instance or frame scope. Shared dictionaries are deduplicated by identity per
-shader. Each material/instance field occupies an aligned 16-byte slot preserving float/integer bits.
+shader. Fields share lanes in aligned 16-byte `vec4u` slots, preserving
+float/integer bits. Scalars use one lane, bools use uint32 zero/one, and vectors
+remain within one slot. `MaterialLibrary.parameter_layouts[shader][scope]`
+exposes `offsets` (field to slot/lane) and `slot_count`; record offsets are in
+slots, not bytes. Field declaration order does not imply GPU offsets.
 Overrides of shared fields are rejected; declare instance scope when needed.
 
 The default_material.shader template declares base_color, emission, roughness, metallic, opacity_rgb,
@@ -372,3 +386,90 @@ instance slots, material IDs and instance offsets. Headers store shader ID and
 shared offset; they contain no default-material record. The opaque/stochastic
 adapter binds shared slots at group 2 binding 6, instance slots at binding 7,
 and headers at binding 8. Its metadata y/w fields select material/instance data.
+
+## Standard WGSL struct names and blocks
+
+These names describe the built-in opaque/stochastic adapter's ABI. Shared types
+use PascalCase; bound values use snake_case. Custom material code uses the
+provided values and types without redeclaring bindings. Family-owned declarations
+are namespaced automatically, so local helper/type names can be reused between
+families.
+
+| Struct | Bound value / use | Ownership and updates |
+| --- | --- | --- |
+| `Frame` | `frame`, uniform at group 0 binding 0 | View/projection, camera position, clip/noise settings, legacy grazing and time; changed ranges only |
+| `Lighting` | `lighting`, uniform at group 0 binding 1 | Scene directional light, currently `light_dir: vec4f`; uploaded only when changed |
+| `Material` | Shader-local evaluated surface value; direct materials also use `array<Material>` | Common color, emission, surface, opacity and flags contract |
+| `Materials` | `material_parameters`, storage at group 2 binding 6 | Runtime `values: array<vec4u>` containing compact shared dictionary records |
+| `InstanceOverrides` | `instance_parameters`, storage at group 2 binding 7 | Runtime `values: array<vec4u>` containing compact per-instance parameters |
+| `MaterialHeaders` | `material_headers`, storage at group 2 binding 8 | Runtime `values: array<vec4u>`; shader ID and shared-slot offset per material |
+| `MeshInstance` | Raster `instances` and deferred `shading_instances` tables | Existing 32-byte packed position/rotation/scale ABI; shared by render and culling |
+| `MaterialVertex` | Vertex-hook return value | Object-space position, normal and UV before instance transformation |
+| `ShadingVertex` | Deferred `vertices` table | Original triangle vertices for winner reconstruction |
+| `BilateralSettings` | `bilateral`, composition uniform | Reconstruction sigmas, kernel and debug mode; changed ranges on edit |
+| `CameraUniforms` | Culling `camera_params` uniform | Derived view-projection/planes/camera plus culling counts; unchanged cameras skip updates |
+| `ParamsN` | Generated shader-local family value | Typed access to shared fields, overrides and opted-in frame parameters |
+
+`MaterialParameters`, `InstanceParameters` and `FrameParameters` are material
+authoring schemas, not extra bound GPU blocks. The linker preserves declarations
+after namespacing; it does not analyze reachability or remove unused code.
+Control emitted shader size by splitting reusable WGSL into granular Jinja
+includes or macros, importing only the helpers a template needs. Jinja-authored
+family helpers should use `PREFIX` to keep their names unique, as in the template
+examples above. Default lighting math lives once in `material_lighting.shaderlib`;
+family-specific `default_lighting` adapters retain each family's coefficients.
+
+`Frame` and `Lighting` are declared once in `frame.shaderlib` and included by
+raster, deferred and composition modules. `Frame` is currently 192 bytes and
+`Lighting` 16 bytes. Supply lighting from Python with:
+
+```python
+renderer.record(commands, size, camera, output, time=seconds,
+                light_dir=(0.4, 0.8, 0.3))
+```
+
+The low-level `TransparencyPass.update_frame()` and `update_camera()` accept the
+same `light_dir` argument. Material response coefficients (`ambient`, `diffuse`,
+`specular`) remain material parameters; the light direction is scene data.
+Shaders that previously read `frame.light_dir` should read
+`lighting.light_dir`. Rebuild custom uniform dtypes from the shared include or
+reflection rather than retaining the earlier Frame byte offsets.
+
+Future local-light distribution can produce per-instance light-index lists in
+separate storage buffers, with scene light records owned by the lighting system.
+Those compute outputs belong alongside instance/scene resources; they should not
+be copied into every material dictionary or packed transform. This change adds
+the `Lighting` boundary only; no light distribution compute pass is implemented.
+
+## Bind-group convention and lifetime
+
+Built-in material passes derive explicit layouts from reflected shader bindings.
+The same group-layout objects own bounded GPU bind-group caches across compatible
+pipelines and across 1x/4x MSAA. Cache keys include buffer handles and bound sizes,
+so growth or resource replacement selects a new bind group; changing contents
+preserves it. Custom shader sets keep the automatic-layout path.
+
+| Group | Raster geometry | Deferred shading | Composition |
+| --- | --- | --- | --- |
+| 0 | `Frame` + `Lighting` | Same shared group | Same shared group |
+| 1 | Instance/visibility indexing | Winner input/output textures | Color/depth/guide textures and `BilateralSettings` |
+| 2 | Material tables, metadata, texture array and sampler | Material resources plus vertex/transform tables | Unused |
+| 3 | Pass-specific depth/noise inputs | Unused | Unused |
+
+Group 1 retains the existing DrawBatches convention. Pass groups can differ;
+compatible low-index layout prefixes allow bindings to survive pipeline changes.
+Bindings have explicit resource types and stage visibility; pass texture groups
+include only resources needed by that pass. Default depth geometry is compiled
+lazily when requested.
+
+Buffer update cadence is separate from binding cadence: frame contents change
+each frame while the group remains stable throughout the draws. Continue using
+indexed storage for per-instance values. Do not overwrite one frame buffer for
+multiple views recorded before the same submission; each such view needs its
+own buffer or aligned range. `upload_changed()` on reflected uniform buffers
+tracks raw bytes, including padding; ordinary `upload()` remains available.
+
+For the six-sphere example, compact packing uses 512 shared-material bytes and
+192 instance-parameter bytes. A glass roughness edit uploads four bytes, advancing
+only time uploads four bytes, and an unchanged paused frame uploads no buffer data.
+See the [audit and implementation measurements](materials_audit.md).

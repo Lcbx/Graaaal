@@ -23,6 +23,7 @@ class _CullingState:
 		self.bindings = {}
 		self.camera_params_buffer = shader.uniform_buffer("camera_params")
 		self._camera_params_dirty = True
+		self._camera_initialized = False
 		self.source_batches = []
 		self.draw_batches = []
 		self.workgroup_count = 0
@@ -76,17 +77,21 @@ class _CullingState:
 		position = np.asarray(camera_position, dtype=np.float32)
 		if vp.shape != (4, 4) or position.shape != (3,) or not np.all(np.isfinite(vp)) or not np.all(np.isfinite(position)):
 			raise ValueError("Expected a finite 4x4 camera matrix and vec3 position")
+		buffer = self.camera_params_buffer
+		if (self._camera_initialized and np.array_equal(buffer.content["view_proj"][0], vp)
+			and np.array_equal(buffer.content["camera_position"][0, :3], position)):
+			return
 		planes = extract_frustum_planes(vp)
 		if not np.all(np.isfinite(planes)):
 			raise ValueError("Camera matrix produced nonfinite frustum planes")
-		buffer = self.camera_params_buffer
 		buffer.content["view_proj"] = vp
 		buffer.content["planes"] = planes
 		buffer.content["camera_position"] = [*position, 0.0]
+		self._camera_initialized = True
 		self._camera_params_dirty = True
 
 
 	def _upload_camera_params(self) -> None:
 		if not self._camera_params_dirty: return
-		self.camera_params_buffer.upload()
+		self.camera_params_buffer.upload_changed()
 		self._camera_params_dirty = False

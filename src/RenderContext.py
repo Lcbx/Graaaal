@@ -741,8 +741,14 @@ class RenderPass:
 
 			if variant is not self._variant:
 				handle.set_pipeline(variant.handle)
+				previous_layout = getattr(self._variant, "layout", None)
+				prefix = 0
+				if isinstance(previous_layout, PipelineLayout) and isinstance(variant.layout, PipelineLayout):
+					for before, after in zip(previous_layout.groups, variant.layout.groups):
+						if before is not after: break
+						prefix += 1
 				self._variant = variant
-				self._bound_bind_groups.clear()
+				self._bound_bind_groups = {i: key for i, key in self._bound_bind_groups.items() if i < prefix}
 
 			self._variant_dirty = False
 
@@ -906,6 +912,18 @@ def dtype_to_vertex_format(dtype: np.dtype) -> list | str:
 	if vformat is None:
 		raise TypeError(f"Unsupported vertex format: {dtype}")
 	return vformat
+
+
+def _changed_byte_ranges(previous, current):
+	"""Word-aligned changes; merge gaps up to 64 bytes to limit queue overhead."""
+	before = np.ascontiguousarray(previous).view(np.uint8).reshape(-1)
+	after = np.ascontiguousarray(current).view(np.uint8).reshape(-1)
+	words = np.unique(np.flatnonzero(before != after) // 4)
+	if not len(words): return
+	starts = np.r_[0, np.flatnonzero(np.diff(words) > 17)+1]
+	ends = np.r_[starts[1:]-1, len(words)-1]
+	for start, end in zip(starts, ends):
+		yield int(words[start])*4, min(int(words[end]+1)*4, after.size)-int(words[start])*4
 
 
 class GpuBuffer(_OwnedResource):
@@ -1074,6 +1092,19 @@ class GpuBuffer(_OwnedResource):
 		self.content = content
 		self.resize(content.size)
 		self.upload()
+
+	def write_changed(self, data: np.ndarray) -> None:
+		"""Replace content, uploading only changed word ranges when the layout matches."""
+		content = self._content_array(data)
+		if self.content is None or self.content.dtype != content.dtype or self.content.shape != content.shape:
+			self.write(content)
+			return
+		ranges = list(_changed_byte_ranges(self.content, content))
+		if not ranges: return
+		if not self.usage & wgpu.BufferUsage.COPY_DST:
+			raise ValueError("Writes require COPY_DST buffer usage")
+		self.content = content
+		for offset, size in ranges: self._upload_bytes(offset, size)
 
 	def write_range(self, data: np.ndarray, *, offset: int = 0) -> None:
 		"""Update CPU/GPU content at a byte offset without changing binding size."""
@@ -2012,9 +2043,22 @@ class _UniformBuffer(GpuBuffer):
 			wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST,
 			label=label
 		)
+		self._uploaded = self.content.view(np.uint8).reshape(-1).copy()
+
+	def upload(self):
+		super().upload()
+		self._uploaded = self.content.view(np.uint8).reshape(-1).copy()
+
+	def upload_changed(self):
+		"""Upload changes since the last successful upload, including direct CPU edits."""
+		for offset, size in _changed_byte_ranges(self._uploaded, self.content):
+			self._upload_bytes(offset, size)
+		self._uploaded = self.content.view(np.uint8).reshape(-1).copy()
 
 
 # pipelines / bindings --------------------------------------------------------
+
+_BIND_GROUP_CACHE_LIMIT = 128
 
 class BindGroup:
 	def __init__(
@@ -2040,19 +2084,21 @@ class BindGroup:
 			(shader.info.bindings[name].binding, name) for name in resources
 		))
 
-	def cache_key(self) -> tuple:
+	def cache_key(self, slots=None) -> tuple:
  		return (
  			self.group,
  			tuple(
 				(binding, self._resource_key(self.resources[name]))
 				for binding, name in self._bindings
+				if slots is None or (self.group, binding) in slots
 			),
 		)
  
-	def entries(self) -> list[wgpu.BindGroupEntry]:
+	def entries(self, slots=None) -> list[wgpu.BindGroupEntry]:
 		return [
 			wgpu.BindGroupEntry(binding=binding, resource=self._resource(self.resources[name]))
 			for binding, name in self._bindings
+			if slots is None or (self.group, binding) in slots
 		]
 
 	def _resource_key(self, resource: Any) -> Any:
@@ -2073,21 +2119,72 @@ class BindGroup:
 			return handle
 		return resource
 
-class _PipelineVariant(_OwnedResource):
-	# Bound retained GPU resources across buffer growth and texture replacement.
-	_BIND_GROUP_CACHE_LIMIT = 128
+class BindGroupLayout(_OwnedResource):
+	"""An explicit layout and bounded resource cache reusable across pipelines."""
+	def __init__(self, entries):
+		self._capture_device()
+		self.entries = tuple(deepcopy(entries))
+		self.handle = self._check_device().create_bind_group_layout(entries=self.entries)
+		self._bind_groups = OrderedDict()
+		self._lock = Lock()
 
+	def bind_group(self, bindings):
+		self._check_device()
+		slots = {(bindings.group, entry["binding"]) for entry in self.entries}
+		return _cached_bind_group(self, self.handle, bindings, slots)
+
+	def close(self):
+		self._bind_groups.clear()
+		super().close()
+
+
+class PipelineLayout(_OwnedResource):
+	"""Explicit pipeline ABI; group layout objects own shared bind-group caches."""
+	def __init__(self, groups):
+		self._capture_device()
+		self.groups = tuple(groups)
+		for group in self.groups: group._check_device()
+		self.handle = self._check_device().create_pipeline_layout(bind_group_layouts=[g.handle for g in self.groups])
+		self.binding_slots = {(i, entry["binding"]) for i, group in enumerate(self.groups) for entry in group.entries}
+
+	def close(self):
+		self.groups = ()
+		super().close()
+
+
+def _cached_bind_group(owner, layout, bindings, slots):
+	device = owner._check_device()
+	key = bindings.cache_key(slots)
+	with owner._lock:
+		cached = owner._bind_groups.get(key)
+		if cached is not None:
+			RenderContext.record_stat("bind_group_cache_hits")
+			owner._bind_groups.move_to_end(key)
+			return cached
+		cached = device.create_bind_group(layout=layout, entries=bindings.entries(slots))
+		owner._bind_groups[key] = cached
+		RenderContext.record_stat("bind_group_cache_misses")
+		if len(owner._bind_groups) > _BIND_GROUP_CACHE_LIMIT: owner._bind_groups.popitem(last=False)
+		return cached
+
+
+class _PipelineVariant(_OwnedResource):
 	def __init__(
 		self,
 		handle: wgpu.GPURenderPipeline | wgpu.GPUComputePipeline,
 		bindings: dict[str, BindingInfo] | None = None,
+		layout=None,
 	):
 		self._capture_device()
 		self.handle = handle
+		self.layout = layout
 		self._bind_groups: OrderedDict[tuple, wgpu.GPUBindGroup] = OrderedDict()
 		self._lock = Lock()
 		self.binding_slots = None if bindings is None else {(info.group, info.binding) for info in bindings.values()}
 		groups = {info.group for info in (bindings or {}).values()}
+		if isinstance(layout, PipelineLayout):
+			self.binding_slots = layout.binding_slots
+			groups = {group for group, binding in self.binding_slots}
 		self.empty_groups = tuple(group for group in range(max(groups, default=-1) + 1) if group not in groups)
 
 	def empty_bind_group(self, group):
@@ -2100,22 +2197,10 @@ class _PipelineVariant(_OwnedResource):
 
 	def bind_group(self, bindings: BindGroup) -> wgpu.GPUBindGroup:
 		self._check_device()
-		key = bindings.cache_key()
-		with self._lock:
-			cached = self._bind_groups.get(key)
-			if cached is not None:
-				RenderContext.record_stat("bind_group_cache_hits")
-				self._bind_groups.move_to_end(key)
-				return cached
-			cached = self._check_device().create_bind_group(
-				layout=self.handle.get_bind_group_layout(bindings.group),
-				entries=[entry for entry in bindings.entries() if self.binding_slots is None or (bindings.group, entry["binding"]) in self.binding_slots],
-			)
-			self._bind_groups[key] = cached
-			RenderContext.record_stat("bind_group_cache_misses")
-			if len(self._bind_groups) > self._BIND_GROUP_CACHE_LIMIT:
-				self._bind_groups.popitem(last=False)
-			return cached
+		if isinstance(self.layout, PipelineLayout):
+			self.layout._check_device()
+			return self.layout.groups[bindings.group].bind_group(bindings)
+		return _cached_bind_group(self, self.handle.get_bind_group_layout(bindings.group), bindings, self.binding_slots)
 
 
 class RenderPipeline(_OwnedResource):
@@ -2219,6 +2304,7 @@ class RenderPipeline(_OwnedResource):
 				cached = _PipelineVariant(
 					self._make_pipeline(render_pass, buffers),
 					self.shader.info.used_bindings((self.vertex_entry, self.fragment_entry)) if self.layout == "auto" else self.shader.info.bindings,
+					layout=self.layout,
 				)
 				self._cache[key] = cached
 
@@ -2229,6 +2315,7 @@ class RenderPipeline(_OwnedResource):
 		render_pass: RenderPass,
 		buffers: Sequence[tuple[np.dtype, str]],
 	) -> wgpu.GPURenderPipeline:
+		if isinstance(self.layout, PipelineLayout): self.layout._check_device()
 		if getattr(render_pass, "sample_count", 1) != self.sample_count:
 			raise ValueError("Pipeline and render attachments must have matching sample counts")
 		if self.targets is not None and len(self.targets) != len(render_pass.color_formats):
@@ -2344,7 +2431,7 @@ class RenderPipeline(_OwnedResource):
 
 		return self._check_device().create_render_pipeline(
 			label=self.label or "",
-			layout=self.layout,
+			layout=self.layout.handle if isinstance(self.layout, PipelineLayout) else self.layout,
 			multisample={"count": self.sample_count, "mask": 0xffffffff, "alpha_to_coverage_enabled": False},
 			vertex=wgpu.VertexState(
 				module=self.shader.module,
@@ -2372,6 +2459,7 @@ class ComputePipeline(_OwnedResource):
 		required_features: Sequence[str] = (),
 	):
 		if required_features: RenderContext.require_features(required_features)
+		if isinstance(layout, PipelineLayout): layout._check_device()
 		self.shader = shader
 		if hasattr(shader, '_device'):
 			self._device, self._device_generation = shader._device, shader._device_generation
@@ -2382,14 +2470,14 @@ class ComputePipeline(_OwnedResource):
 
 		handle = self._check_device().create_compute_pipeline(
 			label=label or "",
-			layout=layout,
+			layout=layout.handle if isinstance(layout, PipelineLayout) else layout,
 			compute=wgpu.ProgrammableStage(
 				module=shader.module,
 				entry_point=self.entry,
 			),
 		)
 		self._variant = _PipelineVariant(handle,
-			shader.info.used_bindings((self.entry,)) if layout == "auto" else shader.info.bindings)
+			shader.info.used_bindings((self.entry,)) if layout == "auto" else shader.info.bindings, layout=layout)
 
 	@property
 	def handle(self) -> wgpu.GPUComputePipeline:

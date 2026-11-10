@@ -101,8 +101,7 @@ class MaterialRenderer:
 
 	@staticmethod
 	def _write(buffer, content):
-		if buffer.content.shape != content.shape or buffer.content.tobytes() != content.tobytes():
-			buffer.write(content)
+		buffer.write_changed(content)
 
 	def sync(self):
 		"""Convenience for direct DrawInstance lists; ECS extraction calls update()."""
@@ -116,7 +115,7 @@ class MaterialRenderer:
 		ids = np.array([i.surface_id for i in self.instances], dtype=np.uint64)
 		self.update(mesh_ids, self._bindings(self.instances), transforms, owners=ids, surface_ids=ids)
 
-	def update(self, mesh_ids, bindings, transforms, *, owners, surface_ids):
+	def update(self, mesh_ids, bindings, transforms, *, owners, surface_ids, dirty_materials=None):
 		"""Upload explicit columns. IDs are persistent renderable identities, not rows."""
 		mesh_ids, owners, surface_ids = np.asarray(mesh_ids), np.asarray(owners), np.asarray(surface_ids)
 		n = len(bindings)
@@ -128,7 +127,7 @@ class MaterialRenderer:
 		if surface_ids.dtype.kind not in "iu" or np.any(surface_ids <= 0) or np.any(surface_ids > 0xffffffff) or len(np.unique(surface_ids)) != n:
 			raise ValueError("Surface IDs must be distinct positive uint32 values")
 		# Pack once, before mutations. Instance offsets remain valid after regrouping.
-		headers, shared, instance, ids, offsets = self.library.pack(bindings)
+		headers, shared, instance, ids, offsets = self.library.pack(bindings, dirty_materials=dirty_materials)
 		routes = np.array([int(binding.shader.transparent) for binding in bindings], dtype=np.uint32)
 		self.draws.sync(mesh_ids, routes, labels=owners.astype(np.uint64))
 		order = self.draws.instance_order
@@ -151,13 +150,13 @@ class MaterialRenderer:
 		if self.transparency.set_sample_count(count):
 			self._register_passes()
 
-	def record(self, commands, size, camera, output, *, time=None):
+	def record(self, commands, size, camera, output, *, time=None, light_dir=(0.4, 0.8, 0.3)):
 		"""Record a frame; time overrides elapsed seconds for deterministic animation."""
 		self.sync()
 		oit = self.transparency
 		if size[0] <= 0 or size[1] <= 0: return
 		oit.resize(size)
-		vp = oit.update_camera(camera, time=perf_counter()-self._clock_start if time is None else time)
+		vp = oit.update_camera(camera, time=perf_counter()-self._clock_start if time is None else time, light_dir=light_dir)
 		FrustumCuller().record(commands, self.visibility, camera_position=camera.position, view_projection=vp)
 		external = oit.has_external_opaque_inputs
 		if not external or any(batch.shader_id == 0 and batch.mesh_id is not None for batch in self.draws.draw_batches):

@@ -38,12 +38,18 @@ class EcsMaterialAdapter:
 		self.material_type = material_type
 		self._material_token = self._transform_token = None
 		self._revision = 0
+		self._dirty_materials = []
 		self._next_surface = 1
 		self._owners = np.empty(0, dtype=np.uint64)
 
-	def touch_materials(self):
-		"""Notify edits inside shared/default/override dictionaries retained by reference."""
+	def touch_materials(self, *materials):
+		"""Notify edited dictionaries; no arguments invalidates all resolved records."""
 		self._revision += 1
+		if materials:
+			self._dirty_materials.extend(materials)
+		else:
+			self._material_token = None  # Force a full refresh even if targeted edits follow.
+			self._dirty_materials = []
 
 	def _tokens(self):
 		return ((self.materials.layout_version, self.materials.version(), self._revision),
@@ -83,9 +89,12 @@ class EcsMaterialAdapter:
 			material if material is not None else mesh.material, overrides)
 			for mesh, shader, material, overrides in zip(meshes, shaders, selection.material, selection.overrides)]
 		self.renderer.update(np.array([self.renderer.mesh_ids[mesh] for mesh in meshes], dtype=np.uint32),
-			bindings, self._transforms(owners), owners=owners, surface_ids=ids)
+			bindings, self._transforms(owners), owners=owners, surface_ids=ids,
+			dirty_materials=self._dirty_materials if self._material_token is not None
+			and material_token[:2] == self._material_token[:2] and membership == getattr(self, "_membership", None) else None)
 		if missing.any(): selection.surface_id = ids
 		self._owners = owners.copy()
 		self._membership = membership
 		self._material_token, self._transform_token = self._tokens()
+		self._dirty_materials = []
 		return True

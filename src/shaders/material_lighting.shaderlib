@@ -1,0 +1,14 @@
+// Shared default lighting implementation; family adapters supply coefficients.
+fn evaluate_lighting(material: Material, uv: vec2f, position: vec3f, normal: vec3f,
+    lod: f32, ambient: f32, diffuse_strength: f32, specular_strength: f32) -> vec3f {
+    let color = base_color(material, uv, lod).rgb;
+    let n = normal/max(length(normal), 1e-6);
+    let l = normalize(lighting.light_dir.xyz);
+    let v = normalize(frame.camera_position.xyz-position);
+    let h = normalize(l+v);
+    let diffuse = ambient+diffuse_strength*max(dot(n, l), 0.0);
+    let exponent = mix(128.0, 4.0, clamp(material.surface.x, 0.0, 1.0));
+    let specular = specular_strength*pow(max(dot(n, h), 0.0), exponent)*max(dot(n, l), 0.0);
+    return color*diffuse*(1.0-0.6*material.surface.y)
+        +mix(vec3f(0.04), color, material.surface.y)*specular+material.emission.rgb;
+}

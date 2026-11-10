@@ -23,16 +23,7 @@
 
 #block helpers
 fn default_lighting_{{PREFIX}}(material: Material, p: Params{{PREFIX}}, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
-	let color = base_color(material, uv, lod).rgb;
-	let n = normal/max(length(normal), 1e-6);
-	let l = normalize(frame.light_dir.xyz);
-	let v = normalize(frame.camera_position.xyz-position);
-	let h = normalize(l+v);
-	let diffuse = p.ambient+p.diffuse*max(dot(n, l), 0.0);
-	let exponent = mix(128.0, 4.0, clamp(material.surface.x, 0.0, 1.0));
-	let specular = p.specular*pow(max(dot(n, h), 0.0), exponent)*max(dot(n, l), 0.0);
-	return color*diffuse*(1.0-0.6*material.surface.y)
-		+mix(vec3f(0.04), color, material.surface.y)*specular+material.emission.rgb;
+	return evaluate_lighting(material, uv, position, normal, lod, p.ambient, p.diffuse, p.specular);
 }
 #endblock
 

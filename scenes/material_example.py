@@ -121,7 +121,7 @@ def run_scene():
 		nonlocal alternate
 		alternate = enabled
 		opaque.default_material = {"base_color": (0.6, 0.1, 0.8, 1) if alternate else (0.8, 0.2, 0.08, 1)}
-		adapter.touch_materials()
+		adapter.touch_materials(opaque.default_material)
 	def on_char(code):
 		nonlocal orbit
 		if chr(code).lower() == "m": renderer.set_sample_count(5-renderer.transparency.sample_count)
@@ -155,36 +155,36 @@ def run_scene():
 			changed, value = imgui.slider_float("Shared roughness", shared["roughness"], 0.02, 1)
 			if changed:
 				shared["roughness"] = value
-				adapter.touch_materials()
+				adapter.touch_materials(shared)
 			changed, value = imgui.slider_float("Shared specular", shared["specular"], 0, 8)
 			if changed:
 				shared["specular"] = value
-				adapter.touch_materials()
+				adapter.touch_materials(shared)
 			changed, value = imgui.checkbox("Left glass grazing fade", overrides[2]["grazing_fade"])
 			if changed:
 				overrides[2]["grazing_fade"] = value
-				adapter.touch_materials()
+				adapter.touch_materials(overrides[2])
 			changed, value = imgui.slider_float("Middle glass opacity multiplier", overrides[3].get("opacity_multiplier", 1), 0, 1)
 			if changed:
 				overrides[3]["opacity_multiplier"] = value
-				adapter.touch_materials()
+				adapter.touch_materials(overrides[3])
 			imgui.separator()
 			imgui.text("Top-middle: shader written in this script")
 			changed, value = imgui.slider_float("Stripe frequency", striped.get("stripe_frequency", 8.0), 1, 20)
 			if changed:
 				striped["stripe_frequency"] = value
-				adapter.touch_materials()
+				adapter.touch_materials(striped)
 			changed, value = imgui.color_edit3("Stripe color", striped.get("stripe_color", (1.0, 0.15, 0.03)))
 			if changed:
 				striped["stripe_color"] = tuple(value)
-				adapter.touch_materials()
+				adapter.touch_materials(striped)
 			_, animate = imgui.checkbox("Animate displacement", animate)
 			for name, label, default, low, high in (("displacement", "Displacement", 0.18, 0.0, 0.3),
 				("speed", "Animation speed", 2.0, 0.0, 5.0)):
 				changed, value = imgui.slider_float(label, striped.get(name, default), low, high)
 				if changed:
 					striped[name] = value
-					adapter.touch_materials()
+					adapter.touch_materials(striped)
 			imgui.text_wrapped("D changes only the top-left default. Top-right has an explicit green material. Bottom-right adds inherited rim lighting. M: MSAA; Space: orbit.")
 		finally: imgui.end()
 	RenderContext.subscribe_event("char", on_char)

@@ -126,9 +126,13 @@ class TransparencyPass:
 		self._material_source = material_source
 		self._material_library = material_library
 		self._shader_sets = {}
+		self._geometry_shaders = {}
+		self._layout_cache, self._pipeline_layouts = {}, {}
 		self._activate_shaders(sample_count)
-		self.depth_shader = geometry_shader or self._shader_set(1)[0]
 		self.uniforms = self.shader.uniform_buffer("frame")
+		lighting_shader = next((shader for shader in (self.shader, self.compose_shader)
+			if "lighting" in shader.info.uniforms), None)
+		self.lighting_uniforms = lighting_shader.uniform_buffer("lighting") if lighting_shader else None
 		if blue_noise is None:
 			from .TextureProcessing import get_default_blue_noise
 			blue_noise = get_default_blue_noise()
@@ -143,18 +147,45 @@ class TransparencyPass:
 		self.bilateral_uniforms = self.compose_shader.uniform_buffer("bilateral")
 		self.debug_view = "final"
 		self.set_bilateral_filter(bilateral_filter if bilateral_filter is not None else BilateralFilter())
-		self.shade_pipeline = ComputePipeline(self.shading_shader, entry="shade_winner")
+		self.shade_pipeline = ComputePipeline(self.shading_shader, entry="shade_winner",
+			layout=self._pipeline_layout(self.shading_shader, "shade_winner"))
 		self.compose_pipeline = RenderPipeline(self.compose_shader, vertex_entry="fullscreen",
-			fragment_entry="compose", depth_test=None, depth_write=False, cull_mode="none")
+			fragment_entry="compose", depth_test=None, depth_write=False, cull_mode="none",
+			layout=self._pipeline_layout(self.compose_shader, "fullscreen", "compose"))
 		self.vertices = vertices
 		self.shared = dict(materials=materials, base_textures=base_textures,
 			material_sampler=material_sampler or Sampler(address_mode_u="repeat", address_mode_v="repeat",
 				mag_filter="linear", min_filter="linear", mipmap_filter="linear"))
-		self.shade_frame = self.shading_shader.bind_group(0, frame=self.uniforms)
+		self.shade_frame = self._frame_group(self.shading_shader)
 		self._opaque_inputs = None
 		self._targets = None
 		if opaque_color is not None or opaque_depth is not None:
 			self.set_opaque_inputs(opaque_color, opaque_depth)
+
+	def _geometry_shader(self, count):
+		if count not in self._geometry_shaders:
+			self._geometry_shaders[count] = self._custom_shaders[0] or Shader(
+				filepath=str(SHADERS / "stochastic_geometry.shader"),
+				params={"material_source": self._material_source, "sample_count": count, "material_library": self._material_library})
+		return self._geometry_shaders[count]
+
+	@property
+	def depth_shader(self):
+		"""The auxiliary 1x geometry module is created only when requested."""
+		return self._geometry_shader(1)
+
+	def _frame_group(self, shader):
+		resources = dict(frame=self.uniforms)
+		if "lighting" in shader.info.bindings: resources["lighting"] = self.lighting_uniforms
+		return shader.bind_group(0, **resources)
+
+	def _pipeline_layout(self, shader, *entries):
+		if any(custom is not None for custom in self._custom_shaders): return "auto"
+		key = (shader, entries)
+		if key not in self._pipeline_layouts:
+			from .material_layout import material_pipeline_layout
+			self._pipeline_layouts[key] = material_pipeline_layout(shader, entries, self._layout_cache)
+		return self._pipeline_layouts[key]
 
 	def _shader_set(self, count):
 		if count not in self._shader_sets:
@@ -162,7 +193,7 @@ class TransparencyPass:
 			params = {"material_source": self._material_source, "sample_count": count,
 				"material_library": self._material_library}
 			self._shader_sets[count] = (
-				geometry or Shader(filepath=str(SHADERS / "stochastic_geometry.shader"), params=params),
+				self._geometry_shader(count),
 				shading or Shader(filepath=str(SHADERS / "stochastic_shade.shader"), params=params),
 				compose or Shader(filepath=str(SHADERS / "stochastic_compose.shader"),
 					params={"srgb_surface": self.target_format.endswith("-srgb"), "sample_count": count}),
@@ -195,10 +226,12 @@ class TransparencyPass:
 			self._geometries[-1] = geometry
 			if geometry.creation_args["transparent"]:
 				self._transparent_geometries[-1] = geometry
-		self.shade_pipeline = ComputePipeline(self.shading_shader, entry="shade_winner")
+		self.shade_pipeline = ComputePipeline(self.shading_shader, entry="shade_winner",
+			layout=self._pipeline_layout(self.shading_shader, "shade_winner"))
 		self.compose_pipeline = RenderPipeline(self.compose_shader, vertex_entry="fullscreen",
-			fragment_entry="compose", depth_test=None, depth_write=False, cull_mode="none")
-		self.shade_frame = self.shading_shader.bind_group(0, frame=self.uniforms)
+			fragment_entry="compose", depth_test=None, depth_write=False, cull_mode="none",
+			layout=self._pipeline_layout(self.compose_shader, "fullscreen", "compose"))
+		self.shade_frame = self._frame_group(self.shading_shader)
 		if size is not None:
 			self.resize(size)
 		return True
@@ -215,20 +248,24 @@ class TransparencyPass:
 			raise ValueError("Additional resources must not replace the geometry addressing resources")
 		if any(group.group < 4 for group in geometry_bindings) or any(group.group < 3 for group in shading_bindings):
 			raise ValueError("Extra geometry groups start at 4; extra shading groups start at 3")
-		bindings = (self.shader.bind_group(0, frame=self.uniforms),
+		bindings = (self._frame_group(self.shader),
 			self.shader.bind_group(2, **self.shared, metadata=metadata, **geometry_resources), *geometry_bindings)
 		if transparent:
 			multiply = {"color": {"src_factor": "zero", "dst_factor": "src", "operation": "add"},
 				"alpha": {"src_factor": "zero", "dst_factor": "src-alpha", "operation": "add"}}
 			first = RenderPipeline(self.shader, vertex_entry="vertex", fragment_entry="transmittance",
-				cull_mode="none", depth_write=False, blend=multiply, label="transmittance", sample_count=self.sample_count)
+				cull_mode="none", depth_write=False, blend=multiply, label="transmittance", sample_count=self.sample_count,
+				layout=self._pipeline_layout(self.shader, "vertex", "transmittance"))
 			last = RenderPipeline(self.shader, vertex_entry="vertex", fragment_entry="select_winner",
-				cull_mode="none", label="select_winner", sample_count=self.sample_count)
+				cull_mode="none", label="select_winner", sample_count=self.sample_count,
+				layout=self._pipeline_layout(self.shader, "vertex", "select_winner"))
 			guide = ShaderPass(RenderPipeline(self.shader, vertex_entry="vertex",
-				fragment_entry="transparent_depth", cull_mode="none", label="transparent_depth", sample_count=self.sample_count), bindings)
+				fragment_entry="transparent_depth", cull_mode="none", label="transparent_depth", sample_count=self.sample_count,
+				layout=self._pipeline_layout(self.shader, "vertex", "transparent_depth")), bindings)
 		else:
 			first = last = RenderPipeline(self.shader, vertex_entry="vertex", fragment_entry="opaque",
-				cull_mode="none", label="opaque", sample_count=self.sample_count)
+				cull_mode="none", label="opaque", sample_count=self.sample_count,
+				layout=self._pipeline_layout(self.shader, "vertex", "opaque"))
 			guide = None
 		# Transparent transmittance is a color pass, never an opaque depth prepass.
 		first_pass = "transmittance" if transparent else "prepass"
@@ -258,7 +295,7 @@ class TransparencyPass:
 			options.spatial_sigma, options.depth_sigma, options.transmittance_sigma, options.min_depth_sigma,
 		)
 		self.bilateral_uniforms.content["kernel"] = (options.kernel_size//2, DEBUG_VIEWS.index(self.debug_view), 0, 0)
-		self.bilateral_uniforms.upload()
+		self.bilateral_uniforms.upload_changed()
 		self.bilateral_filter = options
 
 	def set_noise_scale(self, pixels):
@@ -272,7 +309,7 @@ class TransparencyPass:
 			raise ValueError("Noise scale must be a finite, positive normalized float32")
 		self.noise_scale = float(pixels)
 		self.uniforms.content["clip"][..., 2] = pixels
-		self.uniforms.upload()
+		self.uniforms.upload_changed()
 
 	def set_noise_mode(self, mode):
 		"""Select object/UV/triplanar sampling, including correlated hierarchies.
@@ -290,12 +327,12 @@ class TransparencyPass:
 					self._bind_targets(geometry)
 		self.noise_mode = mode
 		self.uniforms.content["clip"][..., 3] = NOISE_MODES.index(mode)
-		self.uniforms.upload()
+		self.uniforms.upload_changed()
 
 	def set_grazing_fade(self, options):
 		"""Change transparent-surface opacity fade without rebuilding GPU resources."""
 		self.uniforms.content["grazing"] = (options.start_angle, options.end_angle, options.enabled, 0)
-		self.uniforms.upload()
+		self.uniforms.upload_changed()
 		self.grazing_fade = options
 
 	def set_debug_view(self, view):
@@ -370,11 +407,17 @@ class TransparencyPass:
 			winner_color=self.winner_color.view(dimension="2d-array") if self.sample_count > 1 else self.winner_color)
 		if self.sample_count > 1: shade_resources["winners_extra"] = self.winner_extra
 		self.shade_targets = self.shading_shader.bind_group(1, **shade_resources)
-		self.compose_resources = self.compose_shader.bind_group(0, main_color=self.main_color,
+		self.compose_frame = self._frame_group(self.compose_shader)
+		compose_resources = dict(main_color=self.main_color,
 			transmittance=self.transmittance,
 			winner_color=self.winner_color.view(dimension="2d-array") if self.sample_count > 1 else self.winner_color, opaque_depth=self.depth,
 			transparent_depth=self.transparent_depth, transparent_guide=self.transparent_guide,
-			frame=self.uniforms, bilateral=self.bilateral_uniforms)
+			bilateral=self.bilateral_uniforms)
+		compose_group = self.compose_shader.info.bindings["main_color"].group
+		if compose_group == 0:
+			compose_resources.update(self.compose_frame.resources)
+			self.compose_frame = None
+		self.compose_resources = self.compose_shader.bind_group(compose_group, **compose_resources)
 		self.size = size
 		return True
 
@@ -406,10 +449,15 @@ class TransparencyPass:
 		except OverflowError: raise ValueError("Frame time must be finite float32 seconds") from None
 		if not np.isfinite(seconds) or abs(seconds) > float(np.finfo(np.float32).max):
 			raise ValueError("Frame time must be finite float32 seconds")
-		for name, value in dict(view=view, proj=projection, light_dir=(*light, 0),
-			camera_position=(*position, 1), clip=(near, far, self.noise_scale, NOISE_MODES.index(self.noise_mode)), time=seconds).items():
-			self.uniforms.content[name] = value
-		self.uniforms.upload()
+		values = dict(view=view, proj=projection,
+			camera_position=(*position, 1), clip=(near, far, self.noise_scale, NOISE_MODES.index(self.noise_mode)), time=seconds).items()
+		for name, value in values: self.uniforms.content[name] = value
+		if "light_dir" in (getattr(getattr(self.uniforms.content, "dtype", None), "names", ()) or ()):
+			self.uniforms.content["light_dir"] = (*light, 0)
+		if self.lighting_uniforms is not None:
+			self.lighting_uniforms.content["light_dir"] = (*light, 0)
+			self.lighting_uniforms.upload_changed()
+		self.uniforms.upload_changed()
 		return view @ projection
 
 	def update_camera(self, camera, *, light_dir=(0.4, 0.8, 0.3), time=0.0):
@@ -459,5 +507,5 @@ class TransparencyPass:
 		if output.format != self.target_format: raise ValueError("Output format must match the configured transparency target_format")
 		with commands.render_pass(color=output, label="5_reconstruct_compose") as render:
 			render.set_pipeline(self.compose_pipeline)
-			render.set_bind_groups(self.compose_resources)
+			render.set_bind_groups(*((self.compose_frame,) if self.compose_frame is not None else ()), self.compose_resources)
 			render.draw(3)

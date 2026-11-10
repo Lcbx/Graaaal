@@ -1,0 +1,14 @@
+// Shared view/frame ABI for material raster, deferred shading, and composition.
+<Frame> view: mat4x4f;
+<Frame> proj: mat4x4f;
+<Frame> camera_position: vec4f;
+// clip: near, far, surface noise-cell width in pixels, noise mode.
+<Frame> clip: vec4f;
+// Legacy direct-material fade: start degrees, end degrees, enabled, reserved.
+<Frame> grazing: vec4f;
+<Frame> time: f32;
+@group(0) @binding(0) var<uniform> frame: Frame;
+
+// Scene lighting changes independently of camera motion and frame time.
+<Lighting> light_dir: vec4f;
+@group(0) @binding(1) var<uniform> lighting: Lighting;

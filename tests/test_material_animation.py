@@ -37,9 +37,9 @@ def test_time_is_opt_in_and_does_not_occupy_material_or_instance_slots():
 	assert animated.parameters["time"].scope == "frame"
 	library = MaterialLibrary([plain, animated])
 	_, shared, instances, _, offsets = library.pack([MaterialBinding(plain), MaterialBinding(animated)])
-	assert len(shared) == 2*sum(p.scope == "material" for p in plain.parameters.values())
-	assert len(instances) == 2*sum(p.scope == "instance" for p in plain.parameters.values())
-	assert offsets[1] == sum(p.scope == "instance" for p in plain.parameters.values())
+	assert len(shared) == 2*library.parameter_layouts[plain]["material"].slot_count
+	assert len(instances) == 2*library.parameter_layouts[plain]["instance"].slot_count
+	assert offsets[1] == library.parameter_layouts[plain]["instance"].slot_count
 	for binding in (MaterialBinding(animated, {"time": 1}), MaterialBinding(animated, overrides={"time": 1})):
 		with pytest.raises(ValueError, match="renderer-owned"):
 			library.pack([binding])
