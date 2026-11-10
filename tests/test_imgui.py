@@ -150,7 +150,7 @@ def test_both_scenes_render_real_imgui_draw_data_to_gpu(monkeypatch):
 	world = create_world()
 	cache = ActorCache(world, world.query(Damageable, Attributes, ActorMetadata))
 	cache.update()
-	renderer = NS(bilateral_filter=BilateralFilter(), debug_view="final", sample_count=1,
+	renderer = NS(bilateral_filter=BilateralFilter(), debug_view="final", sample_count=1, winner_count=1,
 		noise_mode="uv_blue_lerp", noise_scale=1, effective_noise_scale=1, noise_footprint_balance=0,
 		noise_footprint_balancing=False, grazing_fade=GrazingFade())
 	settings = FilterSettings(renderer)

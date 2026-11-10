@@ -17,31 +17,37 @@ from .RenderContext import (
 
 
 _default_blue_noise = None
+_default_blue_noise_second = None
 
 
-def get_default_blue_noise():
+def get_default_blue_noise(*, stream=0):
 	"""Lazily upload the packaged tile, sharing it among active device users.
 
 	The weak cache does not retain GPU devices after renderers are released.
 	A closed texture or a changed RenderContext device/generation is a cache miss.
 	Only NumPy is needed to decode the packaged sample data.
+	stream=1 uploads the separate HDR_L_1 realization for a second winner draw.
 	"""
-	global _default_blue_noise
-	texture = _default_blue_noise() if _default_blue_noise is not None else None
+	if type(stream) is not int or stream not in (0, 1):
+		raise ValueError("Blue-noise stream must be 0 or 1")
+	global _default_blue_noise, _default_blue_noise_second
+	reference = _default_blue_noise if stream == 0 else _default_blue_noise_second
+	texture = reference() if reference is not None else None
 	if texture is not None:
 		try:
 			texture._check_device()
 			return texture
 		except RuntimeError:
 			pass
-	from .Assets import load_blue_noise
-	thresholds = load_blue_noise()
+	from .Assets import DEFAULT_BLUE_NOISE_PATH, load_blue_noise
+	thresholds = load_blue_noise(None if stream == 0 else DEFAULT_BLUE_NOISE_PATH.with_name("64x64_second.npy"))
 	height, width = thresholds.shape
 	texture = Texture((width, height), format="r32float",
 		usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST, label="default_blue_noise")
 	RenderContext.device.queue.write_texture({"texture": texture.handle}, thresholds,
 		{"bytes_per_row": width*4}, (width, height, 1))
-	_default_blue_noise = weakref.ref(texture)
+	if stream == 0: _default_blue_noise = weakref.ref(texture)
+	else: _default_blue_noise_second = weakref.ref(texture)
 	return texture
 
 

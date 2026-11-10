@@ -98,7 +98,7 @@ orbit = False
 distance = 0.0
 
 
-def init_scene(path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_PATH, grazing_fade=None, sample_count=1):
+def init_scene(path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_PATH, grazing_fade=None, sample_count=1, winner_count=1):
 	"""Initialize the example's global render data after device setup."""
 	global transparency, opaque, transparent, camera, hzb, center, radius, angle, orbit, distance
 	primitives, materials, images, vertices = load_transparency_scene(path)
@@ -108,16 +108,18 @@ def init_scene(path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_P
 	center = (positions.min(axis=0) + positions.max(axis=0)) * 0.5
 	radius = max(float(np.linalg.norm(np.ptp(positions, axis=0))) * 0.8, 1.0)
 	textures = build_material_texture_array(images, materials, (TEXTURE_SIZE, TEXTURE_SIZE))
-	noise = load_blue_noise(blue_noise_path)
-	noise_size = (noise.shape[1], noise.shape[0])
-	blue_noise = Texture(noise_size, format="r32float", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
-	RenderContext.device.queue.write_texture({"texture": blue_noise.handle}, noise,
-		{"bytes_per_row": noise.shape[1]*4}, (*noise_size, 1))
+	blue_noise = None
+	if blue_noise_path is not None and Path(blue_noise_path) != DEFAULT_BLUE_NOISE_PATH:
+		noise = load_blue_noise(blue_noise_path)
+		noise_size = (noise.shape[1], noise.shape[0])
+		blue_noise = Texture(noise_size, format="r32float", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
+		RenderContext.device.queue.write_texture({"texture": blue_noise.handle}, noise,
+			{"bytes_per_row": noise.shape[1]*4}, (*noise_size, 1))
 	transparency = TransparencyPass(
 		materials=GpuBuffer(materials, BufferUsage.STORAGE | BufferUsage.COPY_DST),
 		base_textures=textures.view(dimension="2d-array"),
 		vertices=GpuBuffer(vertices, BufferUsage.STORAGE | BufferUsage.COPY_DST), blue_noise=blue_noise,
-		bilateral_filter=bilateral_filter, grazing_fade=grazing_fade, sample_count=sample_count)
+		bilateral_filter=bilateral_filter, grazing_fade=grazing_fade, sample_count=sample_count, winner_count=winner_count)
 	hzb = HZB()
 	opaque = GeometryBatches(primitives, materials, transparency, False)
 	transparent = GeometryBatches(primitives, materials, transparency, True)
@@ -160,12 +162,15 @@ DEBUG_VIEW_HELP = {
 	"final": "Final image: opaque color seen through the transparent surfaces, plus reconstructed transparent color.",
 	"transmittance": "Scalar light transmission: white means fully transparent and black means fully opaque. "
 		"Use this to check opacity independently of winner selection and reconstruction.",
-	"winner": "Raw color of the selected transparent fragment at each pixel. "
-		"Black pixels have no winner. This view reveals the stochastic pattern before filtering.",
+	"winner": "Raw selected color, averaged across streams in two-winner mode. "
+		"Missing winners contribute zero. This view reveals the stochastic pattern before filtering.",
 	"reconstruction": "Filtered transparent contribution without the opaque background. "
 		"Use this to compare smoothing and edge preservation while tuning.",
 	"filter_support": "Effective filter support as a fraction of the kernel area. Brighter pixels have more useful "
 		"filter weight spread across neighbors. This includes samples without a winner; brightness does not count surviving fragments.",
+	"winner_a": "Raw first-stream color, before filtering. Missing winners are black.",
+	"winner_b": "Raw second-stream color, before filtering. Equals the first stream in single-winner mode or at exact certainty.",
+	"winner_count": "Valid-stream fraction: black means none, gray means one of two, white means all streams. With MSAA, averaged across hardware samples.",
 }
 
 
@@ -286,6 +291,9 @@ class FilterSettings:
 				"Reconstruction resolves linear HDR before tone mapping. Costs additional GPU time and memory; no temporal accumulation.")
 			if changed:
 				self.renderer.set_sample_count((1, 4)[index])
+			changed, index = imgui.combo("Winner draws", self.renderer.winner_count-1, ("1", "2"))
+			_item_tooltip("Two draws with replacement reduce missing winners and sampling variance. Costs another selection and shading pass; does not supersample silhouettes.")
+			if changed: self.renderer.set_winner_count(index+1)
 			imgui.separator_text("Noise sampling")
 			changed, index = imgui.combo("Noise sampling (N)", NOISE_MODES.index(self.renderer.noise_mode), NOISE_LABELS)
 			_item_tooltip("UV modes point-sample two surface-anchored octaves and use object hashing when UVs are degenerate. "
@@ -426,9 +434,10 @@ def render_frame():
 			transparent.draw(render, "main", pass_override=transparent.passes.guide)
 	with transparency.transmittance_pass(commands) as render:
 		transparent.draw(render, "transmittance")
-	with transparency.selection_pass(commands) as render:
-		transparent.draw(render, "main")
-	transparency.shade_winner(commands, transparent.passes)
+	for stream, name in enumerate(("main", "second")[:transparency.winner_count]):
+		with transparency.selection_pass(commands) as render:
+			transparent.draw(render, name)
+		transparency.shade_winner(commands, transparent.passes, stream=stream)
 	transparency.compose(commands, RenderContext.screen())
 	RenderContext.submit(commands.finish())
 	return True

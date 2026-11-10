@@ -17,6 +17,7 @@ function. `main()` parses command-line arguments; the CPU helpers need no window
 | `benchmark_ecs_uploads.py` | `main()` instruments `CubeInstances.update` and `GpuBuffer.upload` in a bounded direct-draw scene, including initialization. |
 | `diagnose_noise_tilt.py` | GPU threshold-image x/y autocorrelation at 0/60/75/83 degrees for UV footprint balances 0/0.5/1. Reports spatial FWHM in screen pixels, not timing. |
 | `diagnose_anchored_noise.py` | Same-ID rear-layer win rates at 0.1–2 coarse-cell separations, plus point-to-pixel-to-anchor pan/orbit/dolly/wind comparisons. |
+| `diagnose_multiple_winners.py` | Joint A/B validity, low-frequency error power, same-ID layer correlation, camera sweeps, and synthetic GPU timing versus 5x5 and 4x MSAA. |
 | `../../src/tests/benchmark_array_access.py` | `benchmark(count=100000, samples=7, iterations=30)` returns JSON-compatible measurements of copies, reusable gathers and dense edits. |
 
 ```powershell
@@ -26,6 +27,7 @@ python scenes/benchmarks/benchmark_ecs_uploads.py --frames 120 --output ecs_uplo
 python scenes/benchmarks/diagnose_noise_tilt.py --output noise_tilt.csv --images noise_tilt.npz
 python scenes/benchmarks/diagnose_noise_tilt.py --mode anchored_blue --output anchored_tilt.csv
 python scenes/benchmarks/diagnose_anchored_noise.py --output anchored_audit.json
+python -m scenes.benchmarks.diagnose_multiple_winners --frames 30 --output multiple_winners_audit.json
 python src/tests/benchmark_array_access.py
 ```
 
@@ -40,6 +42,17 @@ diagnostic explicitly compiles the balancing shader feature; the engine default
 has it disabled.
 NPZ image storage is optional; increasing oversampling helps resolve compressed
 grain but raises GPU/readback/FFT costs. It does not measure camera-motion swim.
+
+The multiple-winner diagnostic uses the production noise helpers with separate
+default tiles/hierarchies. It reports all noise modes at p=0.1/0.5/0.9, including
+joint validity and error power in 0 < frequency <= 1/8 cycles/pixel. A null power
+ratio means the reference band has no measurable power. Same-ID overlap and
+point-to-pixel camera sweeps expose remaining correlation and acceptance changes;
+these are not rendered motion-quality measurements. GPU timestamps surround the
+complete material renderer in a synthetic two-colored-sheet scene. If timestamp
+queries are unavailable, synchronized CPU+GPU wall time is reported separately.
+The four configurations have measured costs, not an assumed equal-time budget;
+use `--size` and `--frames` to repeat at useful resolutions and sample counts.
 
 The paired script requires a compatible saved baseline. `benchmark_ecs.py` also
 accepts `--implementation path/to/exported/ECS.py`. Both loaders expect a standalone

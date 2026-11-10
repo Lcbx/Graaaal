@@ -13,6 +13,15 @@
 #endif
 @group(3) @binding(1) var blue_noise: texture_2d<f32>;
 @group(3) @binding(2) var noise_hierarchy: texture_2d<f32>;
+#if PARAMS.get("winner_count", 1) == 2
+<WinnerSettings> info: vec4u;
+@group(3) @binding(3) var<uniform> winner_settings: WinnerSettings;
+#if PARAMS.get("sample_count", 1) > 1
+@group(3) @binding(4) var winner_guide: texture_multisampled_2d<f32>;
+#else
+@group(3) @binding(4) var winner_guide: texture_2d<f32>;
+#endif
+#endif
 
 <VertexInput> position: vec3f;
 <VertexInput> normal: vec3f;
@@ -175,6 +184,14 @@ fn select_winner(input: VertexOutput, @builtin(front_facing) front: bool, @built
 	let local_dy = dpdyFine(input.local);
 	let uv_dx = dpdxFine(input.uv);
 	let uv_dy = dpdyFine(input.uv);
+#if PARAMS.get("winner_count", 1) == 2
+	seed = noise_stream_seed(seed, winner_settings.info.x);
+	// All material and noise derivatives have been evaluated before this discard.
+	// The 1x1 path does not produce a guide and sets info.y to zero.
+	if winner_settings.info.y != 0u {
+		if textureLoad(winner_guide, pixel, i32(sample)).x == 1.0 { discard; }
+	}
+#endif
 	var u: f32;
 	if mode == 7u {
 		u = anchored_blue_threshold(blue_noise, input.position.xy, input.local, local_dx, local_dy,

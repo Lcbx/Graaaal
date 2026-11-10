@@ -154,6 +154,10 @@ class MaterialRenderer:
 		if self.transparency.set_noise_footprint_balancing(enabled):
 			self._register_passes()
 
+	def set_winner_count(self, count):
+		if self.transparency.set_winner_count(count):
+			self._register_passes()
+
 	def record(self, commands, size, camera, output, *, time=None, light_dir=(0.4, 0.8, 0.3)):
 		"""Record a frame; time overrides elapsed seconds for deterministic animation."""
 		self.sync()
@@ -169,9 +173,12 @@ class MaterialRenderer:
 			with oit.opaque_pass(commands, load=external) as render:
 				self.draws.draw(render, self.visibility, "opaque")
 		for begin, name in ((oit.guide_pass, "guide"),
-			(oit.transmittance_pass, "transmittance"), (oit.selection_pass, "main")):
+			(oit.transmittance_pass, "transmittance")):
 			if name == "guide" and oit.bilateral_filter.kernel_size == 1: continue
 			with begin(commands) as render:
 				self.draws.draw(render, self.visibility, name)
-		oit.shade_winner(commands, self.geometry[1])
+		for stream, name in enumerate(("main", "second")[:oit.winner_count]):
+			with oit.selection_pass(commands) as render:
+				self.draws.draw(render, self.visibility, name)
+			oit.shade_winner(commands, self.geometry[1], stream=stream)
 		oit.compose(commands, output)

@@ -53,7 +53,12 @@ import paths start with `scenes.` when running from the repository root.
 
 ## Transparency controls
 
-The settings window is visible at startup. Drag values or Ctrl+click to type;
+The settings window is visible at startup. **Winner draws** selects one (default)
+or two stochastic selections, independently of MSAA. Two draws reduce missing
+winners and noise; they add a selection/shading pass and do not supersample edges.
+Diagnostic views include each stream and the valid-stream fraction. See the
+[two-winner plan and findings](../transparency_multiple_winners.md).
+Drag values or Ctrl+click to type;
 hover controls for units and tuning guidance. ImGui captures input while editing
 widgets, so those actions do not also move the camera or trigger scene shortcuts.
 

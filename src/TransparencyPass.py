@@ -26,7 +26,8 @@ from .TransparencyData import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE
 
 
 SHADERS = Path(__file__).with_name("shaders")
-DEBUG_VIEWS = ("final", "transmittance", "winner", "reconstruction", "filter_support")
+DEBUG_VIEWS = ("final", "transmittance", "winner", "reconstruction", "filter_support",
+	"winner_a", "winner_b", "winner_count")
 KERNEL_SIZES = (1, 3, 5, 9)
 MSAA_SAMPLE_COUNTS = (1, 4)
 NOISE_MODES = ("object_hash", "uv_blue_lerp", "uv_blue_pick", "uv_bayer",
@@ -99,6 +100,7 @@ class TransparencyTargets:
 	winner: Texture
 	winner_color: Texture
 	winner_extra: Texture | None = None
+	winner_first: Texture | None = None
 
 
 class TransparencyPass:
@@ -110,9 +112,9 @@ class TransparencyPass:
 	Custom deformation uses a matched geometry_shader/shading_shader pair with
 	the documented winner/metadata ABI. Animation data preparation is caller-owned.
 	"""
-	def __init__(self, *, materials, base_textures, vertices, blue_noise=None,
+	def __init__(self, *, materials, base_textures, vertices, blue_noise=None, blue_noise_second=None,
 		material_sampler=None, bilateral_filter=None, target_format=None, noise_scale=1.0, noise_mode="uv_blue_lerp",
-		grazing_fade=None, sample_count=1, noise_footprint_balance=0.0, noise_footprint_balancing=False,
+		grazing_fade=None, sample_count=1, winner_count=1, noise_footprint_balance=0.0, noise_footprint_balancing=False,
 		noise_anchor_pixels=24.0, noise_anchor_subdivisions=4,
 		opaque_color=None, opaque_depth=None, material_source=None, material_library=None,
 		geometry_shader=None, shading_shader=None, compose_shader=None):
@@ -120,11 +122,16 @@ class TransparencyPass:
 			raise ValueError("Custom deformation requires matched geometry and shading shaders")
 		if type(sample_count) is not int or sample_count not in MSAA_SAMPLE_COUNTS:
 			raise ValueError("Transparency sample_count must be 1 or 4")
+		if type(winner_count) is not int or winner_count not in (1, 2):
+			raise ValueError("Transparency winner_count must be 1 or 2")
+		if winner_count == 2 and any(s is not None for s in (geometry_shader, shading_shader, compose_shader)):
+			raise ValueError("Two winners require the default shader set; material hooks remain supported")
 		if type(noise_footprint_balancing) is not bool:
 			raise ValueError("Noise footprint balancing must be boolean")
 		target_format = target_format or getattr(RenderContext, "presentation_format", "rgba8unorm")
 		self.target_format = target_format
 		self.sample_count = sample_count
+		self.winner_count = winner_count
 		self.noise_footprint_balancing = noise_footprint_balancing
 		self._custom_shaders = (geometry_shader, shading_shader, compose_shader)
 		self._material_source = material_source
@@ -132,22 +139,27 @@ class TransparencyPass:
 		self._shader_sets = {}
 		self._geometry_shaders = {}
 		self._layout_cache, self._pipeline_layouts = {}, {}
+		self._winner_settings = None
 		self._activate_shaders(sample_count)
 		self.uniforms = self.shader.uniform_buffer("frame")
 		lighting_shader = next((shader for shader in (self.shader, self.compose_shader)
 			if "lighting" in shader.info.uniforms), None)
 		self.lighting_uniforms = lighting_shader.uniform_buffer("lighting") if lighting_shader else None
+		self._default_noise = blue_noise is None
 		if blue_noise is None:
 			from .TextureProcessing import get_default_blue_noise
 			blue_noise = get_default_blue_noise()
 		self.noise = blue_noise
+		self.noise_second = blue_noise_second
 		self._noise_hierarchy = None
+		self._noise_hierarchy_second = None
 		self._transparent_geometries = []
 		self._geometries = []
 		self.size = None
 		self.set_noise_scale(noise_scale)
 		self.set_noise_footprint_balance(noise_footprint_balance)
 		self.set_noise_anchor(noise_anchor_pixels, noise_anchor_subdivisions)
+		self._ensure_second_noise()
 		self.set_noise_mode(noise_mode)
 		self.set_grazing_fade(grazing_fade if grazing_fade is not None else GrazingFade())
 		self.bilateral_uniforms = self.compose_shader.uniform_buffer("bilateral")
@@ -155,6 +167,7 @@ class TransparencyPass:
 		self.set_bilateral_filter(bilateral_filter if bilateral_filter is not None else BilateralFilter())
 		self.shade_pipeline = ComputePipeline(self.shading_shader, entry="shade_winner",
 			layout=self._pipeline_layout(self.shading_shader, "shade_winner"))
+		self.mix_pipeline = self._create_mix_pipeline()
 		self.compose_pipeline = RenderPipeline(self.compose_shader, vertex_entry="fullscreen",
 			fragment_entry="compose", depth_test=None, depth_write=False, cull_mode="none",
 			layout=self._pipeline_layout(self.compose_shader, "fullscreen", "compose"))
@@ -169,12 +182,13 @@ class TransparencyPass:
 			self.set_opaque_inputs(opaque_color, opaque_depth)
 
 	def _geometry_shader(self, count):
-		key = (count, self.noise_footprint_balancing)
+		key = (count, self.noise_footprint_balancing, self.winner_count)
 		if key not in self._geometry_shaders:
 			self._geometry_shaders[key] = self._custom_shaders[0] or Shader(
 				filepath=str(SHADERS / "stochastic_geometry.shader"),
 				features=("NOISE_FOOTPRINT_BALANCE",) if self.noise_footprint_balancing else (),
-				params={"material_source": self._material_source, "sample_count": count, "material_library": self._material_library})
+				params={"material_source": self._material_source, "sample_count": count,
+					"winner_count": self.winner_count, "material_library": self._material_library})
 		return self._geometry_shaders[key]
 
 	@property
@@ -196,21 +210,57 @@ class TransparencyPass:
 		return self._pipeline_layouts[key]
 
 	def _shader_set(self, count):
-		key = (count, self.noise_footprint_balancing)
+		key = (count, self.noise_footprint_balancing, self.winner_count)
 		if key not in self._shader_sets:
 			geometry, shading, compose = self._custom_shaders
 			params = {"material_source": self._material_source, "sample_count": count,
-				"material_library": self._material_library}
+				"material_library": self._material_library, "winner_count": self.winner_count}
 			self._shader_sets[key] = (
 				self._geometry_shader(count),
 				shading or Shader(filepath=str(SHADERS / "stochastic_shade.shader"), params=params),
 				compose or Shader(filepath=str(SHADERS / "stochastic_compose.shader"),
-					params={"srgb_surface": self.target_format.endswith("-srgb"), "sample_count": count}),
+					params={"srgb_surface": self.target_format.endswith("-srgb"), "sample_count": count,
+						"winner_count": self.winner_count}),
 			)
 		return self._shader_sets[key]
 
 	def _activate_shaders(self, count):
 		self.shader, self.shading_shader, self.compose_shader = self._shader_set(count)
+		if self.winner_count == 2 and self._winner_settings is None:
+			self._winner_settings = [self.shader.uniform_buffer("winner_settings") for _ in range(2)]
+			for stream, settings in enumerate(self._winner_settings):
+				settings.content["info"] = (stream, 0, 0, 0)
+				settings.upload()
+
+	def _create_mix_pipeline(self):
+		if self.winner_count == 1: return None
+		return ComputePipeline(self.shading_shader, entry="shade_mix",
+			layout=self._pipeline_layout(self.shading_shader, "shade_mix"))
+
+	def _ensure_second_noise(self):
+		if self.winner_count == 1 or self.noise_second is not None: return
+		if self._default_noise:
+			from .TextureProcessing import get_default_blue_noise
+			self.noise_second = get_default_blue_noise(stream=1)
+		else:
+			# Explicit single-channel overrides keep their source; stream hashing
+			# selects a different phase. Supply blue_noise_second for a separate tile.
+			self.noise_second = self.noise
+
+	def set_winner_count(self, count):
+		"""Switch one/two draws with replacement; MSAA count is independent."""
+		if type(count) is not int or count not in (1, 2):
+			raise ValueError("Transparency winner_count must be 1 or 2")
+		if count == self.winner_count: return False
+		if any(shader is not None for shader in self._custom_shaders):
+			raise ValueError("Runtime winner switching requires the default shader set")
+		self.winner_count = count
+		self._ensure_second_noise()
+		self._activate_shaders(self.sample_count)
+		self._rebuild_geometry()
+		self.set_noise_mode(self.noise_mode)
+		self.set_bilateral_filter(self.bilateral_filter)
+		return True
 
 	def set_sample_count(self, count):
 		"""Switch 1x/4x MSAA, preserving geometry registration and live settings."""
@@ -243,6 +293,7 @@ class TransparencyPass:
 				self._transparent_geometries[-1] = geometry
 		self.shade_pipeline = ComputePipeline(self.shading_shader, entry="shade_winner",
 			layout=self._pipeline_layout(self.shading_shader, "shade_winner"))
+		self.mix_pipeline = self._create_mix_pipeline()
 		self.compose_pipeline = RenderPipeline(self.compose_shader, vertex_entry="fullscreen",
 			fragment_entry="compose", depth_test=None, depth_write=False, cull_mode="none",
 			layout=self._pipeline_layout(self.compose_shader, "fullscreen", "compose"))
@@ -286,6 +337,8 @@ class TransparencyPass:
 		geometry = GeometryPasses(RenderShader({"main": ShaderPass(last, bindings), first_pass: ShaderPass(first, bindings)}),
 			guide, self.shading_shader.bind_group(2, **self.shared, metadata=metadata, vertices=self.vertices,
 				shading_instances=instances, **shading_resources), self, tuple(shading_bindings))
+		if transparent and self.winner_count == 2:
+			geometry.render_shader.passes["second"] = ShaderPass(last, bindings)
 		geometry.creation_args = dict(metadata=metadata, transparent=transparent, instances=instances,
 			geometry_resources=geometry_resources, shading_resources=shading_resources,
 			geometry_bindings=tuple(geometry_bindings), shading_bindings=tuple(shading_bindings))
@@ -298,9 +351,14 @@ class TransparencyPass:
 
 	def _bind_targets(self, geometry):
 		bindings = geometry.render_shader['transmittance'].bindings
-		geometry.render_shader['main'].bindings = bindings + (
-			self.shader.bind_group(3, opaque_depth=self.depth, blue_noise=self.noise,
-				noise_hierarchy=self._noise_hierarchy if self._noise_hierarchy is not None else self.noise),)
+		for stream, name in enumerate(("main", "second")[:self.winner_count]):
+			noise = self.noise if stream == 0 else self.noise_second
+			hierarchy = self._noise_hierarchy if stream == 0 else self._noise_hierarchy_second
+			resources = dict(opaque_depth=self.depth, blue_noise=noise,
+				noise_hierarchy=hierarchy if hierarchy is not None else noise)
+			if self.winner_count == 2:
+				resources.update(winner_settings=self._winner_settings[stream], winner_guide=self.transparent_guide)
+			geometry.render_shader[name].bindings = bindings + (self.shader.bind_group(3, **resources),)
 		geometry.guide.bindings = bindings + (self.shader.bind_group(3, opaque_depth=self.depth),)
 
 	def set_bilateral_filter(self, options):
@@ -311,6 +369,9 @@ class TransparencyPass:
 		self.bilateral_uniforms.content["kernel"] = (options.kernel_size//2, DEBUG_VIEWS.index(self.debug_view), 0, 0)
 		self.bilateral_uniforms.upload_changed()
 		self.bilateral_filter = options
+		if self._winner_settings is not None:
+			self._winner_settings[1].content["info"] = (1, int(options.kernel_size != 1), 0, 0)
+			self._winner_settings[1].upload_changed()
 
 	@property
 	def effective_noise_scale(self):
@@ -375,6 +436,11 @@ class TransparencyPass:
 			if self.size is not None:
 				for geometry in self._transparent_geometries:
 					self._bind_targets(geometry)
+		if mode in ("uv_blue_correlated", "triplanar_correlated") and self.winner_count == 2 and self._noise_hierarchy_second is None:
+			from .TextureProcessing import build_correlated_noise_hierarchy
+			self._noise_hierarchy_second = build_correlated_noise_hierarchy(self.noise_second)
+			if self.size is not None:
+				for geometry in self._transparent_geometries: self._bind_targets(geometry)
 		self.noise_mode = mode
 		self.uniforms.content["clip"][..., 3] = NOISE_MODES.index(mode)
 		self.uniforms.upload_changed()
@@ -420,7 +486,6 @@ class TransparencyPass:
 			return False
 		if size == self.size and (targets is None or targets is getattr(self, "_targets", None)):
 			return False
-		attachment = TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING
 		inputs = getattr(self, "_opaque_inputs", None)
 		if inputs and inputs[0].size[:2] != size: raise ValueError("Opaque input dimensions do not match transparency targets")
 		formats = {"main_color": "rgba16float", "depth": "depth32float", "transparent_depth": "depth32float",
@@ -429,12 +494,14 @@ class TransparencyPass:
 		if self.sample_count == 4:
 			formats["winner"] = "rgba16uint"
 			formats["winner_extra"] = "rgba16uint"
+		if self.winner_count == 2: formats["winner_first"] = "rgba16float"
 		if targets is not None:
 			for name, format in formats.items():
 				texture = getattr(targets, name)
-				usage = TextureUsage.TEXTURE_BINDING | (TextureUsage.STORAGE_BINDING if name == "winner_color" else TextureUsage.RENDER_ATTACHMENT)
-				count = 1 if name == "winner_color" else self.sample_count
-				layers = self.sample_count if name == "winner_color" else 1
+				shaded = name in ("winner_color", "winner_first")
+				usage = TextureUsage.TEXTURE_BINDING | (TextureUsage.STORAGE_BINDING if shaded else TextureUsage.RENDER_ATTACHMENT)
+				count = 1 if shaded else self.sample_count
+				layers = self.sample_count if shaded else 1
 				if texture is None or texture.size != (*size, layers) or texture.format != format or texture.sample_count != count or texture.usage & usage != usage:
 					raise ValueError(f"Invalid transparency target {name}: expected {size}, {format}, {count} samples, {layers} layers, usage {usage}")
 		else:
@@ -443,26 +510,38 @@ class TransparencyPass:
 				if inputs and name in ("main_color", "depth"):
 					values[name] = inputs[0 if name == "main_color" else 1]
 				else:
-					usage = TextureUsage.TEXTURE_BINDING | (TextureUsage.STORAGE_BINDING if name == "winner_color" else TextureUsage.RENDER_ATTACHMENT)
-					count = 1 if name == "winner_color" else self.sample_count
-					texture_size = (*size, self.sample_count) if name == "winner_color" else size
+					shaded = name in ("winner_color", "winner_first")
+					usage = TextureUsage.TEXTURE_BINDING | (TextureUsage.STORAGE_BINDING if shaded else TextureUsage.RENDER_ATTACHMENT)
+					count = 1 if shaded else self.sample_count
+					texture_size = (*size, self.sample_count) if shaded else size
 					values[name] = Texture(texture_size, format=format, usage=usage, label=name, sample_count=count)
 			targets = TransparencyTargets(**values)
 		for name in formats: setattr(self, name, getattr(targets, name))
 		self.winner_extra = targets.winner_extra
+		self.winner_first = targets.winner_first if self.winner_count == 2 else None
 		self._targets = targets
 		for geometry in self._transparent_geometries:
 			self._bind_targets(geometry)
+		def shaded_view(texture):
+			return texture.view(dimension="2d-array") if self.sample_count > 1 else texture
 		shade_resources = dict(winners=self.winner,
-			winner_color=self.winner_color.view(dimension="2d-array") if self.sample_count > 1 else self.winner_color)
+			winner_color=shaded_view(self.winner_first if self.winner_count == 2 else self.winner_color))
 		if self.sample_count > 1: shade_resources["winners_extra"] = self.winner_extra
+		if self.winner_count == 2:
+			shade_resources.update(first_color=shaded_view(self.winner_color), winner_guide=self.transparent_guide,
+				winner_settings=self._winner_settings[1])
 		self.shade_targets = self.shading_shader.bind_group(1, **shade_resources)
+		self.mix_targets = None
+		if self.winner_count == 2:
+			self.mix_targets = self.shading_shader.bind_group(1, **dict(shade_resources,
+				winner_color=shaded_view(self.winner_color), first_color=shaded_view(self.winner_first)))
 		self.compose_frame = self._frame_group(self.compose_shader)
 		compose_resources = dict(main_color=self.main_color,
 			transmittance=self.transmittance,
 			winner_color=self.winner_color.view(dimension="2d-array") if self.sample_count > 1 else self.winner_color, opaque_depth=self.depth,
 			transparent_depth=self.transparent_depth, transparent_guide=self.transparent_guide,
 			bilateral=self.bilateral_uniforms)
+		if self.winner_count == 2: compose_resources["first_color"] = shaded_view(self.winner_first)
 		compose_group = self.compose_shader.info.bindings["main_color"].group
 		if compose_group == 0:
 			compose_resources.update(self.compose_frame.resources)
@@ -541,13 +620,16 @@ class TransparencyPass:
 		return commands.render_pass(color=colors,
 			depth=self.selection_depth.depth_attachment(clear=1), label="3_select_winner")
 
-	def shade_winner(self, commands, geometry):
+	def shade_winner(self, commands, geometry, *, stream=0):
 		"""Record deferred shading for the metadata used during winner selection."""
 		width, height = self._require_targets()
 		if geometry.owner is not self: raise ValueError("Geometry passes belong to another transparency pass")
-		with commands.compute_pass(label="4_shade_winner") as compute:
-			compute.set_pipeline(self.shade_pipeline)
-			for bindings in (self.shade_frame, self.shade_targets, geometry.shading, *geometry.shading_bindings):
+		if type(stream) is not int or not 0 <= stream < self.winner_count:
+			raise ValueError("Winner stream must be less than winner_count")
+		with commands.compute_pass(label=f"4_shade_winner_{stream}") as compute:
+			compute.set_pipeline(self.shade_pipeline if stream == 0 else self.mix_pipeline)
+			targets = self.shade_targets if stream == 0 else self.mix_targets
+			for bindings in (self.shade_frame, targets, geometry.shading, *geometry.shading_bindings):
 				compute.set_bind_group(bindings)
 			compute.dispatch((width+7)//8, (height+7)//8, self.sample_count)
 

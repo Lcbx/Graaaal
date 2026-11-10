@@ -17,6 +17,18 @@
 @group(1) @binding(1) var winner_color: texture_storage_2d<rgba16float, write>;
 #endif
 
+#if PARAMS.get("winner_count", 1) == 2
+<WinnerSettings> info: vec4u;
+@group(1) @binding(5) var<uniform> winner_settings: WinnerSettings;
+#if PARAMS.get("sample_count", 1) > 1
+@group(1) @binding(3) var first_color: texture_2d_array<f32>;
+@group(1) @binding(4) var winner_guide: texture_multisampled_2d<f32>;
+#else
+@group(1) @binding(3) var first_color: texture_2d<f32>;
+@group(1) @binding(4) var winner_guide: texture_2d<f32>;
+#endif
+#endif
+
 fn shade_payload(payload: vec4u) -> vec4f {
 	// Empty pixels are zero samples, including pixels where all low-alpha
 	// fragments lost the stochastic test. Never leave last frame's value here.
@@ -58,17 +70,49 @@ fn shade_payload(payload: vec4u) -> vec4f {
 	return vec4f(color, 1.0);
 }
 
-@compute @workgroup_size(8, 8)
-fn shade_winner(@builtin(global_invocation_id) id: vec3u) {
-	if any(id.xy >= textureDimensions(winners)) { return; }
+fn winner_payload(id: vec3u) -> vec4u {
 	let pixel = vec2i(id.xy);
 #if PARAMS.get("sample_count", 1) > 1
 	let low = textureLoad(winners, pixel, i32(id.z));
 	let high = textureLoad(winners_extra, pixel, i32(id.z));
-	let payload = vec4u(low.x | (low.y << 16u), low.z | (low.w << 16u),
+	return vec4u(low.x | (low.y << 16u), low.z | (low.w << 16u),
 		high.x | (high.y << 16u), high.z | (high.w << 16u));
-	textureStore(winner_color, pixel, i32(id.z), shade_payload(payload));
 #else
-	textureStore(winner_color, pixel, shade_payload(textureLoad(winners, pixel, 0)));
+	return textureLoad(winners, pixel, 0);
 #endif
 }
+
+fn store_winner(id: vec3u, color: vec4f) {
+#if PARAMS.get("sample_count", 1) > 1
+	textureStore(winner_color, vec2i(id.xy), i32(id.z), color);
+#else
+	textureStore(winner_color, vec2i(id.xy), color);
+#endif
+}
+
+@compute @workgroup_size(8, 8)
+fn shade_winner(@builtin(global_invocation_id) id: vec3u) {
+	if any(id.xy >= textureDimensions(winners)) { return; }
+	store_winner(id, shade_payload(winner_payload(id)));
+}
+
+#if PARAMS.get("winner_count", 1) == 2
+@compute @workgroup_size(8, 8)
+fn shade_mix(@builtin(global_invocation_id) id: vec3u) {
+	if any(id.xy >= textureDimensions(winners)) { return; }
+	let pixel = vec2i(id.xy);
+#if PARAMS.get("sample_count", 1) > 1
+	let first = textureLoad(first_color, pixel, i32(id.z), 0);
+#else
+	let first = textureLoad(first_color, pixel, 0);
+#endif
+	if winner_settings.info.y != 0u {
+		if textureLoad(winner_guide, pixel, i32(id.z)).x == 1.0 {
+			store_winner(id, first);
+			return;
+		}
+	}
+	// Pool unnormalized colors and validity; do not normalize each stream.
+	store_winner(id, 0.5*(first+shade_payload(winner_payload(id))));
+}
+#endif

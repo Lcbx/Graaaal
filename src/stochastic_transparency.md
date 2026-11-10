@@ -1,6 +1,6 @@
 # Stochastic transparency
 
-[TransparencyPass.py](TransparencyPass.py) implements single-winner stochastic
+[TransparencyPass.py](TransparencyPass.py) implements one- or two-winner stochastic
 order-independent transparency. Applications provide geometry, instances,
 materials, camera values, targets, and command submission. The
 [engine guide](../README.md#composable-transparency) documents its resource API;
@@ -21,6 +21,7 @@ RenderContext before constructing GPU resources.
 | `shade_winner(commands, geometry)`, `compose(commands, output)` | Record deferred shading and composition; `output` is a matching `ColorAttachment`. Neither submits work. |
 | `set_opaque_inputs(color, depth)` | Uses caller-owned opaque textures; pass `None, None` to restore internal targets. |
 | `set_sample_count`, `set_noise_mode`, `set_noise_scale`, `set_debug_view` | Update live sampling and diagnostic settings. |
+| `set_winner_count(1 or 2)` | Switch draws with replacement, independently of MSAA. Default: 1. |
 | `BilateralFilter`, `set_bilateral_filter` | Configure reconstruction footprint and tolerances. |
 | `GrazingFade`, `set_grazing_fade` | Configure angular opacity fade; default enabled from 83 to 86 degrees. |
 | `TransparencyTargets` | Describes caller-owned color, depth, guide, transmittance and winner textures. |
@@ -51,6 +52,74 @@ Transparent `RenderShader` entries are `transmittance` and `main` (winner
 selection); they have no `prepass` entry, so an opaque depth-prepass draw skips
 them. The culler's internal prepass visibility buffer remains a list of frustum
 candidates, independent of which named rendering pass is drawn.
+
+## Optional second winner
+
+Construct with `winner_count=2`, or call `set_winner_count(2)` (and
+`MaterialRenderer.set_winner_count(2)` when using its registered passes). The
+example exposes **Winner draws**. Default is 1. Each stream chooses its nearest
+accepted fragment with replacement: both may choose the same surface. It does
+not average the two nearest accepted layers, which would change the estimator.
+
+Record the guide and transmittance once, then:
+
+```python
+for stream, name in enumerate(("main", "second")[:oit.winner_count]):
+    with oit.selection_pass(commands) as render:
+        draws.draw(render, visibility, name)
+    oit.shade_winner(commands, geometry, stream=stream)
+oit.compose(commands, output)
+```
+
+Selection clears/reuses its depth and integer payload targets between streams.
+A shades into `winner_first`, B shades and mixes into `winner_color`. The scratch
+texture exists only in two-winner mode: `rgba16float`, storage + texture binding,
+single-sample, with `sample_count` layers (a 2D array at 4x). Caller-owned
+`TransparencyTargets` must supply this additional field in dual mode. The extra
+storage is 8 bytes per hardware sample, excluding driver alignment.
+
+Each shaded stream is `(straight_color * valid, valid)`. The stored average has
+alpha **0, 0.5, or 1**, a valid-stream fraction rather than opacity or certainty.
+Reconstruction pools its RGB numerator and alpha denominator; it does not average
+two separately normalized filtered results. The 1x1 path retains division by
+expected scalar acceptance. Existing RGB-opacity approximation and ratio-estimator
+bias remain. Exact certainty is still encoded by guide probability, never inferred
+from winner validity.
+
+With reconstruction enabled, B skips samples whose guide has exact probability
+one, after material/noise derivatives and before noise lookup. Mixing copies A
+there. At 1x1 the guide remains skipped and B evaluates normally. This saves
+acceptance/payload and shading work at certain samples; it does not skip vertex
+processing, draw submission, or derivative work.
+
+A's noise is unchanged. B hashes the stream identity with the surface/sample
+seed, keeping footprint and anchoring parameters unchanged. Defaults use separate
+Peters `HDR_L_0`/`HDR_L_1` tiles and lazily generated separate hierarchies. For a
+custom `blue_noise`, provide `blue_noise_second` for a separate source; otherwise
+B uses hashed shifts of the same tile. Separate masks do not guarantee statistical
+independence after projection or hierarchical resampling. Bayer ignores the tile
+and can correlate strongly. Same-ID nearby surfaces can still share thresholds
+within each stream.
+
+`winner` displays the stored average. Additional diagnostics are `winner_a`,
+`winner_b`, and `winner_count` (valid fraction: black/gray/white for 0/1/2 winners,
+averaged across MSAA samples). B's diagnostic is derived from `2*mixed-A`, so small
+half-float rounding differences are possible; reconstruction reads the average
+directly. In single mode both stream views show A.
+
+The default shader set supports both counts, including plain-WGSL material hooks
+and deformation. Low-level custom geometry/shading/compose shader overrides remain
+single-winner; dual construction/runtime switching rejects those overrides.
+Runtime switches preserve settings and registered geometry, reallocate the targets,
+and retain caller-supplied opaque color/depth.
+
+Two winners reduce missing samples and layer-selection variance. At the same
+raster position they add no texture detail on a single surface, do not supersample
+silhouettes, and do not remove crawling or within-stream layer correlation. See
+the [implementation plan and measured findings](../transparency_multiple_winners.md)
+and run `python -m scenes.benchmarks.diagnose_multiple_winners --output audit.json`
+for joint validity, low-frequency spectra, same-ID overlap, camera sweeps and
+synthetic GPU timing comparisons.
 
 ## Geometry and caller-owned targets
 

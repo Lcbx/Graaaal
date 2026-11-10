@@ -23,6 +23,14 @@
 @group(1) @binding(7) var transparent_guide: texture_2d<f32>;
 #endif
 
+#if PARAMS.get("winner_count", 1) == 2
+#if PARAMS.get("sample_count", 1) > 1
+@group(1) @binding(8) var first_color: texture_2d_array<f32>;
+#else
+@group(1) @binding(8) var first_color: texture_2d<f32>;
+#endif
+#endif
+
 @vertex
 fn fullscreen(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
 	let uv = vec2f(f32((index << 1u) & 2u), f32(index & 2u));
@@ -60,6 +68,20 @@ fn compose_sample(pixel: vec2i, sample: u32) -> vec3f {
 	if bilateral.kernel.y == 2u {
 		let winner = max(winner_at(pixel, sample).rgb, vec3f(0.0));
 		return winner;
+	}
+	if bilateral.kernel.y >= 5u {
+		let mixed = winner_at(pixel, sample);
+		if bilateral.kernel.y == 7u { return vec3f(mixed.a); }
+#if PARAMS.get("winner_count", 1) == 2
+#if PARAMS.get("sample_count", 1) > 1
+		let first = textureLoad(first_color, pixel, i32(sample), 0);
+#else
+		let first = textureLoad(first_color, pixel, 0);
+#endif
+		return max(select(first.rgb, 2.0*mixed.rgb-first.rgb, bilateral.kernel.y == 6u), vec3f(0.0));
+#else
+		return max(mixed.rgb, vec3f(0.0));
+#endif
 	}
 	let main = textureLoad(main_color, pixel, i32(sample)).rgb;
 	var transparent = vec3f(0.0);
@@ -145,7 +167,7 @@ fn compose(@builtin(position) position: vec4f) -> @location(0) vec4f {
 		color += compose_sample(vec2i(position.xy), sample);
 	}
 	color /= {{PARAMS.get("sample_count", 1)}}.0;
-	if bilateral.kernel.y != 1u && bilateral.kernel.y != 4u {
+	if bilateral.kernel.y != 1u && bilateral.kernel.y != 4u && bilateral.kernel.y != 7u {
 		color /= vec3f(1.0)+color;
 	}
 	return present_linear(color);

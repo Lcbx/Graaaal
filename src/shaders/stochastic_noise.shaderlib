@@ -1,6 +1,12 @@
 // Object-space, pixel-scale hashed thresholds for arbitrary triangle meshes.
 // Scale discretization and uniform CDF correction follow Wyman & McGuire,
 // Hashed Alpha Testing (I3D 2017), section 5.4. No UV/card topology is assumed.
+fn noise_stream_seed(seed: u32, stream: u32) -> u32 {
+	// Preserve the original stream exactly. Addition would alias adjacent IDs.
+	if stream == 0u { return seed; }
+	return hash_u32(seed ^ hash_u32(stream ^ 0xd1b54a35u));
+}
+
 fn noise_cell_threshold(noise: texture_2d<f32>, position: vec3f, scale: f32, level: i32, seed: u32) -> f32 {
 	// Hash floored float bit patterns instead of converting to i32: large local
 	// coordinates cannot overflow an integer conversion. Adding zero canonicalizes

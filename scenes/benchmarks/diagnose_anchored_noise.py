@@ -12,12 +12,14 @@ import numpy as np
 
 from numpyecs.Math import Camera
 from numpyecs.RenderContext import BufferUsage, ComputePipeline, GpuBuffer, RenderContext, Shader
-from numpyecs.TextureProcessing import get_default_blue_noise
+from numpyecs.TextureProcessing import get_default_blue_noise, build_correlated_noise_hierarchy
 
 
 class NoiseProbe:
 	def __init__(self):
 		self.noise = get_default_blue_noise()
+		self.noise_second = None
+		self.hierarchies = {}
 		self.shader = Shader(source='''
             #include "utils.shaderlib"
             #include "stochastic_noise.shaderlib"
@@ -25,15 +27,16 @@ class NoiseProbe:
             @group(0) @binding(0) var<storage, read> probes: array<Probe>;
             @group(0) @binding(1) var<storage, read_write> values: array<f32>;
             @group(0) @binding(2) var noise: texture_2d<f32>;
+            @group(0) @binding(3) var hierarchy: texture_2d<f32>;
             @compute @workgroup_size(64) fn evaluate(@builtin(global_invocation_id) id: vec3u) {
                 if id.x >= arrayLength(&probes) { return; }
                 let p = probes[id.x];
-                let seed = hash_u32(p.info.x);
+                let seed = noise_stream_seed(hash_u32(p.info.x), p.info.z);
                 if p.info.y == 7u {
                     values[id.x] = anchored_blue_threshold(noise, p.pixel.xy, p.local.xyz,
                         p.dx.xyz, p.dy.xyz, p.local.w, seed, p.dx.w, p.dy.w);
                 } else {
-                    values[id.x] = surface_noise_threshold(noise, noise, p.local.xyz,
+                    values[id.x] = surface_noise_threshold(noise, hierarchy, p.local.xyz,
                         p.dx.xyz, p.dy.xyz, vec3f(0.0, 0.0, 1.0), p.local.xy, p.dx.xy, p.dy.xy,
                         p.local.w, seed, p.info.y);
                 }
@@ -42,16 +45,22 @@ class NoiseProbe:
 		self.pipeline = ComputePipeline(self.shader)
 		self.dtype = np.dtype([(name, "f4", 4) for name in ("local", "dx", "dy", "pixel")]+[("info", "u4", 4)])
 
-	def evaluate(self, local, pixel, dx, dy, *, pixels=1.0, anchor_pixels=24.0, subdivisions=4, seed=17, mode=7):
+	def evaluate(self, local, pixel, dx, dy, *, pixels=1.0, anchor_pixels=24.0, subdivisions=4, seed=17, mode=7, stream=0):
 		data = np.zeros(len(local), dtype=self.dtype)
 		data["local"][:, :3], data["local"][:, 3] = local, pixels
 		data["dx"][:, :3], data["dx"][:, 3] = dx, anchor_pixels
 		data["dy"][:, :3], data["dy"][:, 3] = dy, subdivisions
 		data["pixel"][:, :2] = pixel
 		data["info"][:, :2] = (seed, mode)
+		data["info"][:, 2] = stream
+		if stream and self.noise_second is None: self.noise_second = get_default_blue_noise(stream=1)
+		noise = self.noise if stream == 0 else self.noise_second
+		if mode in (4, 6) and stream not in self.hierarchies:
+			self.hierarchies[stream] = build_correlated_noise_hierarchy(noise)
 		source = GpuBuffer(data, BufferUsage.STORAGE)
 		output = GpuBuffer(None, BufferUsage.STORAGE | BufferUsage.COPY_SRC, dtype=np.float32, count=len(data))
-		bindings = self.shader.bind_group(0, probes=source, values=output, noise=self.noise)
+		bindings = self.shader.bind_group(0, probes=source, values=output, noise=noise,
+			hierarchy=self.hierarchies.get(stream, noise))
 		commands = RenderContext.commands("anchored_noise_probe")
 		with commands.compute_pass() as compute:
 			compute.set_pipeline(self.pipeline)
