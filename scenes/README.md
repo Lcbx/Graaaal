@@ -65,9 +65,8 @@ views appear only for two-draw Average mode; Fill labels its binary mask
 hides **forced**, and 1x1 hides **filter_support**. A view that becomes unavailable
 returns to **final** when editing settings.
 **Filter implementation** selects the default Fragment path or experimental
-Compute reconstruction. They share the same bilateral estimator; measured tree
-profiles did not justify changing the default. See the
-[profiling report](../src/transparency_reconstruction.md).
+Compute reconstruction. They share the same bilateral estimator. See the
+[profiling report](../src/transparency_reconstruction.md) for measurements.
 **Force single contributor** deterministically accepts exactly one visible
 contributor at its opacity, including fractional MASK edges; it adds a small
 count target and is off by default. **Winner mix** offers experimental hole
@@ -114,7 +113,7 @@ target is shown below the slider. Sizes remain approximate at oblique angles.
 sizing (default), 0.5 uses a geometric mean, and 1 uses the minimum estimate.
 Increasing it makes tilted grain finer along both axes, including subpixel cells
 along the compressed axis. It applies to UV modes and retains existing fallback
-and triplanar behavior. See the [tilt diagnostic](../src/stochastic_transparency.md#uv-footprint-compromise-experiment)
+and triplanar behavior. See the [tilt diagnostic](../IMPLEMENTATION_WORK.md#uv-footprint-compromise-experiment)
 for measured screen-space autocorrelation widths and limitations.
 The balancing shader feature is disabled by default. Check **Enable UV footprint
 balancing** to compile/cache it and show the editable UV slider. Its value can be
@@ -128,7 +127,7 @@ UVs. Its anchor target defaults to 24 pixels and shift subdivisions to 4. Higher
 subdivisions reduce close-layer correlation at the cost of more shift seams.
 The mode keeps grain much more isotropic at tilt, but can reshuffle more during
 orbit/dolly. It is the example's default noise mode. See the
-[anchored noise audit](../src/stochastic_transparency.md#pixel-lattice-anchored-blue).
+[anchored noise audit](../IMPLEMENTATION_WORK.md#pixel-lattice-anchored-blue).
 
 "Fade grazing surfaces" starts enabled. Its two editable angles default to
 83 degrees (start) and 86 degrees (completely faded). Angles are measured from
@@ -146,15 +145,11 @@ filter parameters, and interpretation of diagnostic views.
 
 The example loads static glTF node transforms, OPAQUE/MASK/BLEND modes,
 double-sided materials, base-color textures, roughness/metallic factors, and
-emissive factors. Static primitives go directly into DrawBatches arrays; metadata
-follows its packed instance order. It builds 512x512 material texture layers with repeat/trilinear
-sampling and alpha-aware mipmaps. The tree's `Simple_foliage.001` material is
-explicitly treated as MASK, with coverage-preserving mips and sharpened alpha
-shared across guide, transmittance and selection. UV noise falls back to object
-hashing for missing or degenerate UVs. The grain target defaults to 1 pixel at 1x;
+emissive factors. The tree's `Simple_foliage.001` material is treated as MASK.
+The grain target defaults to 1 pixel at 1x;
 `transparency.set_noise_scale(2)` makes it coarser. Repeated UV islands can correlate
 overlapping layers; compare object-hash or triplanar modes on those assets.
-See the [sampling notes](../src/stochastic_transparency.md#acceptance-and-winner-data)
+See the [sampling notes](../IMPLEMENTATION_WORK.md#acceptance-and-winner-data)
 for threshold construction and its limits.
 Normal/material maps, sampler overrides,
 material extensions, animation, and skinning are outside this example.
@@ -162,10 +157,7 @@ material extensions, animation, and skinning are outside this example.
 
 ## CPU caches and checks
 
-Direct drawing retains packed instance data and refreshes it when relevant ECS
-fields or membership change. Unchanged instances skip packing/upload; changed
-interleaved data still uploads in full. Prototype panels likewise refresh from
-the fields they display. Notify otherwise untracked object edits with `touch()`.
+For untracked edits to ECS object fields, call `touch()` to notify readers.
 
 Run scene-model/import/cache tests without opening windows:
 
@@ -175,4 +167,5 @@ python -m pytest tests/test_scenes.py tests/test_scene_caches.py src/tests/test_
 
 The [engine guide](../README.md) describes procedural rendering and resource
 lifetimes; the [ECS reference](../src/ECS_API.md) covers simulation contracts.
-See [benchmarks](benchmarks/README.md) for measurement commands and recorded data.
+See [benchmarks](benchmarks/README.md) for measurement commands and
+[implementation work](../IMPLEMENTATION_WORK.md#ecs-benchmark-history) for recorded data.

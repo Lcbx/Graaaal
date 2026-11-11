@@ -54,13 +54,13 @@ from numpyecs.DefaultMaterial import DefaultMaterialShader
 from numpyecs.MaterialRenderer import MaterialMesh, MaterialRenderer
 from numpyecs.RenderContext import RenderContext
 from numpyecs.EcsMaterials import (
-    MaterialInstance, MaterialTransform, EcsMaterialAdapter,
+	MaterialInstance, MaterialTransform, EcsMaterialAdapter,
 )
 
 glass = DefaultMaterialShader(
-    transparent=True,
-    template="scenes/shaders/glass_material.shader",
-    default_material={"roughness": 0.3},
+	transparent=True,
+	template="scenes/shaders/glass_material.shader",
+	default_material={"roughness": 0.3},
 )
 shared = {"base_color": (0.2, 0.6, 0.9, 0.5)}
 mesh = MaterialMesh(vertices, glass, indices=indices, material=shared)
@@ -155,19 +155,19 @@ Jinja statements or substitutions:
 ```python
 striped = DefaultMaterialShader(source='''
 struct MaterialParameters {
-    stripe_color: vec3f,
-    stripe_frequency: f32,
+	stripe_color: vec3f,
+	stripe_frequency: f32,
 }
 const default_stripe_color = vec3f(1.0, 0.15, 0.03);
 const default_stripe_frequency = 8.0;
 
 fn shade(material: Material, p: Params, uv: vec2f,
          position: vec3f, normal: vec3f, lod: f32) -> vec3f {
-    let band = smoothstep(-0.2, 0.2, sin(uv.y*p.stripe_frequency*6.2831853));
-    var striped = material;
-    striped.base_color = vec4f(mix(material.base_color.rgb, p.stripe_color, band),
+	let band = smoothstep(-0.2, 0.2, sin(uv.y*p.stripe_frequency*6.2831853));
+	var striped = material;
+	striped.base_color = vec4f(mix(material.base_color.rgb, p.stripe_color, band),
                               material.base_color.a);
-    return default_lighting(striped, p, uv, position, normal, lod);
+	return default_lighting(striped, p, uv, position, normal, lod);
 }
 ''')
 ```
@@ -298,9 +298,9 @@ available as p.name in WGSL; declarations produce no WGSL text themselves.
 
 ```python
 rim = DefaultMaterialShader(
-    transparent=True,
-    template="scenes/shaders/rim_material.shader",
-    default_material={"rim_strength": 1.5},
+	transparent=True,
+	template="scenes/shaders/rim_material.shader",
+	default_material={"rim_strength": 1.5},
 )
 ```
 
@@ -445,12 +445,11 @@ examples above. Default lighting math lives once in `material_lighting.shaderlib
 family-specific `default_lighting` adapters retain each family's coefficients.
 
 `Frame` and `Lighting` are declared once in `frame.shaderlib` and included by
-raster, deferred and composition modules. `Frame` is currently 192 bytes and
-`Lighting` 16 bytes. Supply lighting from Python with:
+raster, deferred and composition modules. Supply lighting from Python with:
 
 ```python
 renderer.record(commands, size, camera, output, time=seconds,
-                light_dir=(0.4, 0.8, 0.3))
+				light_dir=(0.4, 0.8, 0.3))
 ```
 
 The low-level `TransparencyPass.update_frame()` and `update_camera()` accept the
@@ -463,34 +462,13 @@ reflection rather than retaining the earlier Frame byte offsets.
 Lighting currently supports a scene directional light; no local-light distribution
 compute pass is implemented.
 
-## Bind-group convention and lifetime
+## Binding resources
 
-Built-in material passes derive explicit layouts from reflected shader bindings.
-The same group-layout objects own bounded GPU bind-group caches across compatible
-pipelines and across 1x/4x MSAA. Cache keys include buffer handles and bound sizes,
-so growth or resource replacement selects a new bind group; changing contents
-preserves it. Custom shader sets keep the automatic-layout path.
+For custom WGSL, use the public struct names and bindings above. For multiple
+views recorded before submission, provide separate buffers or aligned ranges
+rather than overwriting the same frame buffer. The built-in adapter maintains
+bindings as resources change.
 
-| Group | Raster geometry | Deferred shading | Composition |
-| --- | --- | --- | --- |
-| 0 | `Frame` + `Lighting` | Same shared group | Same shared group |
-| 1 | Instance/visibility indexing | Winner input/output textures | Color/depth/guide textures and `BilateralSettings` |
-| 2 | Material tables, metadata, texture array and sampler | Material resources plus vertex/transform tables | Unused |
-| 3 | Pass-specific depth/noise inputs | Unused | Unused |
-
-Group 1 retains the existing DrawBatches convention. Pass groups can differ;
-compatible low-index layout prefixes allow bindings to survive pipeline changes.
-Bindings have explicit resource types and stage visibility; pass texture groups
-include only resources needed by that pass. Default depth geometry is compiled
-lazily when requested.
-
-Buffer update cadence is separate from binding cadence: frame contents change
-each frame while the group remains stable throughout the draws. Continue using
-indexed storage for per-instance values. Do not overwrite one frame buffer for
-multiple views recorded before the same submission; each such view needs its
-own buffer or aligned range. `upload_changed()` on reflected uniform buffers
-tracks raw bytes, including padding; ordinary `upload()` remains available.
-
-The [dated material audit](materials_audit.md) records storage and upload
-measurements for the six-sphere example. These describe that setup, not general
-performance guarantees.
+Resource caching decisions and the earlier measurements are kept in the
+[implementation work log](../IMPLEMENTATION_WORK.md#material-binding-internals-and-lifetime)
+and the [dated material audit](materials_audit.md).

@@ -26,10 +26,7 @@ Related documents: [engine guide](../README.md) and
 - [Diagnostics reference](#diagnostics-reference)
 - [API inventory and errors](#api-inventory-and-error-reference)
 
-Import the public API from `numpyecs.ECS`. Schema conversion lives in `ecs_schema`,
-input types/validation in `ecs_types`, deferred edits in `ecs_commands`, scheduling in
-`ecs_schedule`, and inspection in `ecs_diagnostics`. Storage and joins remain
-together in `ECS.py` because they share row lifetime and cache contracts.
+Import the public API from `numpyecs.ECS`.
 
 ## Named batches and explicit writes
 
@@ -39,8 +36,8 @@ from numpyecs.ECS import ECS, component, columns
 
 @component
 class Position:
-    x: float
-    y: float
+	x: float
+	y: float
 
 world = ECS()
 positions, = world.register(Position)
@@ -135,7 +132,7 @@ Exported views must not escape the scope. Compact multicomponent holes first.
 Independent component stores still require joins/gathers to align their rows.
 
 See [the engine guide](../README.md#arrays-and-ordinary-systems) for a complete
-shaped-field example and [array measurements](../scenes/benchmarks/README.md#array-access)
+shaped-field example and [array measurements](../IMPLEMENTATION_WORK.md#array-access)
 for scratch-memory tradeoffs.
 
 ## Inspection and allocation control
@@ -168,35 +165,35 @@ These definitions are shared by the remaining examples. Every call to
 
 ```python
 from numpyecs.ECS import (
-    ECS, Scheduler, CommandBuffer, CommandError, component, array_field, columns,
-    Entity, Index, entity_index, entity_generation, as_entities, as_rows,
+	ECS, Scheduler, CommandBuffer, CommandError, component, array_field, columns,
+	Entity, Index, entity_index, entity_generation, as_entities, as_rows,
 )
 
 @component
 class Velocity:
-    x: float
-    y: float
+	x: float
+	y: float
 
 @component
 class Health:
-    value: float
+	value: float
 
 @component
 class Sleeping:
-    pass
+	pass
 
 @component(multiples=True)
 class Item:
-    value: float
+	value: float
 
 def example_world():
-    world = ECS()
-    positions, velocities, health, sleeping, items = world.register(
-        Position, Velocity, Health, Sleeping, Item, capacity=8,
-    )
-    ids = world.create(3)
-    world.add(ids, columns(Position, x=[0, 1, 2], y=0), Velocity(2, 0))
-    return world, ids, positions, velocities, health, sleeping, items
+	world = ECS()
+	positions, velocities, health, sleeping, items = world.register(
+		Position, Velocity, Health, Sleeping, Item, capacity=8,
+	)
+	ids = world.create(3)
+	world.add(ids, columns(Position, x=[0, 1, 2], y=0), Velocity(2, 0))
+	return world, ids, positions, velocities, health, sleeping, items
 ```
 
 ## Component schemas and registration
@@ -228,31 +225,31 @@ from enum import IntFlag
 from typing import ClassVar
 
 class Kind(IntFlag):
-    FRIEND = 1
-    FLYING = 2
+	FRIEND = 1
+	FLYING = 2
 
 @component
 class Details:
-    category: ClassVar[str] = 'actor'
-    name: str = 'unnamed'
-    flags: Kind = Kind.FRIEND
+	category: ClassVar[str] = 'actor'
+	name: str = 'unnamed'
+	flags: Kind = Kind.FRIEND
 
 class Vec3:
-    @classmethod
-    def storage_dtype(cls):
-        return np.dtype((np.float32, (3,)))
+	@classmethod
+	def storage_dtype(cls):
+		return np.dtype((np.float32, (3,)))
 
 @component
 class Transform:
-    position: Vec3
-    matrix: np.dtype((np.float32, (2, 2)))
+	position: Vec3
+	matrix: np.dtype((np.float32, (2, 2)))
 
 schema_world = ECS()
 details, transforms = schema_world.register(Details, Transform, capacity=4)
 owners = schema_world.create(2)
 schema_world.add(owners, Details())
 schema_world.add(owners, columns(
-    Transform, position=[1, 2, 3], matrix=np.eye(2, dtype=np.float32),
+	Transform, position=[1, 2, 3], matrix=np.eye(2, dtype=np.float32),
 ))
 assert transforms[owners].position.shape == (2, 3)
 assert details[owners].name.tolist() == ['unnamed', 'unnamed']
@@ -277,7 +274,7 @@ record_dtype = np.dtype([('weight', np.float32), ('payload', object)])
 
 @component
 class Record:
-    value: record_dtype
+	value: record_dtype
 
 records, = schema_world.register(Record)
 values = np.empty(2, dtype=record_dtype)
@@ -348,16 +345,16 @@ owners, because single-component `add()` is insert-only.
 ```python
 world, ids, positions, velocities, health, sleeping, items = example_world()
 forms = [
-    (columns(Position, x=[1, 3], y=[2, 4]),),  # Named columns.
-    (Position(1, 2),),                       # One instance broadcast to both owners.
-    (Position, ([1, 3], [2, 4])),             # Tuple of field columns.
-    (Position, np.array([[1, 2], [3, 4]])),   # Packed rows: shape (owners, fields).
-    (Position, np.array([1, 2])),            # One packed row broadcast.
+	(columns(Position, x=[1, 3], y=[2, 4]),),  # Named columns.
+	(Position(1, 2),),                       # One instance broadcast to both owners.
+	(Position, ([1, 3], [2, 4])),             # Tuple of field columns.
+	(Position, np.array([[1, 2], [3, 4]])),   # Packed rows: shape (owners, fields).
+	(Position, np.array([1, 2])),            # One packed row broadcast.
 ]
 for payload in forms:
-    pair = world.create(2)
-    world.add(pair, *payload)
-    assert len(positions[pair]) == 2
+	pair = world.create(2)
+	world.add(pair, *payload)
+	assert len(positions[pair]) == 2
 
 world.add(ids, columns(Health, value=[10, 20, 30]), Sleeping())
 world.set(ids, columns(Position, x=5, y=6), Health(100))
@@ -405,9 +402,9 @@ raw = rows.get_rows()                  # Independent raw row-index copy.
 assert raw.dtype == np.uint32
 world.remove(ids[:1], Position)        # Expires every selection from this store.
 try:
-    selection.x
+	selection.x
 except RuntimeError:
-    selection = positions[ids]         # Missing/dead owners are silently dropped.
+	selection = positions[ids]         # Missing/dead owners are silently dropped.
 assert len(selection) == 2
 ```
 
@@ -471,7 +468,7 @@ from functools import partial
 
 world, ids, positions, velocities, health, sleeping, items = example_world()
 def above(x, *, threshold=0):
-    return x > threshold
+	return x > threshold
 
 rows = positions.query_rows(partial(above, threshold=0.5), entities=ids[:2])
 assert positions.owner_ids(rows).tolist() == [ids[1]]
@@ -557,8 +554,8 @@ assert term.present.tolist() == [True, False, True]
 assert term.offsets.tolist() == [0, 2, 2, 3]
 groups = []
 for i, owner in enumerate(result.entities):
-    start, stop = term.offsets[i:i+2]
-    groups.append(term.selection.take(slice(start, stop)).value.tolist())
+	start, stop = term.offsets[i:i+2]
+	groups.append(term.selection.take(slice(start, stop)).value.tolist())
 assert groups == [[5, 6], [], [7]]
 ```
 
@@ -597,7 +594,7 @@ Object mutation requires explicit notification. Broadcast objects alias:
 ```python
 @component
 class Payload:
-    data: object
+	data: object
 
 object_world = ECS()
 payloads, = object_world.register(Payload)
@@ -659,20 +656,20 @@ commands.add(ids, Sleeping)             # Succeeds.
 commands.add(ids, Position(9, 9))        # Fails: existing single components.
 commands.delete(ids[:1])                # Remains pending after failure.
 try:
-    commands.flush()
+	commands.flush()
 except CommandError as error:
-    assert error.command_index == 1     # Monotonically increasing, buffer-local.
-    assert error.operation == 'add'
-    assert isinstance(error.__cause__, ValueError)
+	assert error.command_index == 1     # Monotonically increasing, buffer-local.
+	assert error.operation == 'add'
+	assert isinstance(error.__cause__, ValueError)
 assert len(commands) == 1
 assert world.has(ids, Sleeping).all()
 assert commands.flush() == 1            # Explicitly execute the remaining tail.
 cancelled = commands.create()
 commands.clear()                       # Discards pending work, cancels this token.
 try:
-    cancelled.resolve()
+	cancelled.resolve()
 except RuntimeError:
-    pass
+	pass
 ```
 
 The failed command is consumed; successful earlier edits remain. `clear()` does
@@ -688,20 +685,20 @@ movement = world.query(Position, Velocity)
 schedule = Scheduler(world)
 
 def fixed(world, commands, dt):
-    # Fixed tick count/accumulation is controlled by the caller.
-    pass
+	# Fixed tick count/accumulation is controlled by the caller.
+	pass
 
 def spawn(world, commands, dt):
-    commands.add(commands.create(), Position(0, 0), Velocity(1, 0))
+	commands.add(commands.create(), Position(0, 0), Velocity(1, 0))
 
 def move(world, commands, dt):
-    matched = movement.fetch()
-    p, v = matched[Position].selection, matched[Velocity].selection
-    p.assign(x=p.x + v.x * dt, y=p.y + v.y * dt)
+	matched = movement.fetch()
+	p, v = matched[Position].selection, matched[Velocity].selection
+	p.assign(x=p.x + v.x * dt, y=p.y + v.y * dt)
 
 seen = []
 def prepare(world, commands, dt):
-    seen.append(len(movement.fetch()))
+	seen.append(len(movement.fetch()))
 
 schedule.add('physics', fixed, phase='fixed_update')
 schedule.add('spawn', spawn, before='move', flush_after=True)

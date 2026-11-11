@@ -1,19 +1,21 @@
+# Engine backlog and explicit exclusions
+
 * add proper monitoring and logging
 * add bindless materials
 * implement Forward+ / tiled shading
 * add compute light binning
 * implement ramp / toon shading
-* implement shadow maps (perspective warping, cascaded shadow maps (3–4 splits)
+* implement shadow maps
 * add SSAO
 * add FXAA
 * make wgpu-py Canvas use msaa for main buffer (?)
 * implement grid-based ambient probes
 * experiment with a kuwahara material
 * add post-process depth/normal edge detection outlines
-* ensure depth prepass only has close / big, not alpha-tested surfaces 
+* ensure depth prepass only has close / big, not alpha-tested surfaces
 * implement gpu animation using custom vertex attributes and animation texture atlas
 * use openAL for binaural audio
-* use bullet for physics (at first ; maybe migrate to ctypes & jolt later)
+* use bullet for physics (at first ; maybe migrate to ctypes & jolt or box3d later)
 * add a particle system
 * implement parallax texture mapping
 * implement triplanar mapping

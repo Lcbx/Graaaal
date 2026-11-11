@@ -19,7 +19,8 @@ and attributes use snake_case. Constants use UPPER_SNAKE_CASE.
 | [Scenes](scenes/README.md) | Running interactive examples and their controls |
 | [Transparency](src/stochastic_transparency.md) | Pass order, reconstruction, and technique limits |
 | [Dictionary materials](src/materials.md) | Plain WGSL materials, shared parameters, instance overrides, and Jinja inheritance |
-| [Benchmarks](scenes/benchmarks/README.md) | Reproduction commands and dated measurements |
+| [Benchmarks](scenes/benchmarks/README.md) | Reproduction commands and diagnostic options |
+| [Implementation work](IMPLEMENTATION_WORK.md) | Backlog, implementation decisions and historical measurements (status record) |
 
 ## Modules and useful APIs
 
@@ -61,10 +62,6 @@ graphics dependencies. Asset decoders load their optional dependencies when call
 Engine shaders are included in the installed package. `Geometry.make_cube_mesh()`
 creates a GPU mesh and requires an initialized backend.
 
-Internally, `draw_compiler` generates layouts with NumPy, `draw_layout` defines
-their records, `draw_resources` manages registries/uploads, and `draw_culling`
-records per-view compute work. Compilation can run without a GPU.
-
 ## Arrays and ordinary systems
 
 ```python
@@ -73,7 +70,7 @@ from numpyecs.ECS import ECS, component, array_field, columns
 
 @component
 class Position:
-    value: np.ndarray = array_field(np.float32, shape=(3,))
+	value: np.ndarray = array_field(np.float32, shape=(3,))
 
 world = ECS()
 positions, = world.register(Position)
@@ -85,7 +82,7 @@ selected.read("value", out=scratch)
 np.add(scratch, 1, out=scratch)
 selected.assign(value=scratch)
 with positions.edit_dense("value") as fields:
-    fields["value"] *= 0.5
+	fields["value"] *= 0.5
 ```
 
 Normal field reads copy. `read(out=...)` rejects incorrect dtype/shape, read-only
@@ -100,7 +97,7 @@ exceptions; writes are not rolled back. Compact multicomponent stores containing
 holes first. General joins between independently ordered stores still gather.
 
 See the [ECS reference](src/ECS_API.md) for full contracts and the
-[array measurements](scenes/benchmarks/README.md#array-access) for scratch-memory costs.
+[array measurements](IMPLEMENTATION_WORK.md#array-access) for scratch-memory costs.
 
 ## Shared draws and independent visibility
 
@@ -125,10 +122,9 @@ draws.write_instances(input_instances[draws.instance_order])
 main_view = draws.create_visibility()
 
 commands = RenderContext.commands("frame")
-FrustumCuller().record(commands, main_view,
-    camera_position=eye, view_projection=view_projection)
+FrustumCuller().record(commands, main_view, camera_position=eye, view_projection=view_projection)
 with commands.render_pass(color=output.color_attachment()) as render:
-    draws.draw(render, main_view, "color")
+	draws.draw(render, main_view, "color")
 RenderContext.submit(commands.finish())
 ```
 
@@ -222,8 +218,8 @@ opaque color/depth can be supplied through `opaque_color` and `opaque_depth`;
 they must match the target dimensions and sample count. Otherwise targets are
 allocated internally. Set `target_format` to match the output attachment.
 
-Defaults are single-sample rendering, UV blue-noise CDF lerp at a one-pixel grain
-size, grazing fade from 83 to 86 degrees, and 3x3 bilateral reconstruction with
+Defaults are single-sample rendering, anchored-blue noise at a one-pixel grain
+size, two averaged winner draws, grazing fade from 83 to 86 degrees, and 3x3 bilateral reconstruction with
 spatial sigma 0.9. `set_sample_count(1 or 4)`, `set_noise_mode`, `set_noise_scale`,
 `set_grazing_fade`, `set_bilateral_filter`, and `set_debug_view` update live
 settings. A 1x1 kernel bypasses reconstruction; 4x MSAA remains available.
