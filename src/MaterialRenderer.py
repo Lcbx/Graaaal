@@ -172,13 +172,13 @@ class MaterialRenderer:
 	def set_early_b_rejection(self, enabled):
 		if self.transparency.set_early_b_rejection(enabled): self._register_passes()
 
-	def record(self, commands, size, camera, output, *, frame=None, light_dir=(0.4, 0.8, 0.3)):
-		"""Record a frame, updating any supplied application frame fields."""
+	def record(self, commands, size, camera, output, *, frame=None, lighting=None):
+		"""Record a frame, updating any supplied frame and lighting fields."""
 		self.sync()
 		oit = self.transparency
 		if size[0] <= 0 or size[1] <= 0: return
 		oit.resize(size)
-		vp = oit.update_camera(camera, frame=frame, light_dir=light_dir)
+		vp = oit.update_camera(camera, frame=frame, lighting=lighting)
 		FrustumCuller().record(commands, self.visibility, camera_position=camera.position, view_projection=vp)
 		external = oit.has_external_opaque_inputs
 		if not external or any(batch.shader_id == 0 and batch.mesh_id is not None for batch in self.draws.draw_batches):

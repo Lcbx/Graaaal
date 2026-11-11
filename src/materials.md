@@ -405,14 +405,16 @@ lighting from Python with:
 
 ```python
 renderer.record(commands, size, camera, output,
-                light_dir=(0.4, 0.8, 0.3), frame={"time": seconds})
+                lighting={"light_dir": (0.4, 0.8, 0.3)}, frame={"time": seconds})
 ```
 
 The `frame` argument requires `frame_fields={"time": ("f32", 0.0)}` at
 construction, as described above.
 
 The low-level `TransparencyPass.update_frame()` and `update_camera()` accept the
-same `light_dir` argument. Material response coefficients (`ambient`, `diffuse`,
+same `lighting` mapping. Lighting values persist when omitted from subsequent
+calls; the initial `light_dir` is `(0.4, 0.8, 0.3)`. Material response
+coefficients (`ambient`, `diffuse`,
 `specular`) remain material parameters; the light direction is scene data.
 Shaders that previously read `frame.light_dir` should read
 `lighting.light_dir`. Rebuild custom uniform dtypes from the shared include or

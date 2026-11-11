@@ -194,6 +194,9 @@ class TransparencyPass:
 		lighting_shader = next((shader for shader in (self.shader, self.compose_shader)
 			if "lighting" in shader.info.uniforms), None)
 		self.lighting_uniforms = lighting_shader.uniform_buffer("lighting") if lighting_shader else None
+		if self.lighting_uniforms is not None and "light_dir" in self.lighting_uniforms.dtype.names:
+			self.lighting_uniforms.content["light_dir"] = (0.4, 0.8, 0.3, 0)
+			self.lighting_uniforms.upload_changed()
 		self._default_noise = blue_noise is None
 		self._default_noise_pair = blue_noise is None and blue_noise_second is None
 		if blue_noise is None:
@@ -786,14 +789,15 @@ class TransparencyPass:
 			raise RuntimeError("Resize transparency targets before recording passes or updating frame uniforms")
 		return self.size
 
-	def _frame_value(self, name, value):
-		"""Check one custom uniform field before mutating the frame buffer."""
-		field_dtype = self.uniforms.dtype.fields[name][0]
+	@staticmethod
+	def _uniform_value(buffer, name, value, kind):
+		"""Check one uniform field before mutating its buffer."""
+		field_dtype = buffer.dtype.fields[name][0]
 		dtype, shape = field_dtype.subdtype or (field_dtype, ())
 		try: supplied = np.asarray(value)
-		except (TypeError, ValueError) as exc: raise ValueError(f"Invalid frame field {name!r}") from exc
+		except (TypeError, ValueError) as exc: raise ValueError(f"Invalid {kind} field {name!r}") from exc
 		if supplied.shape != shape or supplied.dtype.kind not in "fiu" or (dtype.kind in "iu" and supplied.dtype.kind not in "iu"):
-			raise ValueError(f"Frame field {name!r} must have shape {shape} and numeric type {dtype}")
+			raise ValueError(f"{kind.capitalize()} field {name!r} must have shape {shape} and numeric type {dtype}")
 		try:
 			with np.errstate(over="ignore", invalid="ignore"):
 				converted = supplied.astype(dtype)
@@ -802,12 +806,15 @@ class TransparencyPass:
 			if dtype.kind in "iu" and not np.all(supplied == converted):
 				raise ValueError()
 		except (TypeError, OverflowError, ValueError) as exc:
-			raise ValueError(f"Frame field {name!r} is out of range or non-finite") from exc
+			raise ValueError(f"{kind.capitalize()} field {name!r} is out of range or non-finite") from exc
 		return converted
+
+	def _frame_value(self, name, value):
+		return self._uniform_value(self.uniforms, name, value, "frame")
 
 	def update_frame(self, *, view: ArrayLike, projection: ArrayLike,
 		camera_position: ArrayLike, near: float, far: float,
-		light_dir: ArrayLike = (0.4, 0.8, 0.3), frame=None) -> NDArray[np.float32]:
+		frame=None, lighting=None) -> NDArray[np.float32]:
 		"""Upload explicit camera values and return view @ projection for culling.
 
 		Matrices follow the existing row-vector convention. No camera class is
@@ -815,11 +822,11 @@ class TransparencyPass:
 		"""
 		self._require_targets()
 		view, projection = np.asarray(view, dtype=np.float32), np.asarray(projection, dtype=np.float32)
-		position, light = np.asarray(camera_position, dtype=np.float32), np.asarray(light_dir, dtype=np.float32)
+		position = np.asarray(camera_position, dtype=np.float32)
 		if (view.shape != (4, 4) or projection.shape != (4, 4)
-			or position.shape != (3,) or light.shape != (3,)
-			or not all(np.all(np.isfinite(value)) for value in (view, projection, position, light))):
-			raise ValueError("Expected finite 4x4 view/projection matrices and vec3 camera/light values")
+			or position.shape != (3,)
+			or not all(np.all(np.isfinite(value)) for value in (view, projection, position))):
+			raise ValueError("Expected finite 4x4 view/projection matrices and vec3 camera position")
 		if not (np.isfinite(near) and np.isfinite(far) and 0 < near < far):
 			raise ValueError("Camera clip distances must satisfy 0 < near < far")
 		if frame is None: frame = {}
@@ -827,23 +834,35 @@ class TransparencyPass:
 		unknown = set(frame) - self.frame_fields.keys()
 		if unknown: raise ValueError(f"Unknown frame fields: {sorted(map(str, unknown))}")
 		custom = {name: self._frame_value(name, value) for name, value in frame.items()}
+		if lighting is None: lighting = {}
+		if not isinstance(lighting, Mapping): raise ValueError("lighting must be a mapping of field values")
+		fields = set(self.lighting_uniforms.dtype.names) if self.lighting_uniforms is not None else set()
+		unknown = set(lighting) - fields
+		if unknown: raise ValueError(f"Unknown lighting fields: {sorted(map(str, unknown))}")
+		light_values = {}
+		for name, value in lighting.items():
+			if name == "light_dir":
+				try: value = np.asarray(value)
+				except (TypeError, ValueError) as exc: raise ValueError("Invalid lighting field 'light_dir'") from exc
+				if value.shape != (3,) or value.dtype.kind not in "fiu":
+					raise ValueError("Lighting field 'light_dir' must be a numeric vec3")
+				value = np.append(value, 0)
+			light_values[name] = self._uniform_value(self.lighting_uniforms, name, value, "lighting")
 		values = dict(view=view, proj=projection,
 			camera_position=(*position, 1), clip=(near, far, self.effective_noise_scale, NOISE_MODES.index(self.noise_mode)))
 		values.update(custom)
 		for name, value in values.items(): self.uniforms.content[name] = value
-		if "light_dir" in (getattr(getattr(self.uniforms.content, "dtype", None), "names", ()) or ()):
-			self.uniforms.content["light_dir"] = (*light, 0)
-		if self.lighting_uniforms is not None:
-			self.lighting_uniforms.content["light_dir"] = (*light, 0)
+		if light_values:
+			for name, value in light_values.items(): self.lighting_uniforms.content[name] = value
 			self.lighting_uniforms.upload_changed()
 		self.uniforms.upload_changed()
 		return view @ projection
 
-	def update_camera(self, camera, *, light_dir=(0.4, 0.8, 0.3), frame=None):
+	def update_camera(self, camera, *, frame=None, lighting=None):
 		"""Convenience adapter for camera objects; update_frame accepts plain arrays."""
 		width, height = self._require_targets()
 		return self.update_frame(view=camera.view(), projection=camera.projection(width/height),
-			camera_position=camera.position, near=camera.near, far=camera.far, light_dir=light_dir, frame=frame)
+			camera_position=camera.position, near=camera.near, far=camera.far, frame=frame, lighting=lighting)
 
 	def opaque_pass(self, commands, *, clear=(0.035, 0.05, 0.08, 1), load=False):
 		"""Draw opaque geometry; load=True preserves existing color and depth."""

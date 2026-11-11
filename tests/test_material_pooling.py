@@ -121,6 +121,7 @@ def test_animation_and_dictionary_edits_upload_words_and_share_frame_binding(cou
 		assert variant.bind_group(opaque.bindings[0]) is compose.bind_group(oit.compose_frame)
 		assert "light_dir" not in oit.uniforms.dtype.names
 		assert oit.lighting_uniforms.content.nbytes == 16
+		np.testing.assert_allclose(oit.lighting_uniforms.content["light_dir"][0], [0.4, 0.8, 0.3, 0])
 		assert oit.shader.info.source.count("fn evaluate_lighting(") == 1
 		frame_layout = variant.layout.groups[0]
 		renderer.set_sample_count(5-count)

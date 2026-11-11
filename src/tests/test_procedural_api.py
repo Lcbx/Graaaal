@@ -124,7 +124,8 @@ def frame_state(frame_fields=None):
         oit.uniforms = NS(content=np.zeros(1, dtype=dtype), dtype=dtype, upload_changed=Mock())
     else:
         oit.uniforms = NS(content={}, upload_changed=Mock())
-    oit.lighting_uniforms = NS(content={}, upload_changed=Mock())
+    lighting_dtype = np.dtype([("light_dir", np.float32, (4,))])
+    oit.lighting_uniforms = NS(content=np.zeros(1, dtype=lighting_dtype), dtype=lighting_dtype, upload_changed=Mock())
     return oit
 
 
@@ -149,7 +150,7 @@ def test_frame_values_need_no_camera_and_preserve_matrix_convention():
     {"frame": {"time": np.nan}}, {"frame": {"time": np.inf}}, {"frame": {"time": 1e40}},
     {"frame": {"time": 1j}}, {"frame": {"time": True}}, {"frame": {"other": 1}},
     {"view": np.eye(3)}, {"projection": np.full((4, 4), np.nan)},
-    {"camera_position": [0, 0]}, {"light_dir": [0, np.inf, 0]},
+    {"camera_position": [0, 0]},
     {"near": 0}, {"near": 100}, {"far": np.inf},
 ])
 def test_invalid_frame_values_do_not_write_or_upload(overrides):
@@ -160,6 +161,50 @@ def test_invalid_frame_values_do_not_write_or_upload(overrides):
         oit.update_frame(**values)
     assert not np.any(oit.uniforms.content.view(np.uint8))
     oit.uniforms.upload_changed.assert_not_called()
+
+
+def test_lighting_updates_persist_and_camera_forwards_values():
+	oit = frame_state({"time": ("f32", 0.0)})
+	values = dict(view=np.eye(4), projection=np.eye(4), camera_position=[0, 0, 0], near=0.1, far=100)
+	oit.update_frame(**values, lighting={"light_dir": (1, 2, 3)})
+	np.testing.assert_array_equal(oit.lighting_uniforms.content["light_dir"][0], [1, 2, 3, 0])
+	oit.lighting_uniforms.upload_changed.assert_called_once()
+	oit.lighting_uniforms.upload_changed.reset_mock()
+	oit.update_frame(**values)
+	oit.lighting_uniforms.upload_changed.assert_not_called()
+	np.testing.assert_array_equal(oit.lighting_uniforms.content["light_dir"][0], [1, 2, 3, 0])
+	camera = NS(view=lambda: np.eye(4), projection=lambda _: np.eye(4), position=[0, 0, 0], near=0.1, far=100)
+	oit.update_camera(camera, lighting={"light_dir": (0, 1, 0)})
+	np.testing.assert_array_equal(oit.lighting_uniforms.content["light_dir"][0], [0, 1, 0, 0])
+	oit.lighting_uniforms.upload_changed.assert_called_once()
+
+
+def test_lighting_mapping_accepts_other_reflected_uniform_fields():
+	oit = frame_state()
+	dtype = np.dtype([("light_dir", np.float32, (4,)), ("color", np.float32, (3,))])
+	oit.lighting_uniforms = NS(content=np.zeros(1, dtype=dtype), dtype=dtype, upload_changed=Mock())
+	values = dict(view=np.eye(4), projection=np.eye(4), camera_position=[0, 0, 0], near=0.1, far=100)
+	oit.update_frame(**values, lighting={"color": (0.7, 0.5, 0.3)})
+	np.testing.assert_allclose(oit.lighting_uniforms.content["color"][0], [0.7, 0.5, 0.3])
+	oit.lighting_uniforms.upload_changed.assert_called_once()
+
+
+@pytest.mark.parametrize("updates", [
+	{"light_dir": (1, 2)}, {"light_dir": (1, 2, 3, 4)},
+	{"light_dir": (1, np.nan, 0)}, {"light_dir": (1e40, 0, 0)},
+	{"light_dir": (True, False, True)}, {"light_dir": (1j, 2, 3)},
+	{"light_dir": "abc"}, {"unknown": 1}, [("light_dir", (1, 2, 3))],
+])
+def test_invalid_lighting_does_not_update_either_uniform(updates):
+	oit = frame_state({"time": ("f32", 0.0)})
+	values = dict(view=np.eye(4), projection=np.eye(4), camera_position=[0, 0, 0], near=0.1, far=100)
+	before = oit.lighting_uniforms.content.copy()
+	with pytest.raises(ValueError):
+		oit.update_frame(**values, frame={"time": 2.0}, lighting=updates)
+	np.testing.assert_array_equal(oit.lighting_uniforms.content, before)
+	assert not np.any(oit.uniforms.content.view(np.uint8))
+	oit.uniforms.upload_changed.assert_not_called()
+	oit.lighting_uniforms.upload_changed.assert_not_called()
 
 
 def test_custom_frame_fields_share_a_uniform_layout_and_preserve_values():

@@ -194,7 +194,8 @@ def run_scene():
 				camera.position = Vec3(9*sin(angle), 1.3, 9*cos(angle))
 				adapter.sync()
 				commands = RenderContext.commands("material_example")
-				renderer.record(commands, RenderContext.window_dimensions, camera, RenderContext.screen(), frame={"time": animation_time})
+				renderer.record(commands, RenderContext.window_dimensions, camera, RenderContext.screen(),
+					frame={"time": animation_time}, lighting={"light_dir": (0.4, 0.8, 0.3)})
 				RenderContext.submit(commands.finish())
 				gui.render(draw_controls)
 	finally:
