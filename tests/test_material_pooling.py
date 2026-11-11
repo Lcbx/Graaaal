@@ -72,6 +72,10 @@ def test_shared_explicit_bindings_refresh_after_buffer_growth_and_respect_close(
 			compute.set_pipeline(pipeline)
 			compute.set_bind_group(bindings)
 			compute.dispatch(1)
+	# Dropping cached bindings leaves recorded work and the layout usable.
+	group.clear_cache()
+	assert not group._bind_groups
+	assert second._variant.bind_group(bindings) is not grown
 	RenderContext.submit(commands.finish())
 	data = RenderContext.device.queue.read_buffer(buffer.handle, 0, 4)
 	assert np.frombuffer(data, dtype=np.uint32)[0] == 32

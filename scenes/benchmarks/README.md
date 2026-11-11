@@ -18,6 +18,8 @@ function. `main()` parses command-line arguments; the CPU helpers need no window
 | `diagnose_noise_tilt.py` | GPU threshold-image x/y autocorrelation at 0/60/75/83 degrees for UV footprint balances 0/0.5/1. Reports spatial FWHM in screen pixels, not timing. |
 | `diagnose_anchored_noise.py` | Same-ID rear-layer win rates at 0.1–2 coarse-cell separations, plus point-to-pixel-to-anchor pan/orbit/dolly/wind comparisons. |
 | `diagnose_multiple_winners.py` | Joint A/B validity, low-frequency error power, same-ID layer correlation, camera sweeps, and synthetic GPU timing versus 5x5 and 4x MSAA. |
+| `diagnose_winner_fill.py` | Million-sample, five-sigma layer-frequency gate for single/average/fill under all noise modes, 1–4 layers, shared/distinct IDs and 1x/4x sample seeding. |
+| `profile_transparency.py` | Offscreen actual-scene per-pass GPU timings, sample/tile classification, and fragment/compute parity at configurable resolution/zoom. |
 | `../../src/tests/benchmark_array_access.py` | `benchmark(count=100000, samples=7, iterations=30)` returns JSON-compatible measurements of copies, reusable gathers and dense edits. |
 
 ```powershell
@@ -28,8 +30,34 @@ python scenes/benchmarks/diagnose_noise_tilt.py --output noise_tilt.csv --images
 python scenes/benchmarks/diagnose_noise_tilt.py --mode anchored_blue --output anchored_tilt.csv
 python scenes/benchmarks/diagnose_anchored_noise.py --output anchored_audit.json
 python -m scenes.benchmarks.diagnose_multiple_winners --frames 30 --output multiple_winners_audit.json
+python -m scenes.benchmarks.diagnose_multiple_winners --improvements --frames 30 --output force_fill_audit.json
+python -m scenes.benchmarks.diagnose_winner_fill --output winner_fill_gate.json
+python -m scenes.benchmarks.diagnose_winner_fill --attempts 1 2 4 8 --modes object_hash anchored_blue --output fill_iterations.json
+python -m scenes.benchmarks.profile_transparency --size 1920x1080 --frames 30 --output tree_profile.json
+python -m scenes.benchmarks.profile_transparency --size 1280x720 --frames 60 --rounds 4 --stencil --implementations fragment --output selection_profile.json
 python src/tests/benchmark_array_access.py
 ```
+
+The transparency profiler crosses force acceptance on/off with one/two winners,
+average/fill mixing and 1x/4x MSAA. `--configs` selects names such as `single_3`,
+`single_force_3`, `average_3`, `fill_3`, `msaa_fill_force_3`; single-winner kernels
+also include 5 and 9. `--stencil` requests the optional `depth32float-stencil8`
+feature and adds fill cases ending in `_stencil`. Hi-Z policy is unchanged.
+Iteration comparisons include `fill4_3x1`, `fill8_3x1`, `fill2_3x2`, `fill2_3x3`,
+`fill2_3x4`, `fill4_3x2`, `fill2_5x1` and `fill2_9x1`: the number after `fill` is
+the winner budget, and `KxP` means a K-by-K kernel repeated P times. Prefix
+`msaa_` and insert `_force` before the kernel for the matched MSAA/force cases.
+
+Configurations are randomized each round using `--seed`; fragment/compute order
+alternates between rounds. `--frames` is the total measured count for each
+configuration/implementation, divided among rounds, with `--warmup` frames per
+block. JSON includes execution order, raw per-frame/per-pass measurements,
+median/p10/p90/p95/IQR, classification and output hashes. Selection A/B have
+separate `3_select_winner_0` / `3_select_winner_1` labels. Timestamp readback
+synchronizes each frame, so this is diagnostic timing rather than sustained
+asynchronous throughput. Static parity does not measure camera-motion quality.
+See the [selection report](../../src/transparency_reconstruction.md#selection-optimization-and-controlled-matrix)
+for results and limitations.
 
 The tilt diagnostic uses an analytic orthographic projection and the production
 noise shader. It needs rendering dependencies but opens no window. `--oversample`

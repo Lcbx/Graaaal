@@ -81,7 +81,7 @@ def motion_audit(probe, count=4096, poses=16):
 					probability=0.1, note="Unfiltered acceptance changes, not rendered motion quality")
 
 
-def benchmark(size=256, frames=30):
+def benchmark(size=256, frames=30, *, noise_mode="uv_blue_lerp", improvements=False):
 	"""Two low-opacity colored sheets; includes all material rendering GPU passes."""
 	shader = DefaultMaterialShader(transparent=True, source='''
         fn shade(material: Material, p: Params, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
@@ -95,16 +95,23 @@ def benchmark(size=256, frames=30):
 	mesh = MaterialMesh(v, shader)
 	items = [DrawInstance(mesh, material={"base_color": (1, 1, 1, 0.1), "emission": color},
 		position=(0, 0, -0.3*i), surface_id=17+i) for i, color in enumerate(((1, 0, 0), (0, 0, 1)))]
-	renderer = MaterialRenderer(items, target_format="rgba8unorm", noise_mode="uv_blue_lerp")
+	renderer = MaterialRenderer(items, target_format="rgba8unorm", noise_mode=noise_mode)
 	camera = Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 55, near=0.01, far=100)
 	output = Texture((size, size), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	device = RenderContext.device
 	timestamps = "timestamp-query" in device.features
 	queries = device.create_query_set(type="timestamp", count=4) if timestamps else None
 	resolved = device.create_buffer(size=32, usage=wgpu.BufferUsage.QUERY_RESOLVE | wgpu.BufferUsage.COPY_SRC) if timestamps else None
-	for winners, samples, kernel in ((1, 1, 3), (2, 1, 3), (1, 1, 5), (1, 4, 3)):
+	configs = [(w, s, k, "average", False, 2) for w, s, k in ((1, 1, 3), (2, 1, 3), (1, 1, 5), (1, 4, 3))]
+	if improvements:
+		configs += [(2, 1, 3, "fill", False, 2), (2, 1, 3, "fill", True, 2),
+			(1, 1, 3, "average", False, 1), (1, 1, 3, "average", True, 1)]
+	for winners, samples, kernel, mix, force, layers in configs:
 		renderer.set_winner_count(winners)
 		renderer.set_sample_count(samples)
+		renderer.set_winner_mix(mix)
+		renderer.set_force_single_contributor(force)
+		renderer.instances = items[:layers]
 		renderer.transparency.set_bilateral_filter(BilateralFilter(kernel_size=kernel))
 		timings, wall = [], []
 		for frame in range(frames+5):
@@ -131,8 +138,9 @@ def benchmark(size=256, frames=30):
 		data = device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": size*4}, output.size)
 		encoded = np.frombuffer(data, np.uint8).reshape(size, size, 4)[..., :3]/255
 		linear = np.where(encoded <= 0.04045, encoded/12.92, ((encoded+0.055)/1.055)**2.4)
-		hdr = np.array([0.1, 0, 0.09])+0.81*np.array([0.035, 0.05, 0.08])
+		hdr = np.array([0.1, 0, 0.09 if layers == 2 else 0])+0.9**layers*np.array([0.035, 0.05, 0.08])
 		yield dict(winners=winners, msaa=samples, kernel=kernel, size=size, frames=frames,
+			winner_mix=mix, force_single_contributor=force, layers=layers, noise_mode=noise_mode,
 			gpu_ms_median=float(np.median(timings)) if timings else None, synchronized_wall_ms_median=float(np.median(wall)),
 			linear_display_rmse=float(np.sqrt(np.mean((linear-hdr/(1+hdr))**2))))
 	if queries is not None:
@@ -145,6 +153,8 @@ def main():
 	parser.add_argument("--output", type=Path)
 	parser.add_argument("--size", type=int, default=256)
 	parser.add_argument("--frames", type=int, default=30)
+	parser.add_argument("--noise-mode", choices=NOISE_MODES)
+	parser.add_argument("--improvements", action="store_true", help="Include force/fill comparisons; defaults to anchored blue")
 	args = parser.parse_args()
 	if args.size < 16 or args.frames < 1: parser.error("size >= 16 and frames >= 1 required")
 	RenderContext.setup_graphics_backend(True)
@@ -153,8 +163,10 @@ def main():
 	RenderContext.setup_graphics_backend(True, required_features=features)
 	try:
 		probe = NoiseProbe()
+		mode = args.noise_mode or ("anchored_blue" if args.improvements else "uv_blue_lerp")
 		result = dict(adapter=RenderContext.adapter.info, streams=list(stream_audit(probe, args.size)),
-			same_id_layers=list(same_id_audit(probe)), motion=list(motion_audit(probe)), benchmark=list(benchmark(args.size, args.frames)))
+			same_id_layers=list(same_id_audit(probe)), motion=list(motion_audit(probe)),
+			benchmark=list(benchmark(args.size, args.frames, noise_mode=mode, improvements=args.improvements)))
 		text = json.dumps(result, indent=2)
 		if args.output: args.output.write_text(text+"\n", encoding="utf-8")
 		else: print(text)

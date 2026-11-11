@@ -2,6 +2,7 @@
 
 import base64
 import json
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -249,6 +250,8 @@ def gpu_scene(monkeypatch, request):
 	monkeypatch.setattr(RenderContext, "presentation_format", "rgba8unorm", raising=False)
 	output = Texture((64, 64), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	monkeypatch.setattr(RenderContext, "screen", lambda **kwargs: output.color_attachment())
+	# These read-backs inspect one selection payload and its unaveraged color.
+	monkeypatch.setattr(scene, "init_scene", partial(scene.init_scene, winner_count=1, noise_mode="uv_blue_lerp"))
 	scene.init_scene(bilateral_filter=scene.BilateralFilter(kernel_size=request.param))
 	renderer = scene
 	renderer.camera.position = scene.Vec3(0, 0, 3)
@@ -423,7 +426,7 @@ def create_textured_gpu_scene(monkeypatch, uv_scale=2):
 	monkeypatch.setattr(RenderContext, "presentation_format", "rgba8unorm", raising=False)
 	output = Texture((64, 64), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	monkeypatch.setattr(RenderContext, "screen", lambda **kwargs: output.color_attachment())
-	scene.init_scene()
+	scene.init_scene(winner_count=1, noise_mode="uv_blue_lerp")
 	renderer = scene
 	renderer.camera.position = scene.Vec3(0, 0, 3)
 	renderer.camera.target = scene.Vec3(0, 0, 0)
@@ -450,7 +453,7 @@ def test_gpu_cutout_sampling_has_no_black_bilinear_fringe(monkeypatch):
 	monkeypatch.setattr(RenderContext, "presentation_format", "rgba8unorm", raising=False)
 	output = Texture((64, 64), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT)
 	monkeypatch.setattr(RenderContext, "screen", lambda **kwargs: output.color_attachment())
-	scene.init_scene()
+	scene.init_scene(winner_count=1, noise_mode="uv_blue_lerp")
 	renderer = scene
 	renderer.camera.position = scene.Vec3(0, 0, 3)
 	renderer.camera.target = scene.Vec3(0, 0, 0)

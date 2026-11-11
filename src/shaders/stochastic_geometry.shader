@@ -13,7 +13,7 @@
 #endif
 @group(3) @binding(1) var blue_noise: texture_2d<f32>;
 @group(3) @binding(2) var noise_hierarchy: texture_2d<f32>;
-#if PARAMS.get("winner_count", 1) == 2
+#if PARAMS.get("winner_count", 1) > 1 or PARAMS.get("winner_mix", "average") == "fill"
 <WinnerSettings> info: vec4u;
 @group(3) @binding(3) var<uniform> winner_settings: WinnerSettings;
 #if PARAMS.get("sample_count", 1) > 1
@@ -21,6 +21,26 @@
 #else
 @group(3) @binding(4) var winner_guide: texture_2d<f32>;
 #endif
+#endif
+
+#if PARAMS.get("winner_mix", "average") == "fill"
+#if PARAMS.get("sample_count", 1) > 1
+@group(3) @binding(7) var previous_winner: texture_2d_array<f32>;
+#else
+@group(3) @binding(7) var previous_winner: texture_2d<f32>;
+#endif
+#endif
+
+#if PARAMS.get("force_single_contributor", false)
+#if PARAMS.get("sample_count", 1) > 1
+@group(3) @binding(5) var selection_transmittance: texture_multisampled_2d<f32>;
+@group(3) @binding(6) var contributor_count: texture_multisampled_2d<f32>;
+#else
+@group(3) @binding(5) var selection_transmittance: texture_2d<f32>;
+@group(3) @binding(6) var contributor_count: texture_2d<f32>;
+#endif
+<TransmittanceOutput> @location(0) transmission: vec4f;
+<TransmittanceOutput> @location(1) count: f32;
 #endif
 
 <VertexInput> position: vec3f;
@@ -116,13 +136,23 @@ fn opaque(input: VertexOutput, @builtin(front_facing) front: bool) -> @location(
 }
 
 @fragment
-fn transmittance(input: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4f {
+fn transmittance(input: VertexOutput, @builtin(front_facing) front: bool)
+#if PARAMS.get("force_single_contributor", false)
+ -> TransmittanceOutput {
+#else
+ -> @location(0) vec4f {
+#endif
 	let lod = raster_lod(input.uv);
 	let material = get_material(input.instance);
 	let alpha = raster_opacity(input.instance, material, input.uv, lod, input.world);
 	if !front && material.flags.y == 0u { discard; }
 	let p = max(alpha.x, max(alpha.y, alpha.z));
-	return vec4f(vec3f(1.0)-alpha, 1.0-p);
+	let transmission = vec4f(vec3f(1.0)-alpha, 1.0-p);
+#if PARAMS.get("force_single_contributor", false)
+	return TransmittanceOutput(transmission, select(0.0, 1.0, p > 0.0));
+#else
+	return transmission;
+#endif
 }
 
 fn raster_lod(uv: vec2f) -> f32 {
@@ -184,37 +214,56 @@ fn select_winner(input: VertexOutput, @builtin(front_facing) front: bool, @built
 	let local_dy = dpdyFine(input.local);
 	let uv_dx = dpdxFine(input.uv);
 	let uv_dy = dpdyFine(input.uv);
-#if PARAMS.get("winner_count", 1) == 2
+	let p = max(alpha.x, max(alpha.y, alpha.z));
+	// All derivative-dependent material/LOD/noise inputs are now evaluated.
+	// Reject deterministic failures before count/guide reads and noise work.
+	if p <= 0.0 { discard; }
+	if !front && material.flags.y == 0u { discard; }
+	if input.position.z >= textureLoad(opaque_depth, pixel, i32(sample)) { discard; }
+	var forced = false;
+#if PARAMS.get("force_single_contributor", false)
+	let acceptance = 1.0-textureLoad(selection_transmittance, pixel, i32(sample)).a;
+	forced = p > 0.0 && acceptance > 0.0 && textureLoad(contributor_count, pixel, i32(sample)).r == 1.0;
+#endif
+#if PARAMS.get("winner_count", 1) > 1 or PARAMS.get("winner_mix", "average") == "fill"
 	seed = noise_stream_seed(seed, winner_settings.info.x);
+#if PARAMS.get("winner_mix", "average") == "fill"
+	if winner_settings.info.x != 0u {
+#if PARAMS.get("sample_count", 1) > 1
+		if textureLoad(previous_winner, pixel, i32(sample), 0).a > 0.0 { discard; }
+#else
+		if textureLoad(previous_winner, pixel, 0).a > 0.0 { discard; }
+#endif
+	}
+#endif
+	if winner_settings.info.x != 0u && forced { discard; }
 	// All material and noise derivatives have been evaluated before this discard.
 	// The 1x1 path does not produce a guide and sets info.y to zero.
 	if winner_settings.info.y != 0u {
 		if textureLoad(winner_guide, pixel, i32(sample)).x == 1.0 { discard; }
 	}
 #endif
-	var u: f32;
-	if mode == 7u {
-		u = anchored_blue_threshold(blue_noise, input.position.xy, input.local, local_dx, local_dy,
-			frame.clip.z, seed, frame.noise_anchor.x, frame.noise_anchor.y);
-	} else {
+	var u = 0.0;
+	if !forced {
+		if mode == 7u {
+			u = anchored_blue_threshold(blue_noise, input.position.xy, input.local, local_dx, local_dy,
+				frame.clip.z, seed, frame.noise_anchor.x, frame.noise_anchor.y);
+		} else {
 #if FEATURES.NOISE_FOOTPRINT_BALANCE
-		u = surface_noise_threshold_balanced(blue_noise, noise_hierarchy, input.local, local_dx, local_dy, input.local_normal,
-			input.uv, uv_dx, uv_dy, frame.clip.z, seed, mode, frame.noise_footprint_balance);
+			u = surface_noise_threshold_balanced(blue_noise, noise_hierarchy, input.local, local_dx, local_dy, input.local_normal,
+				input.uv, uv_dx, uv_dy, frame.clip.z, seed, mode, frame.noise_footprint_balance);
 #else
-		u = surface_noise_threshold(blue_noise, noise_hierarchy, input.local, local_dx, local_dy, input.local_normal,
-			input.uv, uv_dx, uv_dy, frame.clip.z, seed, mode);
+			u = surface_noise_threshold(blue_noise, noise_hierarchy, input.local, local_dx, local_dy, input.local_normal,
+				input.uv, uv_dx, uv_dy, frame.clip.z, seed, mode);
 #endif
+		}
 	}
-	// Selection has its own writable depth; reject opaque occlusion explicitly.
-	if input.position.z >= textureLoad(opaque_depth, pixel, i32(sample)) { discard; }
-	if !front && material.flags.y == 0u { discard; }
-	let p = max(alpha.x, max(alpha.y, alpha.z));
-	if u >= p { discard; }
+	if !forced && u >= p { discard; }
 	// Zero instance is the empty sentinel. Hardware depth writes keep all four
 	// payload components consistent with the nearest accepted triangle.
 	let payload = vec4u(input.instance + 1u, input.triangle,
 		pack2x16unorm(clamp(input.barycentric, vec2f(0.0), vec2f(1.0))),
-		pack2x16float(vec2f(lod, select(-1.0, 1.0, front))));
+		pack2x16float(vec2f(lod, select(-1.0, 1.0, front))) | select(0u, WINNER_FORCED_BIT, forced));
 #if PARAMS.get("sample_count", 1) > 1
 	// rgba32uint cannot be multisampled. Preserve every bit in two rgba16uint targets.
 	return WinnerOutput(vec4u(payload.x & 65535u, payload.x >> 16u, payload.y & 65535u, payload.y >> 16u),

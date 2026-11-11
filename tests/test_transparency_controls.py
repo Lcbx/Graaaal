@@ -9,11 +9,20 @@ from scenes.transparency_example import BilateralFilter, FilterSettings, SETTING
 from scenes import transparency_example as scene
 
 
+def make_renderer(**overrides):
+	values = dict(bilateral_filter=BilateralFilter(), winner_count=1, winner_mix="average",
+		force_single_contributor=False, debug_view="final")
+	values.update(overrides)
+	renderer = SimpleNamespace(**values)
+	renderer.set_bilateral_filter = lambda value: setattr(renderer, "bilateral_filter", value)
+	renderer.set_debug_view = lambda value: setattr(renderer, "debug_view", value)
+	return renderer
+
+
 def test_filter_reset_restores_all_startup_values():
 	options = BilateralFilter(kernel_size=9, spatial_sigma=4, depth_sigma=0.12,
 		transmittance_sigma=0.7, min_depth_sigma=0.03)
-	renderer = SimpleNamespace(bilateral_filter=options)
-	renderer.set_bilateral_filter = lambda value: setattr(renderer, "bilateral_filter", value)
+	renderer = make_renderer(bilateral_filter=options)
 	panel = FilterSettings(renderer)
 	renderer.set_bilateral_filter(BilateralFilter())
 	panel.reset()
@@ -21,8 +30,7 @@ def test_filter_reset_restores_all_startup_values():
 
 
 def test_arrow_navigation_editing_fine_steps_and_reset():
-	renderer = SimpleNamespace(bilateral_filter=BilateralFilter())
-	renderer.set_bilateral_filter = lambda value: setattr(renderer, "bilateral_filter", value)
+	renderer = make_renderer()
 	settings = FilterSettings(renderer)
 	assert {row[0] for row in SETTINGS} == set(vars(renderer.bilateral_filter))
 	def key(code, mods=0, action=glfw.PRESS):
@@ -57,8 +65,7 @@ def test_arrow_navigation_editing_fine_steps_and_reset():
 
 
 def test_arrow_edits_keep_sigmas_positive():
-	renderer = SimpleNamespace(bilateral_filter=BilateralFilter())
-	renderer.set_bilateral_filter = lambda value: setattr(renderer, "bilateral_filter", value)
+	renderer = make_renderer()
 	settings = FilterSettings(renderer)
 	for name in ("depth_sigma", "transmittance_sigma", "min_depth_sigma"):
 		settings.selected = next(i for i, row in enumerate(SETTINGS) if row[0] == name)
@@ -72,8 +79,7 @@ def test_arrow_edits_keep_sigmas_positive():
 	("transmittance_sigma", -2, 0.001), ("min_depth_sigma", -2, 0.000001),
 ])
 def test_widget_edits_use_validated_ranges(name, value, expected):
-	renderer = SimpleNamespace(bilateral_filter=BilateralFilter())
-	renderer.set_bilateral_filter = lambda value: setattr(renderer, "bilateral_filter", value)
+	renderer = make_renderer()
 	settings = FilterSettings(renderer)
 	settings.set_value(name, value)
 	assert getattr(renderer.bilateral_filter, name) == pytest.approx(expected)
@@ -83,7 +89,7 @@ def test_widget_edits_use_validated_ranges(name, value, expected):
 
 
 def test_noise_shortcuts_cycle_all_modes_and_adjust_grain(monkeypatch):
-	renderer = SimpleNamespace(noise_mode="uv_blue_pick", noise_scale=1.0)
+	renderer = SimpleNamespace(noise_mode="uv_blue_pick", noise_scale=1.0, winner_mix="average")
 	renderer.set_noise_mode = lambda value: setattr(renderer, "noise_mode", value)
 	renderer.set_noise_scale = lambda value: setattr(renderer, "noise_scale", value)
 	monkeypatch.setattr(scene, "transparency", renderer, raising=False)
@@ -99,3 +105,49 @@ def test_noise_shortcuts_cycle_all_modes_and_adjust_grain(monkeypatch):
 	for _ in range(30):
 		scene.on_char(ord("["))
 	assert renderer.noise_scale == 0.25
+
+
+@pytest.mark.parametrize("count,mix,kernel,force,extras", [
+	(1, "average", 1, False, ()),
+	(1, "average", 3, True, ("filter_support", "forced")),
+	(2, "average", 3, False, ("filter_support", "winner_a", "winner_b", "winner_count")),
+	(4, "fill", 3, False, ("filter_support", "winner_count")),
+	(8, "fill", 1, True, ("winner_count", "forced")),
+])
+def test_diagnostic_choices_and_shortcut_match_active_technique(monkeypatch, count, mix, kernel, force, extras):
+	renderer = make_renderer(winner_count=count, winner_mix=mix, bilateral_filter=BilateralFilter(kernel_size=kernel),
+		force_single_contributor=force)
+	expected = {"final", "transmittance", "winner", "reconstruction", *extras}
+	views = FilterSettings.available_debug_views(renderer)
+	assert set(views) == expected
+	monkeypatch.setattr(scene, "transparency", renderer, raising=False)
+	visited = set()
+	for _ in views:
+		scene.on_char(ord("d"))
+		visited.add(renderer.debug_view)
+	assert visited == expected and renderer.debug_view == "final"
+	if mix == "fill":
+		assert FilterSettings.debug_view_label(renderer, "winner_count") == "winner_validity"
+
+
+def test_unavailable_selection_resets_on_feature_and_kernel_changes(monkeypatch):
+	renderer = make_renderer(winner_count=2, debug_view="winner_b")
+	renderer.winner_mix = "fill"
+	FilterSettings.sync_debug_view(renderer)
+	assert renderer.debug_view == "final"
+	renderer.debug_view = "winner_count"
+	renderer.winner_count = 1
+	FilterSettings.sync_debug_view(renderer)
+	assert renderer.debug_view == "final"
+	renderer.debug_view = "forced"
+	FilterSettings.sync_debug_view(renderer)
+	assert renderer.debug_view == "final"
+	settings = FilterSettings(renderer)
+	renderer.debug_view = "filter_support"
+	settings.set_value("kernel_size", 1)
+	assert renderer.debug_view == "final"
+	renderer.set_bilateral_filter(BilateralFilter(kernel_size=3))
+	renderer.debug_view = "filter_support"
+	monkeypatch.setattr(scene, "transparency", renderer, raising=False)
+	scene.on_char(ord("1"))
+	assert renderer.debug_view == "final"

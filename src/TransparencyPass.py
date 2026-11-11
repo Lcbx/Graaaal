@@ -5,6 +5,7 @@ No window, asset file, ECS world, or ImGui context is created by this module.
 """
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 from operator import index
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from numpy.typing import ArrayLike, NDArray
 from .DrawBatches import RenderShader, ShaderPass
 from .RenderContext import (
     BindGroup,
+    ColorAttachment,
     ComputePipeline,
     RenderContext,
     RenderPipeline,
@@ -27,11 +29,12 @@ from .TransparencyData import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE
 
 SHADERS = Path(__file__).with_name("shaders")
 DEBUG_VIEWS = ("final", "transmittance", "winner", "reconstruction", "filter_support",
-	"winner_a", "winner_b", "winner_count")
+	"winner_a", "winner_b", "winner_count", "forced")
 KERNEL_SIZES = (1, 3, 5, 9)
 MSAA_SAMPLE_COUNTS = (1, 4)
 NOISE_MODES = ("object_hash", "uv_blue_lerp", "uv_blue_pick", "uv_bayer",
 	"uv_blue_correlated", "triplanar_blue", "triplanar_correlated", "anchored_blue")
+FILL_NOISE_MODES = ("object_hash", "anchored_blue")
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,11 @@ class TransparencyTargets:
 	winner_color: Texture
 	winner_extra: Texture | None = None
 	winner_first: Texture | None = None
+	contributor_count: Texture | None = None
+	winner_source: Texture | None = None
+	reconstruction_color: Texture | None = None
+	reconstruction_pair: Texture | None = None
+	reconstruction_pair_scratch: Texture | None = None
 
 
 class TransparencyPass:
@@ -113,8 +121,9 @@ class TransparencyPass:
 	the documented winner/metadata ABI. Animation data preparation is caller-owned.
 	"""
 	def __init__(self, *, materials, base_textures, vertices, blue_noise=None, blue_noise_second=None,
-		material_sampler=None, bilateral_filter=None, target_format=None, noise_scale=1.0, noise_mode="uv_blue_lerp",
-		grazing_fade=None, sample_count=1, winner_count=1, noise_footprint_balance=0.0, noise_footprint_balancing=False,
+		material_sampler=None, bilateral_filter=None, target_format=None, noise_scale=1.0, noise_mode="anchored_blue",
+		grazing_fade=None, sample_count=1, winner_count=2, noise_footprint_balance=0.0, noise_footprint_balancing=False,
+		force_single_contributor=False, winner_mix="average", reconstruction="fragment", reconstruction_passes=1, early_b_rejection=False,
 		noise_anchor_pixels=24.0, noise_anchor_subdivisions=4,
 		opaque_color=None, opaque_depth=None, material_source=None, material_library=None,
 		geometry_shader=None, shading_shader=None, compose_shader=None):
@@ -122,22 +131,47 @@ class TransparencyPass:
 			raise ValueError("Custom deformation requires matched geometry and shading shaders")
 		if type(sample_count) is not int or sample_count not in MSAA_SAMPLE_COUNTS:
 			raise ValueError("Transparency sample_count must be 1 or 4")
-		if type(winner_count) is not int or winner_count not in (1, 2):
-			raise ValueError("Transparency winner_count must be 1 or 2")
-		if winner_count == 2 and any(s is not None for s in (geometry_shader, shading_shader, compose_shader)):
-			raise ValueError("Two winners require the default shader set; material hooks remain supported")
+		self._validate_count(winner_count, "winner_count")
+		self._validate_count(reconstruction_passes, "reconstruction_passes")
+		if winner_count > 2 and winner_mix != "fill": raise ValueError("winner_count above two requires fill mixing")
+		if type(early_b_rejection) is not bool: raise ValueError("early_b_rejection must be boolean")
+		if early_b_rejection:
+			if winner_mix != "fill" or winner_count < 2: raise ValueError("Early B rejection requires multiple-winner fill")
+			RenderContext.require_features(("depth32float-stencil8",))
+		if reconstruction not in ("fragment", "compute"):
+			raise ValueError("reconstruction must be fragment or compute")
+		if (reconstruction == "compute" or reconstruction_passes > 1) and any(s is not None for s in (geometry_shader, shading_shader, compose_shader)):
+			raise ValueError("Compute reconstruction requires the default shader set; material hooks remain supported")
+		if winner_mix not in ("average", "fill"): raise ValueError("winner_mix must be average or fill")
+		if winner_mix == "fill" and noise_mode not in FILL_NOISE_MODES:
+			raise ValueError(f"Fill requires a validated noise mode: {FILL_NOISE_MODES}")
+		if winner_mix == "fill" and (blue_noise is not None or blue_noise_second is not None):
+			raise ValueError("Fill requires the audited default noise sources")
+		if type(force_single_contributor) is not bool:
+			raise ValueError("force_single_contributor must be boolean")
+		if force_single_contributor and any(s is not None for s in (geometry_shader, shading_shader, compose_shader)):
+			raise ValueError("Force acceptance requires the default shader set; material hooks remain supported")
+		if (winner_count > 1 or winner_mix == "fill") and any(s is not None for s in (geometry_shader, shading_shader, compose_shader)):
+			raise ValueError("Multiple winners and fill require the default shader set; material hooks remain supported")
 		if type(noise_footprint_balancing) is not bool:
 			raise ValueError("Noise footprint balancing must be boolean")
 		target_format = target_format or getattr(RenderContext, "presentation_format", "rgba8unorm")
 		self.target_format = target_format
 		self.sample_count = sample_count
 		self.winner_count = winner_count
+		self.winner_mix = winner_mix
+		self.reconstruction = reconstruction
+		self.reconstruction_passes = reconstruction_passes
+		self.early_b_rejection = early_b_rejection
+		self.force_single_contributor = force_single_contributor
 		self.noise_footprint_balancing = noise_footprint_balancing
 		self._custom_shaders = (geometry_shader, shading_shader, compose_shader)
 		self._material_source = material_source
 		self._material_library = material_library
 		self._shader_sets = {}
 		self._geometry_shaders = {}
+		self._reconstruction_shaders = {}
+		self._pair_shaders = {}
 		self._layout_cache, self._pipeline_layouts = {}, {}
 		self._winner_settings = None
 		self._activate_shaders(sample_count)
@@ -146,6 +180,7 @@ class TransparencyPass:
 			if "lighting" in shader.info.uniforms), None)
 		self.lighting_uniforms = lighting_shader.uniform_buffer("lighting") if lighting_shader else None
 		self._default_noise = blue_noise is None
+		self._default_noise_pair = blue_noise is None and blue_noise_second is None
 		if blue_noise is None:
 			from .TextureProcessing import get_default_blue_noise
 			blue_noise = get_default_blue_noise()
@@ -171,6 +206,7 @@ class TransparencyPass:
 		self.compose_pipeline = RenderPipeline(self.compose_shader, vertex_entry="fullscreen",
 			fragment_entry="compose", depth_test=None, depth_write=False, cull_mode="none",
 			layout=self._pipeline_layout(self.compose_shader, "fullscreen", "compose"))
+		self._create_reconstruction_pipeline()
 		self.vertices = vertices
 		self.shared = dict(materials=materials, base_textures=base_textures,
 			material_sampler=material_sampler or Sampler(address_mode_u="repeat", address_mode_v="repeat",
@@ -182,13 +218,14 @@ class TransparencyPass:
 			self.set_opaque_inputs(opaque_color, opaque_depth)
 
 	def _geometry_shader(self, count):
-		key = (count, self.noise_footprint_balancing, self.winner_count)
+		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix)
 		if key not in self._geometry_shaders:
 			self._geometry_shaders[key] = self._custom_shaders[0] or Shader(
 				filepath=str(SHADERS / "stochastic_geometry.shader"),
 				features=("NOISE_FOOTPRINT_BALANCE",) if self.noise_footprint_balancing else (),
 				params={"material_source": self._material_source, "sample_count": count,
-					"winner_count": self.winner_count, "material_library": self._material_library})
+					"winner_count": min(self.winner_count, 2), "force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix,
+					"material_library": self._material_library})
 		return self._geometry_shaders[key]
 
 	@property
@@ -201,6 +238,11 @@ class TransparencyPass:
 		if "lighting" in shader.info.bindings: resources["lighting"] = self.lighting_uniforms
 		return shader.bind_group(0, **resources)
 
+	@staticmethod
+	def _validate_count(count, name):
+		if type(count) is not int or not 1 <= count <= 0xffffffff:
+			raise ValueError(f"Transparency {name} must be a positive uint32 integer")
+
 	def _pipeline_layout(self, shader, *entries):
 		if any(custom is not None for custom in self._custom_shaders): return "auto"
 		key = (shader, entries)
@@ -210,32 +252,85 @@ class TransparencyPass:
 		return self._pipeline_layouts[key]
 
 	def _shader_set(self, count):
-		key = (count, self.noise_footprint_balancing, self.winner_count)
+		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix, self.reconstruction, self.reconstruction_passes > 1)
 		if key not in self._shader_sets:
 			geometry, shading, compose = self._custom_shaders
 			params = {"material_source": self._material_source, "sample_count": count,
-				"material_library": self._material_library, "winner_count": self.winner_count}
+				"material_library": self._material_library, "winner_count": min(self.winner_count, 2),
+				"force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix}
 			self._shader_sets[key] = (
 				self._geometry_shader(count),
 				shading or Shader(filepath=str(SHADERS / "stochastic_shade.shader"), params=params),
 				compose or Shader(filepath=str(SHADERS / "stochastic_compose.shader"),
 					params={"srgb_surface": self.target_format.endswith("-srgb"), "sample_count": count,
-						"winner_count": self.winner_count}),
+						"winner_count": min(self.winner_count, 2), "force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix,
+						"compute_reconstruction": self.reconstruction == "compute", "filter_input": self.reconstruction_passes > 1}),
 			)
 		return self._shader_sets[key]
 
 	def _activate_shaders(self, count):
 		self.shader, self.shading_shader, self.compose_shader = self._shader_set(count)
-		if self.winner_count == 2 and self._winner_settings is None:
-			self._winner_settings = [self.shader.uniform_buffer("winner_settings") for _ in range(2)]
+		if self.winner_count > 1 or self.winner_mix == "fill":
+			self._winner_settings = [self.shader.uniform_buffer("winner_settings") for _ in range(self.winner_count)]
 			for stream, settings in enumerate(self._winner_settings):
-				settings.content["info"] = (stream, 0, 0, 0)
+				settings.content["info"] = (stream, int(stream > 0 and hasattr(self, "bilateral_filter") and self.bilateral_filter.kernel_size != 1), self.winner_count, 0)
 				settings.upload()
+		else: self._winner_settings = None
 
 	def _create_mix_pipeline(self):
 		if self.winner_count == 1: return None
-		return ComputePipeline(self.shading_shader, entry="shade_mix",
-			layout=self._pipeline_layout(self.shading_shader, "shade_mix"))
+		entry = "shade_fill" if self.winner_mix == "fill" else "shade_mix"
+		return ComputePipeline(self.shading_shader, entry=entry,
+			layout=self._pipeline_layout(self.shading_shader, entry))
+
+	def _create_reconstruction_pipeline(self):
+		self.reconstruct_shader = self.reconstruct_pipeline = self.reconstruct_frame = None
+		self.pair_shader = self.pair_pipeline = self.pair_frame = None
+		if self.reconstruction_passes > 1:
+			key = (self.sample_count, self.force_single_contributor, self.reconstruction)
+			if key not in self._pair_shaders:
+				self._pair_shaders[key] = Shader(filepath=str(SHADERS / ("stochastic_reconstruct.shader" if self.reconstruction == "compute" else "stochastic_filter.shader")),
+					params={"sample_count": self.sample_count, "force_single_contributor": self.force_single_contributor,
+						"filter_input": True, "filter_pairs": True, "tiled_reconstruction": self.reconstruction == "compute"})
+			self.pair_shader = self._pair_shaders[key]
+			if self.reconstruction == "compute":
+				self.pair_pipeline = ComputePipeline(self.pair_shader, entry="reconstruct", layout=self._pipeline_layout(self.pair_shader, "reconstruct"))
+			else:
+				self.pair_pipeline = RenderPipeline(self.pair_shader, vertex_entry="fullscreen", fragment_entry="filter_pair",
+					depth_test=None, depth_write=False, cull_mode="none", layout=self._pipeline_layout(self.pair_shader, "fullscreen", "filter_pair"))
+			self.pair_frame = self._frame_group(self.pair_shader)
+		if self.reconstruction == "fragment": return
+		key = (self.sample_count, self.force_single_contributor, self.reconstruction_passes > 1)
+		if key not in self._reconstruction_shaders:
+			self._reconstruction_shaders[key] = Shader(filepath=str(SHADERS / "stochastic_reconstruct.shader"),
+				params={"sample_count": self.sample_count, "force_single_contributor": self.force_single_contributor,
+					"tiled_reconstruction": True, "compute_reconstruction": True, "filter_input": self.reconstruction_passes > 1})
+		self.reconstruct_shader = self._reconstruction_shaders[key]
+		self.reconstruct_pipeline = ComputePipeline(self.reconstruct_shader, entry="reconstruct",
+			layout=self._pipeline_layout(self.reconstruct_shader, "reconstruct"))
+		self.reconstruct_frame = self._frame_group(self.reconstruct_shader)
+
+	def set_reconstruction_passes(self, count):
+		"""Stack positive-count bilateral passes without repeatedly applying opacity."""
+		self._validate_count(count, "reconstruction_passes")
+		if count == self.reconstruction_passes: return False
+		if any(shader is not None for shader in self._custom_shaders):
+			raise ValueError("Repeated reconstruction requires the default shader set")
+		self.reconstruction_passes = count
+		self._activate_shaders(self.sample_count)
+		self._rebuild_geometry()
+		return True
+
+	def set_reconstruction(self, mode):
+		"""Choose the original fragment filter or experimental tiled compute."""
+		if mode not in ("fragment", "compute"): raise ValueError("reconstruction must be fragment or compute")
+		if mode == self.reconstruction: return False
+		if any(shader is not None for shader in self._custom_shaders):
+			raise ValueError("Runtime reconstruction switching requires the default shader set")
+		self.reconstruction = mode
+		self._activate_shaders(self.sample_count)
+		self._rebuild_geometry()
+		return True
 
 	def _ensure_second_noise(self):
 		if self.winner_count == 1 or self.noise_second is not None: return
@@ -248,18 +343,60 @@ class TransparencyPass:
 			self.noise_second = self.noise
 
 	def set_winner_count(self, count):
-		"""Switch one/two draws with replacement; MSAA count is independent."""
-		if type(count) is not int or count not in (1, 2):
-			raise ValueError("Transparency winner_count must be 1 or 2")
+		"""Any positive fill draw count, or one/two averaged draws."""
+		self._validate_count(count, "winner_count")
+		if count > 2 and self.winner_mix != "fill": raise ValueError("winner_count above two requires fill mixing")
 		if count == self.winner_count: return False
 		if any(shader is not None for shader in self._custom_shaders):
 			raise ValueError("Runtime winner switching requires the default shader set")
 		self.winner_count = count
+		if count == 1:
+			self.winner_mix = "average"
+			self.early_b_rejection = False
 		self._ensure_second_noise()
 		self._activate_shaders(self.sample_count)
 		self._rebuild_geometry()
 		self.set_noise_mode(self.noise_mode)
 		self.set_bilateral_filter(self.bilateral_filter)
+		return True
+
+	def set_winner_mix(self, mode):
+		"""Choose averaging or experimental fill, limited to audited sources/modes."""
+		if mode not in ("average", "fill"): raise ValueError("winner_mix must be average or fill")
+		if mode == self.winner_mix: return False
+		if any(shader is not None for shader in self._custom_shaders):
+			raise ValueError("Winner mixing requires the default shader set")
+		if mode == "average" and self.winner_count > 2: raise ValueError("Average mixing supports at most two winners; reduce winner_count first")
+		if mode == "fill" and self.noise_mode not in FILL_NOISE_MODES:
+			raise ValueError(f"Fill requires a validated noise mode: {FILL_NOISE_MODES}")
+		if mode == "fill" and not self._default_noise_pair:
+			raise ValueError("Fill requires the audited default noise sources")
+		self.winner_mix = mode
+		if mode == "average": self.early_b_rejection = False
+		self._activate_shaders(self.sample_count)
+		self._rebuild_geometry()
+		return True
+
+	def set_early_b_rejection(self, enabled):
+		"""Experimental per-sample stencil gating of fill B; no depth precision loss."""
+		if type(enabled) is not bool: raise ValueError("early_b_rejection must be boolean")
+		if enabled == self.early_b_rejection: return False
+		if enabled:
+			if self.winner_count < 2 or self.winner_mix != "fill": raise ValueError("Early B rejection requires multiple-winner fill")
+			RenderContext.require_features(("depth32float-stencil8",))
+		self.early_b_rejection = enabled
+		self._rebuild_geometry()
+		return True
+
+	def set_force_single_contributor(self, enabled):
+		"""Force only an exactly counted single nonzero visible contributor."""
+		if type(enabled) is not bool: raise ValueError("force_single_contributor must be boolean")
+		if enabled == self.force_single_contributor: return False
+		if any(shader is not None for shader in self._custom_shaders):
+			raise ValueError("Force acceptance requires the default shader set")
+		self.force_single_contributor = enabled
+		self._activate_shaders(self.sample_count)
+		self._rebuild_geometry()
 		return True
 
 	def set_sample_count(self, count):
@@ -297,6 +434,7 @@ class TransparencyPass:
 		self.compose_pipeline = RenderPipeline(self.compose_shader, vertex_entry="fullscreen",
 			fragment_entry="compose", depth_test=None, depth_write=False, cull_mode="none",
 			layout=self._pipeline_layout(self.compose_shader, "fullscreen", "compose"))
+		self._create_reconstruction_pipeline()
 		self.shade_frame = self._frame_group(self.shading_shader)
 		if size is not None:
 			self.resize(size, targets=targets)
@@ -318,11 +456,15 @@ class TransparencyPass:
 		if transparent:
 			multiply = {"color": {"src_factor": "zero", "dst_factor": "src", "operation": "add"},
 				"alpha": {"src_factor": "zero", "dst_factor": "src-alpha", "operation": "add"}}
+			add = {"color": {"src_factor": "one", "dst_factor": "one", "operation": "add"},
+				"alpha": {"src_factor": "one", "dst_factor": "one", "operation": "add"}}
 			first = RenderPipeline(self.shader, vertex_entry="vertex", fragment_entry="transmittance",
 				cull_mode="none", depth_write=False, blend=multiply, label="transmittance", sample_count=self.sample_count,
+				targets=({"blend": multiply}, {"blend": add}) if self.force_single_contributor else None,
 				layout=self._pipeline_layout(self.shader, "vertex", "transmittance"))
 			last = RenderPipeline(self.shader, vertex_entry="vertex", fragment_entry="select_winner",
 				cull_mode="none", label="select_winner", sample_count=self.sample_count,
+				depth_stencil=self._selection_stencil(False),
 				layout=self._pipeline_layout(self.shader, "vertex", "select_winner"))
 			guide = ShaderPass(RenderPipeline(self.shader, vertex_entry="vertex",
 				fragment_entry="transparent_depth", cull_mode="none", label="transparent_depth", sample_count=self.sample_count,
@@ -337,8 +479,12 @@ class TransparencyPass:
 		geometry = GeometryPasses(RenderShader({"main": ShaderPass(last, bindings), first_pass: ShaderPass(first, bindings)}),
 			guide, self.shading_shader.bind_group(2, **self.shared, metadata=metadata, vertices=self.vertices,
 				shading_instances=instances, **shading_resources), self, tuple(shading_bindings))
-		if transparent and self.winner_count == 2:
-			geometry.render_shader.passes["second"] = ShaderPass(last, bindings)
+		if transparent and self.winner_count > 1:
+			second = last if not self.early_b_rejection else RenderPipeline(self.shader, vertex_entry="vertex", fragment_entry="select_winner",
+				cull_mode="none", label="select_fill_b_stencil", sample_count=self.sample_count,
+				depth_stencil=self._selection_stencil(True), layout=self._pipeline_layout(self.shader, "vertex", "select_winner"))
+			for stream in range(1, self.winner_count):
+				geometry.render_shader.passes[self.selection_name(stream)] = ShaderPass(second, bindings)
 		geometry.creation_args = dict(metadata=metadata, transparent=transparent, instances=instances,
 			geometry_resources=geometry_resources, shading_resources=shading_resources,
 			geometry_bindings=tuple(geometry_bindings), shading_bindings=tuple(shading_bindings))
@@ -349,17 +495,33 @@ class TransparencyPass:
 				self._bind_targets(geometry)
 		return geometry
 
+	@staticmethod
+	def selection_name(stream):
+		return "main" if stream == 0 else "second" if stream == 1 else f"winner_{stream}"
+
 	def _bind_targets(self, geometry):
 		bindings = geometry.render_shader['transmittance'].bindings
-		for stream, name in enumerate(("main", "second")[:self.winner_count]):
+		for stream in range(self.winner_count):
+			name = self.selection_name(stream)
 			noise = self.noise if stream == 0 else self.noise_second
 			hierarchy = self._noise_hierarchy if stream == 0 else self._noise_hierarchy_second
 			resources = dict(opaque_depth=self.depth, blue_noise=noise,
 				noise_hierarchy=hierarchy if hierarchy is not None else noise)
-			if self.winner_count == 2:
+			if self._winner_settings is not None:
 				resources.update(winner_settings=self._winner_settings[stream], winner_guide=self.transparent_guide)
+			if self.force_single_contributor:
+				resources.update(selection_transmittance=self.transmittance, contributor_count=self.contributor_count)
+			if self.winner_mix == "fill":
+				resources["previous_winner"] = self.winner_color.view(dimension="2d-array") if self.sample_count > 1 else self.winner_color
 			geometry.render_shader[name].bindings = bindings + (self.shader.bind_group(3, **resources),)
 		geometry.guide.bindings = bindings + (self.shader.bind_group(3, opaque_depth=self.depth),)
+
+	def _selection_stencil(self, second):
+		if not self.early_b_rejection: return None
+		face = dict(compare="not-equal" if second else "always", fail_op="keep", depth_fail_op="keep",
+			pass_op="keep" if second else "replace")
+		return dict(depth_write_enabled=True, depth_compare="less", stencil_front=face, stencil_back=face,
+			stencil_read_mask=255, stencil_write_mask=0 if second else 255)
 
 	def set_bilateral_filter(self, options):
 		"""Change reconstruction settings without recreating pipelines or targets."""
@@ -370,8 +532,9 @@ class TransparencyPass:
 		self.bilateral_uniforms.upload_changed()
 		self.bilateral_filter = options
 		if self._winner_settings is not None:
-			self._winner_settings[1].content["info"] = (1, int(options.kernel_size != 1), 0, 0)
-			self._winner_settings[1].upload_changed()
+			for stream, settings in enumerate(self._winner_settings):
+				settings.content["info"] = (stream, int(stream > 0 and options.kernel_size != 1), self.winner_count, 0)
+				settings.upload_changed()
 
 	@property
 	def effective_noise_scale(self):
@@ -430,13 +593,15 @@ class TransparencyPass:
 		"""
 		if mode not in NOISE_MODES:
 			raise ValueError(f"Noise mode must be one of {NOISE_MODES}")
+		if self.winner_mix == "fill" and mode not in FILL_NOISE_MODES:
+			raise ValueError(f"Fill is only validated for {FILL_NOISE_MODES}; select average mixing first")
 		if mode in ("uv_blue_correlated", "triplanar_correlated") and self._noise_hierarchy is None:
 			from .TextureProcessing import build_correlated_noise_hierarchy
 			self._noise_hierarchy = build_correlated_noise_hierarchy(self.noise)
 			if self.size is not None:
 				for geometry in self._transparent_geometries:
 					self._bind_targets(geometry)
-		if mode in ("uv_blue_correlated", "triplanar_correlated") and self.winner_count == 2 and self._noise_hierarchy_second is None:
+		if mode in ("uv_blue_correlated", "triplanar_correlated") and self.winner_count > 1 and self._noise_hierarchy_second is None:
 			from .TextureProcessing import build_correlated_noise_hierarchy
 			self._noise_hierarchy_second = build_correlated_noise_hierarchy(self.noise_second)
 			if self.size is not None:
@@ -494,12 +659,19 @@ class TransparencyPass:
 		if self.sample_count == 4:
 			formats["winner"] = "rgba16uint"
 			formats["winner_extra"] = "rgba16uint"
-		if self.winner_count == 2: formats["winner_first"] = "rgba16float"
+		if self.winner_count == 2 and self.winner_mix == "average": formats["winner_first"] = "rgba16float"
+		if self.winner_mix == "fill": formats["winner_source"] = "r32uint"
+		if self.force_single_contributor: formats["contributor_count"] = "r16float"
+		if self.reconstruction == "compute": formats["reconstruction_color"] = "rgba16float"
+		if self.reconstruction_passes > 1: formats["reconstruction_pair"] = "rgba16float"
+		if self.reconstruction_passes > 2: formats["reconstruction_pair_scratch"] = "rgba16float"
+		if self.early_b_rejection: formats["selection_depth"] = "depth32float-stencil8"
 		if targets is not None:
 			for name, format in formats.items():
 				texture = getattr(targets, name)
-				shaded = name in ("winner_color", "winner_first")
+				shaded = name in ("winner_color", "winner_first", "winner_source", "reconstruction_color", "reconstruction_pair", "reconstruction_pair_scratch")
 				usage = TextureUsage.TEXTURE_BINDING | (TextureUsage.STORAGE_BINDING if shaded else TextureUsage.RENDER_ATTACHMENT)
+				if name.startswith("reconstruction_pair"): usage |= TextureUsage.RENDER_ATTACHMENT
 				count = 1 if shaded else self.sample_count
 				layers = self.sample_count if shaded else 1
 				if texture is None or texture.size != (*size, layers) or texture.format != format or texture.sample_count != count or texture.usage & usage != usage:
@@ -510,44 +682,82 @@ class TransparencyPass:
 				if inputs and name in ("main_color", "depth"):
 					values[name] = inputs[0 if name == "main_color" else 1]
 				else:
-					shaded = name in ("winner_color", "winner_first")
+					shaded = name in ("winner_color", "winner_first", "winner_source", "reconstruction_color", "reconstruction_pair", "reconstruction_pair_scratch")
 					usage = TextureUsage.TEXTURE_BINDING | (TextureUsage.STORAGE_BINDING if shaded else TextureUsage.RENDER_ATTACHMENT)
+					if name.startswith("reconstruction_pair"): usage |= TextureUsage.RENDER_ATTACHMENT
 					count = 1 if shaded else self.sample_count
 					texture_size = (*size, self.sample_count) if shaded else size
 					values[name] = Texture(texture_size, format=format, usage=usage, label=name, sample_count=count)
 			targets = TransparencyTargets(**values)
 		for name in formats: setattr(self, name, getattr(targets, name))
 		self.winner_extra = targets.winner_extra
-		self.winner_first = targets.winner_first if self.winner_count == 2 else None
+		self.winner_first = targets.winner_first if self.winner_count == 2 and self.winner_mix == "average" else None
+		self.contributor_count = targets.contributor_count if self.force_single_contributor else None
+		self.winner_source = targets.winner_source if self.winner_mix == "fill" else None
+		self.reconstruction_color = targets.reconstruction_color if self.reconstruction == "compute" else None
+		self.reconstruction_pair = targets.reconstruction_pair if self.reconstruction_passes > 1 else None
+		self.reconstruction_pair_scratch = targets.reconstruction_pair_scratch if self.reconstruction_passes > 2 else None
 		self._targets = targets
 		for geometry in self._transparent_geometries:
 			self._bind_targets(geometry)
 		def shaded_view(texture):
 			return texture.view(dimension="2d-array") if self.sample_count > 1 else texture
 		shade_resources = dict(winners=self.winner,
-			winner_color=shaded_view(self.winner_first if self.winner_count == 2 else self.winner_color))
+			winner_color=shaded_view(self.winner_first if self.winner_first is not None else self.winner_color))
 		if self.sample_count > 1: shade_resources["winners_extra"] = self.winner_extra
-		if self.winner_count == 2:
+		if self.winner_count == 2 and self.winner_mix == "average":
 			shade_resources.update(first_color=shaded_view(self.winner_color), winner_guide=self.transparent_guide,
 				winner_settings=self._winner_settings[1])
+		if self.force_single_contributor or self.winner_mix == "fill": shade_resources["shade_transmittance"] = self.transmittance
+		if self.force_single_contributor: shade_resources["contributor_count"] = self.contributor_count
+		if self.winner_mix == "fill": shade_resources["winner_source"] = shaded_view(self.winner_source)
+		if self.winner_mix == "fill": shade_resources["winner_settings"] = self._winner_settings[0]
 		self.shade_targets = self.shading_shader.bind_group(1, **shade_resources)
 		self.mix_targets = None
-		if self.winner_count == 2:
+		if self.winner_count == 2 and self.winner_mix == "average":
 			self.mix_targets = self.shading_shader.bind_group(1, **dict(shade_resources,
 				winner_color=shaded_view(self.winner_color), first_color=shaded_view(self.winner_first)))
+		self.fill_targets = []
+		if self.winner_mix == "fill":
+			self.fill_targets = [self.shading_shader.bind_group(1, **dict(shade_resources, winner_settings=settings)) for settings in self._winner_settings]
+			self.shade_targets = self.fill_targets[0]
+			self.mix_targets = self.fill_targets[1] if self.winner_count > 1 else None
 		self.compose_frame = self._frame_group(self.compose_shader)
 		compose_resources = dict(main_color=self.main_color,
 			transmittance=self.transmittance,
 			winner_color=self.winner_color.view(dimension="2d-array") if self.sample_count > 1 else self.winner_color, opaque_depth=self.depth,
 			transparent_depth=self.transparent_depth, transparent_guide=self.transparent_guide,
 			bilateral=self.bilateral_uniforms)
-		if self.winner_count == 2: compose_resources["first_color"] = shaded_view(self.winner_first)
+		if self.winner_first is not None: compose_resources["first_color"] = shaded_view(self.winner_first)
+		if self.winner_mix == "fill": compose_resources["winner_source"] = shaded_view(self.winner_source)
+		if self.force_single_contributor: compose_resources["contributor_count"] = self.contributor_count
+		self.pair_inputs, self.pair_outputs, self.pair_attachments = [], [], []
+		if self.reconstruction_passes > 1:
+			pairs = [self.reconstruction_pair] + ([self.reconstruction_pair_scratch] if self.reconstruction_passes > 2 else [])
+			for texture in [self.winner_color, *pairs]:
+				resources = dict(compose_resources, filter_input=shaded_view(texture))
+				self.pair_inputs.append(self.pair_shader.bind_group(1, **{name: value for name, value in resources.items() if name in self.pair_shader.info.bindings}))
+			for texture in pairs:
+				if self.reconstruction == "compute": self.pair_outputs.append(self.pair_shader.bind_group(2, filter_output=shaded_view(texture)))
+				self.pair_attachments.append([ColorAttachment(texture.view(dimension="2d", base_array_layer=sample, array_layer_count=1).handle,
+					texture.format, device_generation=RenderContext.device_generation)
+					for sample in range(self.sample_count)])
+			compose_resources["filter_input"] = shaded_view(pairs[(self.reconstruction_passes-2)%len(pairs)])
+		self.reconstruct_inputs = self.reconstruct_output = None
+		if self.reconstruction == "compute":
+			self.reconstruct_inputs = self.reconstruct_shader.bind_group(1, **{name: resource for name, resource in compose_resources.items()
+				if name in self.reconstruct_shader.info.bindings})
+			self.reconstruct_output = self.reconstruct_shader.bind_group(2, filter_output=shaded_view(self.reconstruction_color))
+			compose_resources["reconstructed"] = shaded_view(self.reconstruction_color)
 		compose_group = self.compose_shader.info.bindings["main_color"].group
 		if compose_group == 0:
 			compose_resources.update(self.compose_frame.resources)
 			self.compose_frame = None
 		self.compose_resources = self.compose_shader.bind_group(compose_group, **compose_resources)
 		self.size = size
+		# Native bind groups retain their textures. Drop old target bindings on
+		# resize/switch rather than keeping many full-resolution target sets alive.
+		for layout in self._layout_cache.values(): layout.clear_cache()
 		return True
 
 	def _require_targets(self) -> tuple[int, int]:
@@ -610,15 +820,26 @@ class TransparencyPass:
 
 	def transmittance_pass(self, commands):
 		self._require_targets()
-		return commands.render_pass(color=self.transmittance.color_attachment(clear=(1, 1, 1, 1)),
+		colors = [self.transmittance.color_attachment(clear=(1, 1, 1, 1))]
+		if self.force_single_contributor: colors.append(self.contributor_count.color_attachment(clear=(0, 0, 0, 0)))
+		return commands.render_pass(color=colors,
 			depth=self.depth.depth_attachment(), label="2_transmittance")
 
-	def selection_pass(self, commands):
+	def selection_pass(self, commands, *, stream=0):
 		self._require_targets()
+		if type(stream) is not int or not 0 <= stream < self.winner_count: raise ValueError("Invalid selection stream")
 		colors = [self.winner.color_attachment(clear=(0, 0, 0, 0))]
 		if self.sample_count > 1: colors.append(self.winner_extra.color_attachment(clear=(0, 0, 0, 0)))
-		return commands.render_pass(color=colors,
-			depth=self.selection_depth.depth_attachment(clear=1), label="3_select_winner")
+		depth = self.selection_depth.depth_attachment(clear=1,
+			**({"stencil_clear": 0 if stream == 0 else None, "stencil_read_only": stream != 0} if self.early_b_rejection else {}))
+		render_pass = commands.render_pass(color=colors, depth=depth, label=f"3_select_winner_{stream}")
+		if not self.early_b_rejection: return render_pass
+		@contextmanager
+		def stencil_scope():
+			with render_pass as render:
+				render.handle.set_stencil_reference(1)
+				yield render
+		return stencil_scope()
 
 	def shade_winner(self, commands, geometry, *, stream=0):
 		"""Record deferred shading for the metadata used during winner selection."""
@@ -629,6 +850,7 @@ class TransparencyPass:
 		with commands.compute_pass(label=f"4_shade_winner_{stream}") as compute:
 			compute.set_pipeline(self.shade_pipeline if stream == 0 else self.mix_pipeline)
 			targets = self.shade_targets if stream == 0 else self.mix_targets
+			if self.winner_mix == "fill": targets = self.fill_targets[stream]
 			for bindings in (self.shade_frame, targets, geometry.shading, *geometry.shading_bindings):
 				compute.set_bind_group(bindings)
 			compute.dispatch((width+7)//8, (height+7)//8, self.sample_count)
@@ -637,6 +859,28 @@ class TransparencyPass:
 		"""Reconstruct into a caller-provided ColorAttachment; does not submit."""
 		self._require_targets()
 		if output.format != self.target_format: raise ValueError("Output format must match the configured transparency target_format")
+		if self.reconstruction_passes > 1 and self.bilateral_filter.kernel_size != 1 and self.debug_view in ("final", "reconstruction", "filter_support"):
+			width, height = self.size
+			for stage in range(self.reconstruction_passes-1):
+				source = 0 if stage == 0 else 1+(stage-1)%len(self.pair_attachments)
+				destination = stage%len(self.pair_attachments)
+				if self.reconstruction == "compute":
+					with commands.compute_pass(label=f"5a_reconstruct_pair_{stage}") as compute:
+						compute.set_pipeline(self.pair_pipeline)
+						for bindings in (self.pair_frame, self.pair_inputs[source], self.pair_outputs[destination]): compute.set_bind_group(bindings)
+						compute.dispatch((width+7)//8, (height+7)//8, self.sample_count)
+				else:
+					for sample, attachment in enumerate(self.pair_attachments[destination]):
+						with commands.render_pass(color=attachment, label=f"5a_reconstruct_pair_{stage}_{sample}") as render:
+							render.set_pipeline(self.pair_pipeline)
+							render.set_bind_groups(self.pair_frame, self.pair_inputs[source])
+							render.draw(3, first_instance=sample)
+		if self.reconstruction == "compute" and self.bilateral_filter.kernel_size != 1 and self.debug_view in ("final", "reconstruction", "filter_support"):
+			width, height = self.size
+			with commands.compute_pass(label="5a_reconstruct_compute") as compute:
+				compute.set_pipeline(self.reconstruct_pipeline)
+				for bindings in (self.reconstruct_frame, self.reconstruct_inputs, self.reconstruct_output): compute.set_bind_group(bindings)
+				compute.dispatch((width+7)//8, (height+7)//8, self.sample_count)
 		with commands.render_pass(color=output, label="5_reconstruct_compose") as render:
 			render.set_pipeline(self.compose_pipeline)
 			render.set_bind_groups(*((self.compose_frame,) if self.compose_frame is not None else ()), self.compose_resources)

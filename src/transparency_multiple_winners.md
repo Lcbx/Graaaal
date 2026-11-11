@@ -1,4 +1,216 @@
-# Two-winner stochastic transparency
+# Multiple-winner stochastic transparency
+
+## Current defaults
+
+The example and `TransparencyPass` now start with anchored blue noise and two
+averaged winners. `MaterialRenderer` inherits those defaults. Explicit one-winner
+and alternate-noise configurations remain supported; historical measurements
+below retain their original recorded settings.
+
+## 2026-11-11: arbitrary fill budgets and repeated reconstruction
+
+- Implemented any positive uint32 winner count in fill mode; averaging stays at one
+  or two. Reuse payload/depth/winner targets, with immutable per-attempt settings
+  and source tags recording the actual first successful attempt.
+- Generalized fill weights to `1 / sum(T**i, i=0..N-1)` using a stable logarithmic
+  geometric sum. Keep force acceptance and raw diagnostics unchanged.
+- Added `reconstruction_passes`, default one, to the pass/material renderer and
+  example. Filter weighted color/validity pairs through at most two reusable
+  intermediate targets; normalize/apply opacity only at final composition.
+  Support fragment and tiled compute paths, per hardware sample. 1x1 bypasses all.
+- Validated higher-count layer frequencies, weights, retention/clearing, runtime
+  switches and MSAA; repeated filtering matches a CPU weighted-pair reference,
+  allowing one half-float ULP per store. Both implementations preserve empty
+  regions and deterministic bypasses. Image comparisons stay within one byte.
+- Extended timing/diagnostic tooling. The million-sample gate passed at 1/2/4/8
+  attempts for distinct IDs, 1–4 layers and 1x/4x seed rules, for both supported
+  modes (max 3.04 sigma). Shared-ID failures remain diagnostic, not fixed by retries.
+  Native-raster million-sample tests also pass at four attempts, 1x/4x.
+  [Audit](../scenes/benchmarks/results/winner_fill_iterations_2026-11-11.json).
+- A stencil that marks winners inside each retry blocks closer candidates in
+  that same draw. Retained A-only read-only stencil; later retries also test the
+  shaded winner buffer. No changed winner ordering or depth semantics.
+
+Whole-frame tree timings and the repeated-filter tradeoffs are in the
+[iteration report](transparency_reconstruction.md#arbitrary-iterations).
+
+Validation: full regression **809 passed in 174.05 seconds**. The final
+one-attempt/custom-shader rejection check passed separately after adding its
+constructor guard. A direct example startup with four winners/three filters
+completed nine offscreen frames while switching 1x/4x MSAA, fragment/compute,
+3/4/7 winners and 2/3/4 reconstruction stages. `git diff --check` is clean apart
+from repository line-ending warnings. Defaults and Hi-Z policy are unchanged.
+
+## 2026-11-11: selection optimization and controlled comparisons
+
+Requested follow-ups 1, 2 and 4 are implemented. Hi-Z remains unchanged for
+high-mesh-count scenes.
+
+- Moved zero-opacity, backface and opaque-depth rejection ahead of expensive
+  selection noise and optional target reads, after every derivative-dependent
+  calculation. Nine actual-tree before/after image hashes match exactly.
+- Expanded the profiler to matched force on/off cases across winner count,
+  average/fill and 1x/4x MSAA, including real-tree fill. Added seeded randomized
+  rounds, alternating fragment/compute order, separate A/B timestamps, output
+  hashes, raw frame/pass samples and timing distributions.
+- Investigated early per-sample B rejection with an optional fill-only stencil
+  gate. A writes accepted coverage, B preserves that stencil while clearing its
+  own depth/payload. Uses optional `depth32float-stencil8`, retaining float32
+  selection depth; does not alter opaque inputs, probabilities or the estimator.
+  Runtime setters on pass/material renderer reset it when leaving two-winner fill.
+- Keep stencil gating off by default: matched 720p measurements show no reliable
+  B-pass benefit. Drivers may defer stencil testing around discard, and vertex
+  processing still runs. Gated/ungated image hashes match at 720p and 1080p.
+- The expanded 1080p matrix exposed old targets retained by native bind-group
+  caches after repeated switches. Added explicit cache release on target
+  replacement, preserving layouts and in-flight work. Both matrices were rerun
+  after the fix; the contaminated timings were replaced.
+
+Detailed timings, API contract, reproduction and limitations are maintained in
+the [selection report](transparency_reconstruction.md#selection-optimization-and-controlled-matrix).
+
+Validation: **765 passed in 148.42 seconds** in the full regression suite.
+The focused API/cache/stencil suite passed **48 tests**. Per-sample parity,
+reversed submission, clearing, resize, mix/count/MSAA switching and cache
+invalidation are covered. The alternating fragment/compute scheduler smoke test
+preserved output within one byte; both saved full-resolution matrices preserve
+gated/ungated fill hashes exactly. `git diff --check` is clean apart from line-ending warnings.
+
+## 2026-11-11: pass profiling and reconstruction prototype
+
+Added native per-pass GPU timestamps, untimed sample/tile classification and a
+shared-estimator compute reconstruction prototype. The default remains fragment
+reconstruction. At 720p/1080p and a closer 1080p view, compute did not provide a
+material whole-frame speedup; its displayed results matched within one byte.
+The actual scene is mostly empty at default framing, and selection costs more
+than 5x5 filtering. Details, raw results, reproduction commands and the next
+optimization priorities are in [transparency_reconstruction.md](transparency_reconstruction.md).
+
+Validation: **755 full-suite tests passed in 141.30 seconds**. The compute/UI
+checks were also repeated after tightening profiler scope-entry ordering. The
+live example completed **150 frames** while switching implementation, MSAA,
+force/fill, kernels and debug views. `git diff --check` is clean apart from
+repository line-ending conversion warnings.
+
+## 2026-11-11: force acceptance and conditional fill investigation
+
+Implemented and validated. Averaging remains the default. Before changing the
+production shaders, `diagnose_winner_fill.py` evaluates 1,048,576 samples per
+configuration using the production threshold fields, 1–4 layers, all modes,
+distinct/shared IDs, and 1x/4x sample seeding. Its five-sigma gate checks both
+streams and inferred hole-filler layer frequencies. Shared-ID failures diagnose
+existing overlap correlation rather than establish a valid independent-layer model.
+
+Applicable changes selected:
+
+- Exact single-contributor detection in the transmittance pass, with an optional
+  additive per-sample count target. This replaces the approximate `p >= A_s-0.002`
+  rule, which can force one of two equally important p=0.001 layers. Counts ignore
+  zero-opacity/backfacing/opaque-occluded fragments. No probability floor is added.
+- Reserve payload.w bit 16 (a zero mantissa bit of the +/-1 face half) for the
+  forced flag; mask it before unpacking the face/LOD pair. Payload size unchanged.
+- Forced shading stores `(A_s*C, A_s)`. Composition bypass uses the exact count,
+  positive stored acceptance and a nonempty winner, not an ambiguous
+  `abs(weight-A_s)` comparison. A sole
+  grazing-faded contributor can correctly be forced at its reduced opacity.
+- Force acceptance starts disabled. Conditional fill will only be offered for
+  noise configurations that pass the statistical gate. Failing modes remain
+  available with averaging; independence will not be inferred from correlation.
+
+The gate completed before production shader edits. For distinct IDs, only
+`object_hash` (maximum 2.48 sigma) and `anchored_blue` (2.30 sigma) passed every
+tested 1x/4x, 1–4 layer configuration. UV CDF/pick, Bayer, triplanar, and both
+hierarchy modes failed at least one configuration (maximum z respectively
+24.54/9.91, 407.53, 14.80, and 116.80/189.41). These are empirical restrictions,
+not a proof of independence for all assets/footprints. Full results:
+[million-sample gate](../scenes/benchmarks/results/winner_fill_gate_2026-11-11.json).
+
+Implemented:
+
+- `force_single_contributor=False` and runtime setter on `TransparencyPass` and
+  `MaterialRenderer`, with an example checkbox and a forced-mask diagnostic.
+  The optional count target is per-sample `r16float`, additive in the existing
+  transmittance draw. Integer increments distinguish exactly one from two or more;
+  half-float saturation at very large counts cannot turn them back into one.
+- Payload bit 16 records forcing, preserving the 128-bit payload and 4x packing.
+  Weighted shading uses the same stored transmittance as composition. Composition
+  uses exact count==1, positive stored acceptance and a nonempty winner to identify the bypass, never a
+  rounded probability/weight comparison. B skips forced samples and average mixing
+  copies A. A sole grazing-faded surface is deliberately eligible at its faded
+  opacity; zero-opacity fragments and any second nonzero contributor are not.
+- `winner_mix="average"|"fill"` and runtime setters. Fill requires two winners,
+  the audited default noise pair, and object hash or anchored blue. Other modes
+  and custom tiles are rejected before mutation. Selecting one winner resets to
+  average. The example returns to average when cycling into an unsupported mode.
+- Fill uses `select A -> shade A -> clear payload/depth -> select B -> shade B`.
+  A's full-screen shading writes zeros for empties each frame; B discards where A
+  has positive weight and its compute shader never writes an empty payload. No
+  read-write storage texture or HDR color scratch is needed. Non-forced A/B
+  winners both store `(C,1)/(1+T_scalar)`; forced ones retain `(A_scalar*C,A_scalar)`.
+- Fill retains an `r32uint` source tag per hardware sample for A/B/count diagnostics
+  (4 bytes/sample instead of the averaging color scratch's 8). Together with the
+  optional force count, this adds 6 bytes/sample; fill without force adds 4.
+  Single+force adds 2; single without force retains its original target footprint.
+- Debug color divides by stored weight for weighted modes. Validity and forced
+  views remain distinct. The old averaging diagnostic convention is retained
+  when forcing is disabled.
+- Four actual-raster tests passed the five-sigma `(0.625,0.3125,0.0625)` layer
+  frequency check over 1,048,576 samples each: both allowed modes at 1x and 4x.
+  Focused tests also verified A retention, weight compensation, exact/near-zero
+  contributor distinctions, live switches, RGB opacity, grazing, MASK interiors,
+  and clearing. Regression results are recorded below after completion.
+
+### Performance decision
+
+[Measured results](../scenes/benchmarks/results/force_fill_2026-11-11.json), using
+`diagnose_multiple_winners --improvements --frames 30`, NVIDIA RTX 5060 Ti/Vulkan,
+256x256, anchored blue, p=0.1, 30 timed frames after five warmups. RMSE is measured
+in tone-mapped linear display color against the analytic mean; no sRGB-space error
+metric or subjective motion verdict is substituted.
+
+| Layers | Draws/mix | MSAA | Kernel | Force | Median GPU ms | RMSE |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2 | 1/average | 1x | 3x3 | off | 0.1586 | 0.04821 |
+| 2 | 2/average | 1x | 3x3 | off | 0.2116 | 0.03492 |
+| 2 | 1/average | 1x | 5x5 | off | 0.1864 | 0.03739 |
+| 2 | 1/average | 4x | 3x3 | off | 0.5174 | 0.02426 |
+| 2 | 2/fill | 1x | 3x3 | off | 0.2033 | 0.03658 |
+| 2 | 2/fill | 1x | 3x3 | on | 0.2236 | 0.03658 |
+| 1 | 1/average | 1x | 3x3 | off | 0.1510 | 0.02766 |
+| 1 | 1/average | 1x | 3x3 | on | 0.1281 | 0.00069 |
+
+For isolated surfaces, forcing removed stochastic holes and reduced cost in this
+scene. Fully overlapping layers cannot force and incur count-target overhead.
+Fill was slightly cheaper but noisier than averaging. It did not establish a
+clear cost/error win over both averaging and the larger single-winner kernel, so
+**averaging stays default; forcing stays opt-in**. These are discrete measured
+costs, not an exact matched-time sweep or a tree-scene performance claim.
+Measurements preceded the final zero-acceptance guard; sub-0.01 ms differences
+between configurations should not be treated as a decisive performance win.
+
+Still needed for a default-policy change: target-scene, equal-budget comparisons
+and human pan/orbit/dolly assessment. The old acceptance-motion sweep remains an
+averaging proxy; no new rendered fill-motion-quality claim is made here.
+
+### Integration validation
+
+- Contributor count, weighted single/dual paths, 1x/4x MSAA, payload flag and
+  canonical face decoding passed focused readback tests.
+- Actual fill frequencies passed four million-sample raster cases. A retention,
+  source tags and empty-frame clearing passed; defaults remain unaltered.
+- External opaque color/depth tests were expanded across forcing on/off, both
+  winner counts and both MSAA counts.
+- Final complete suite: **732 passed in 157.85 seconds**. This includes the
+  positive-acceptance check in both forced identification and the average-mode
+  B-copy path. Even with count==1, a stochastic winner must not be mistaken for a
+  forced one if stored T_scalar is exactly one; a custom-threshold p=1e-8
+  regression verifies that A/B still average and the forced mask remains clear.
+- Live tree example: **150 frames** completed with force/mix/count/MSAA/kernel
+  and diagnostic changes. This confirms resource/binding/command integration,
+  not a subjective motion-quality or equal-time quality verdict.
+- `git diff --check` passed (line-ending conversion warnings only).
+
+## 2026-11-10: original averaging implementation
 
 Status: implemented, regression-tested, and measured. Single winner remains the
 default. Rendered motion quality on the target scene still needs human comparison.
@@ -104,7 +316,7 @@ claiming twice as many distinct shaded surface samples.
 ## Measurements
 
 Command: `python -m scenes.benchmarks.diagnose_multiple_winners --frames 20
---output audit.json`. [Saved results](scenes/benchmarks/results/multiple_winners_2026-11-10.json).
+--output audit.json`. [Saved results](../scenes/benchmarks/results/multiple_winners_2026-11-10.json).
 NVIDIA GeForce RTX 5060 Ti, Vulkan, 256x256 synthetic scene,
 20 measured frames after 5 warmups per configuration. GPU timestamps include the
 complete material renderer; synchronized wall times are recorded separately in

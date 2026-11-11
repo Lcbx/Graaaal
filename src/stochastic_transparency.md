@@ -1,10 +1,16 @@
 # Stochastic transparency
 
-[TransparencyPass.py](TransparencyPass.py) implements one- or two-winner stochastic
-order-independent transparency. Applications provide geometry, instances,
+[TransparencyPass.py](TransparencyPass.py) implements stochastic transparency with
+one/two averaged draws or any positive number of conditional fill attempts.
+Applications provide geometry, instances,
 materials, camera values, targets, and command submission. The
 [engine guide](../README.md#composable-transparency) documents its resource API;
 the [interactive scene](../scenes/transparency_example.py) shows complete recording.
+
+`TransparencyPass` and the example default to `noise_mode="anchored_blue"`,
+`winner_count=2` and `winner_mix="average"`. MaterialRenderer inherits these
+defaults. Explicit settings override them; low-level custom shader sets require
+`winner_count=1`.
 
 ## Useful APIs
 
@@ -21,7 +27,10 @@ RenderContext before constructing GPU resources.
 | `shade_winner(commands, geometry)`, `compose(commands, output)` | Record deferred shading and composition; `output` is a matching `ColorAttachment`. Neither submits work. |
 | `set_opaque_inputs(color, depth)` | Uses caller-owned opaque textures; pass `None, None` to restore internal targets. |
 | `set_sample_count`, `set_noise_mode`, `set_noise_scale`, `set_debug_view` | Update live sampling and diagnostic settings. |
-| `set_winner_count(1 or 2)` | Switch draws with replacement, independently of MSAA. Default: 1. |
+| `set_winner_count(N)` | Positive uint32 draw count in fill mode; averaging supports 1 or 2. Default: 2. |
+| `set_reconstruction("fragment" or "compute")` | Select original filtering or experimental shared-memory compute; fragment remains default. |
+| `set_reconstruction_passes(N)` | Stack a positive uint32 number of bilateral passes; default 1. A 1x1 kernel bypasses all passes. |
+| `set_early_b_rejection(bool)` | Experimental per-sample stencil rejection for fill B; default off and requires `depth32float-stencil8`. |
 | `BilateralFilter`, `set_bilateral_filter` | Configure reconstruction footprint and tolerances. |
 | `GrazingFade`, `set_grazing_fade` | Configure angular opacity fade; default enabled from 83 to 86 degrees. |
 | `TransparencyTargets` | Describes caller-owned color, depth, guide, transmittance and winner textures. |
@@ -53,20 +62,145 @@ selection); they have no `prepass` entry, so an opaque depth-prepass draw skips
 them. The culler's internal prepass visibility buffer remains a list of frustum
 candidates, independent of which named rendering pass is drawn.
 
-## Optional second winner
+## Winner draws and repeated reconstruction
+
+Reconstruction can independently use `reconstruction="compute"`. Both paths share
+the same bilateral estimator; compute uses an intermediate and keeps composition,
+MSAA resolve and presentation at the end. 1x1 bypasses compute. See the
+[profiling and reconstruction report](transparency_reconstruction.md) for API,
+target formats, exactness limits, native pass profiling and measured results.
+
+`reconstruction_passes=N` stacks the chosen kernel N times. The first N-1 stages
+filter weighted `(C*w,w)` pairs, averaging all four channels with deterministic
+bilateral weights; only final composition divides RGB by validity and applies
+RGB acceptance. Opacity, background composition, MSAA resolve and tone mapping
+are not repeated. Original raw winners remain available for diagnostics and
+certain/forced bypasses. Every stage uses the original depth/transmittance guide.
+
+Both fragment and compute paths support this. Fragment stages render each MSAA
+layer separately; compute stages dispatch per layer. Two passes allocate one
+extra `rgba16float` target, three or more allocate two reusable targets, regardless
+of the count. They are sampled/storage/render-attachment textures, array-layered
+at MSAA. Caller-provided targets must supply `reconstruction_pair` and, above two
+passes, `reconstruction_pair_scratch`. Empty regions are written as zero because
+later stages may sample them. Half-float conversion error accumulates with passes.
+The filter-support diagnostic describes the final local kernel, not total support.
+
+Repeated 3x3 filtering is not equivalent to one larger square kernel. N passes
+can reach a `(2*N+1)`-wide footprint, but the weights form a repeated diffusion
+and retain bilateral boundaries/bypasses. A 1x1 kernel still skips every stage.
+
+`winner_mix="average"` remains the default. Experimental `winner_mix="fill"`
+retries only samples with no winner so far. It accepts any positive uint32 count,
+default noise sources, and `noise_mode="object_hash"` or `"anchored_blue"`.
+The other modes failed a million-sample five-sigma layer-frequency gate and are
+rejected for fill. Empirical passing results do not prove independence for every
+asset or footprint; same-ID overlap correlation remains. See the
+[gate results](../scenes/benchmarks/results/winner_fill_gate_2026-11-11.json).
+
+Use `set_winner_mix("fill"|"average")` on the pass or material renderer. Selecting
+one winner restores average mixing. Above two winners, select fill before raising
+the count; returning to average requires reducing the count first. The example
+exposes editable **Winner draws** and **Reconstruction passes** integers. It
+reduces winner count to two and returns to average when cycling into an
+unsupported noise mode.
+Custom noise overrides are not eligible for fill without a separate audit.
+
+Optional `early_b_rejection=True` uses A's per-sample stencil coverage to reject
+already-filled samples in B. Request `depth32float-stencil8` when creating the
+device. Only the selection depth changes to that format; float32 depth precision
+and opaque inputs are preserved. It requires multi-winner fill and switches off
+when selecting average mixing or one winner. The original shader rejection
+remains as well. Drivers may defer stencil testing around fragment discard;
+measured timings did not establish a benefit, so this experiment is off by
+default and exposed through the pass/material renderer API and benchmark.
+
+Fill repeats selection/shading N times. Every stochastic winner stores straight
+color and validity scaled by `1/(1+T_scalar+...+T_scalar**(N-1))`, evaluated with
+a logarithmic geometric-sum algorithm without subtraction near transmission one.
+Each retry samples the current per-sample shaded target and discards at nonempty
+samples; its compute stage never overwrites empty payloads. The correction uses
+the total requested budget for every attempt so each neighbour retains
+expected weight `A_scalar`; a raw filled 0/1 validity would upweight low-coverage
+neighbours. Shading A overwrites all pixels, including zeros for empty samples,
+once per frame, so no additional color-clear pass is required. Retries read no storage
+texture: the shaded target is sampled in raster and written only in compute.
+
+Fill allocates no `winner_first` HDR scratch. Instead, `winner_source` is an
+`r32uint` storage/sampled texture (one layer per MSAA sample) recording zero for
+empty and the winning attempt's one-based index. This costs 4 bytes per hardware sample versus the
+averaging scratch's 8. Caller-supplied `TransparencyTargets` must include it in
+fill mode. `winner_a`/`winner_b` isolate the stream that supplied the retained
+sample from attempts one/two; later attempts remain visible in `winner`.
+`winner_count` displays valid/empty, rather than the weighted alpha.
+
+Attempts use immutable per-stream uniforms and hashed stream seeds; attempt A
+retains its original thresholds. A uses the first packaged tile, later attempts
+use the second tile with their own hashed seed. Extra tile shifts do not prove
+joint independence: the formula assumes each attempt has the correct conditional
+layer distribution. Arbitrary counts remain experimental and same-ID overlaps
+can remain correlated. Target memory is independent of the winner count; uniform
+and draw/binding storage scale with the count. Each retry still runs geometry
+and a shading dispatch. The optional stencil gate retains A's coverage across
+all retries; shader checks reject winners found by subsequent attempts.
+
+### Exact single-contributor acceptance
+
+`force_single_contributor=True` enables a separate optional optimization, also
+available with one winner. It is off by default and configurable through
+`set_force_single_contributor(bool)` on the pass/material renderer, or the
+example's **Force single contributor** checkbox.
+
+The transmittance draw additionally accumulates a per-sample `r16float`
+`contributor_count`, with one additive increment for every nonzero-opacity
+fragment that passes opaque occlusion and sidedness tests. Only count **exactly
+one**, with positive stored scalar acceptance, can force selection. A fixed
+absolute probability tolerance is not used: two p=0.001 layers remain stochastic,
+and a tiny secondary layer is not silently suppressed. Large counts may saturate
+half-float addition but cannot turn back into one. This attachment costs 2 bytes
+per hardware sample; no additional geometry pass or readback is required.
+
+Selection records forcing in `payload.w & 0x00010000u`, a spare mantissa bit of the
+face-orientation half. Mask it before decoding LOD/face:
+
+```wgsl
+let forced = (payload.w & 0x00010000u) != 0u;
+let lod_face = unpack2x16float(payload.w & 0xfffeffffu);
+```
+
+The payload remains 128 bits, including its 4x MSAA split. Forced shading stores
+`(A_scalar*C, A_scalar)`; it overrides the fill correction. Average B skips forced
+samples and copies A. Composition identifies forced results with the same exact
+count and a positive winner weight, bypassing reconstruction with `A_rgb*C`.
+It never infers forcing from `abs(winner.a-A_scalar)`, which would misclassify a
+half-valid average at A_scalar=0.5. The 1x1 estimator's formula is unchanged.
+
+A single grazing-faded surface and fractional MASK edge are eligible at their
+reduced coverage. Fully transparent fragments are not. No probability floor was
+introduced; this does not recover opacity already rounded away by the existing
+half-float transmittance target. Compose epsilon 1e-6 is below the smallest
+positive acceptance represented by that target near transmission one (~4.88e-4).
+The **forced** debug view shows the exact-single bypass mask. Weighted debug
+colors divide RGB by weight; count views do not interpret weight as validity.
+
+Both improvements use default geometry/shading/compose shaders and material
+hooks. Low-level custom shader overrides are rejected; custom payload readers
+must respect the reserved flag and weighted `(C*w,w)` representation if adopted.
+
+### Original averaging mode
 
 Construct with `winner_count=2`, or call `set_winner_count(2)` (and
 `MaterialRenderer.set_winner_count(2)` when using its registered passes). The
-example exposes **Winner draws**. Default is 1. Each stream chooses its nearest
+example exposes **Winner draws**. Default is 2. Each stream chooses its nearest
 accepted fragment with replacement: both may choose the same surface. It does
 not average the two nearest accepted layers, which would change the estimator.
 
 Record the guide and transmittance once, then:
 
 ```python
-for stream, name in enumerate(("main", "second")[:oit.winner_count]):
-    with oit.selection_pass(commands) as render:
-        draws.draw(render, visibility, name)
+for stream in range(oit.winner_count):
+    with oit.selection_pass(commands, stream=stream) as render:
+        draws.draw(render, visibility, oit.selection_name(stream))
     oit.shade_winner(commands, geometry, stream=stream)
 oit.compose(commands, output)
 ```
@@ -116,7 +250,7 @@ and retain caller-supplied opaque color/depth.
 Two winners reduce missing samples and layer-selection variance. At the same
 raster position they add no texture detail on a single surface, do not supersample
 silhouettes, and do not remove crawling or within-stream layer correlation. See
-the [implementation plan and measured findings](../transparency_multiple_winners.md)
+the [implementation plan and measured findings](transparency_multiple_winners.md)
 and run `python -m scenes.benchmarks.diagnose_multiple_winners --output audit.json`
 for joint validity, low-frequency spectra, same-ID overlap, camera sweeps and
 synthetic GPU timing comparisons.
@@ -218,13 +352,13 @@ sampling mode and grain size.
 | Mode | Threshold construction |
 | --- | --- |
 | `object_hash` | Existing object-space 3D lattice, octave lerp and uniform CDF correction |
-| `uv_blue_lerp` | Point-sampled blue tile in two UV octaves, lerp and uniform CDF correction; default |
+| `uv_blue_lerp` | Point-sampled blue tile in two UV octaves, lerp and uniform CDF correction |
 | `uv_blue_pick` | Same UV octaves, selected by a separate surface-anchored hash channel |
 | `uv_bayer` | Procedural 64x64 Bayer ranks, with the stochastic octave pick; diagnostic |
 | `uv_blue_correlated` | GPU-generated parent/child rank hierarchy, shared spatial origin, static octave pick |
 | `triplanar_blue` | Object-space XY/XZ/YZ tile projections, smooth normal weights and CDF-corrected blends |
 | `triplanar_correlated` | Triplanar projection using the correlated hierarchy |
-| `anchored_blue` | Pixel-lattice blue tile with first-order rest-cell anchors and finer rest-cell shifts |
+| `anchored_blue` | Pixel-lattice blue tile with first-order rest-cell anchors and finer rest-cell shifts; default |
 
 UV sampling uses raw UV derivatives, before any discard or material-LOD clamp:
 
@@ -395,8 +529,8 @@ older fixed-material-point diagnostic. Mean acceptance changes per pose:
 These are nearest-pixel, first-order diagnostic samples, not full rasterized
 visibility or perceptual scores, and are not comparable with the earlier
 non-quantized table. Anchored blue's reduced tilt stretch comes with more
-orbit/dolly reshuffling here. It remains an optional comparison mode; UV CDF lerp
-is still the default. Neither diagnostic uses TAA or frame history.
+orbit/dolly reshuffling here. Anchored blue is now the default; UV CDF lerp
+remains available for comparison. Neither diagnostic uses TAA or frame history.
 
 ### Cross-object decorrelation audit
 
@@ -476,7 +610,7 @@ threshold field and exclude rasterization, shading, visibility and reconstructio
 | Dolly, distance 2.5 to 4 | 1.147 | 1.231 | 1.476 | 1.419 |
 
 This does not establish full-scene perceptual quality, but it does not support
-promoting stochastic picking as the more stable default. UV CDF lerp is the
+promoting stochastic picking as the more stable default. Anchored blue is now the
 default. These initial four modes and the three options below remain selectable
 for visual comparison.
 
@@ -533,8 +667,8 @@ Repeating the fixed-material-point diagnostic above for the added modes gives:
 | Triplanar correlated hierarchy | 0.084 | 0.462 | 1.141 |
 
 These are threshold-field measurements on one curved surface, not a guarantee
-of perceptual improvement on every model. The existing UV CDF-lerp default is
-unchanged; select the added modes to compare them on the scene.
+of perceptual improvement on every model. The current default is anchored blue;
+select the other modes to compare them on the scene.
 
 The default geometry shader's group 3 binding 2 is the sampled rank hierarchy.
 Before generation it binds the base noise texture as an unused placeholder.

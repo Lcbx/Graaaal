@@ -1,5 +1,8 @@
 #include "frame.shaderlib"
 
+// The face half stores +/-1; its low mantissa bit is available for flags.
+const WINNER_FORCED_BIT: u32 = 0x00010000u;
+
 <Material> base_color: vec4f;
 <Material> emission: vec4f;
 <Material> surface: vec4f;

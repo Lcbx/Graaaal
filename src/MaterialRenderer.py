@@ -158,6 +158,21 @@ class MaterialRenderer:
 		if self.transparency.set_winner_count(count):
 			self._register_passes()
 
+	def set_force_single_contributor(self, enabled):
+		if self.transparency.set_force_single_contributor(enabled): self._register_passes()
+
+	def set_winner_mix(self, mode):
+		if self.transparency.set_winner_mix(mode): self._register_passes()
+
+	def set_reconstruction(self, mode):
+		if self.transparency.set_reconstruction(mode): self._register_passes()
+
+	def set_reconstruction_passes(self, count):
+		if self.transparency.set_reconstruction_passes(count): self._register_passes()
+
+	def set_early_b_rejection(self, enabled):
+		if self.transparency.set_early_b_rejection(enabled): self._register_passes()
+
 	def record(self, commands, size, camera, output, *, time=None, light_dir=(0.4, 0.8, 0.3)):
 		"""Record a frame; time overrides elapsed seconds for deterministic animation."""
 		self.sync()
@@ -177,8 +192,8 @@ class MaterialRenderer:
 			if name == "guide" and oit.bilateral_filter.kernel_size == 1: continue
 			with begin(commands) as render:
 				self.draws.draw(render, self.visibility, name)
-		for stream, name in enumerate(("main", "second")[:oit.winner_count]):
-			with oit.selection_pass(commands) as render:
-				self.draws.draw(render, self.visibility, name)
+		for stream in range(oit.winner_count):
+			with oit.selection_pass(commands, stream=stream) as render:
+				self.draws.draw(render, self.visibility, oit.selection_name(stream))
 			oit.shade_winner(commands, self.geometry[1], stream=stream)
 		oit.compose(commands, output)

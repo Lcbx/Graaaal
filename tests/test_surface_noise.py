@@ -390,7 +390,7 @@ def test_gpu_anchored_selection_matches_one_field_at_native_msaa_positions(thres
 	vertices["normal"] = (0, 0, 1)
 	material = DefaultMaterialShader(transparent=True, default_material={"base_color": (1, 1, 1, 0.5)})
 	item = DrawInstance(MaterialMesh(vertices, material))
-	renderer = MaterialRenderer([item], target_format="rgba8unorm", sample_count=count, noise_mode="anchored_blue")
+	renderer = MaterialRenderer([item], target_format="rgba8unorm", sample_count=count, noise_mode="anchored_blue", winner_count=1)
 	camera = Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 2, perspective=False, near=0.05, far=100)
 	width = height = 16
 	output = Texture((width, height), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT)

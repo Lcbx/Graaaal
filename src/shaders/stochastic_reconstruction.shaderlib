@@ -1,0 +1,215 @@
+#include "utils.shaderlib"
+
+#include "frame.shaderlib"
+#if PARAMS.get("sample_count", 1) > 1
+@group(1) @binding(1) var main_color: texture_multisampled_2d<f32>;
+@group(1) @binding(2) var transmittance: texture_multisampled_2d<f32>;
+@group(1) @binding(3) var winner_color: texture_2d_array<f32>;
+@group(1) @binding(4) var opaque_depth: texture_depth_multisampled_2d;
+#else
+@group(1) @binding(1) var main_color: texture_2d<f32>;
+@group(1) @binding(2) var transmittance: texture_2d<f32>;
+@group(1) @binding(3) var winner_color: texture_2d<f32>;
+@group(1) @binding(4) var opaque_depth: texture_depth_2d;
+#endif
+<BilateralSettings> sigmas: vec4f;
+<BilateralSettings> kernel: vec4u;
+@group(1) @binding(5) var<uniform> bilateral: BilateralSettings;
+#if PARAMS.get("filter_input", false)
+#if PARAMS.get("sample_count", 1) > 1
+@group(1) @binding(12) var filter_input: texture_2d_array<f32>;
+#else
+@group(1) @binding(12) var filter_input: texture_2d<f32>;
+#endif
+#endif
+#if PARAMS.get("sample_count", 1) > 1
+@group(1) @binding(6) var transparent_depth: texture_depth_multisampled_2d;
+@group(1) @binding(7) var transparent_guide: texture_multisampled_2d<f32>;
+#else
+@group(1) @binding(6) var transparent_depth: texture_depth_2d;
+@group(1) @binding(7) var transparent_guide: texture_2d<f32>;
+#endif
+
+#if PARAMS.get("force_single_contributor", false)
+#if PARAMS.get("sample_count", 1) > 1
+@group(1) @binding(9) var contributor_count: texture_multisampled_2d<f32>;
+#else
+@group(1) @binding(9) var contributor_count: texture_2d<f32>;
+#endif
+#endif
+
+#if PARAMS.get("winner_count", 1) == 2 and PARAMS.get("winner_mix", "average") == "average"
+#if PARAMS.get("sample_count", 1) > 1
+@group(1) @binding(8) var first_color: texture_2d_array<f32>;
+#else
+@group(1) @binding(8) var first_color: texture_2d<f32>;
+#endif
+#endif
+
+#if PARAMS.get("winner_mix", "average") == "fill"
+#if PARAMS.get("sample_count", 1) > 1
+@group(1) @binding(10) var winner_source: texture_2d_array<u32>;
+#else
+@group(1) @binding(10) var winner_source: texture_2d<u32>;
+#endif
+#endif
+
+fn winner_at(pixel: vec2i, sample: u32) -> vec4f {
+#if PARAMS.get("sample_count", 1) > 1
+	return textureLoad(winner_color, pixel, i32(sample), 0);
+#else
+	return textureLoad(winner_color, pixel, 0);
+#endif
+}
+
+fn filter_input_at(pixel: vec2i, sample: u32) -> vec4f {
+#if PARAMS.get("filter_input", false)
+#if PARAMS.get("sample_count", 1) > 1
+	return textureLoad(filter_input, pixel, i32(sample), 0);
+#else
+	return textureLoad(filter_input, pixel, 0);
+#endif
+#else
+	return winner_at(pixel, sample);
+#endif
+}
+
+fn forced_at(pixel: vec2i, sample: u32) -> bool {
+#if PARAMS.get("force_single_contributor", false)
+	return textureLoad(transmittance, pixel, i32(sample)).a < 1.0 &&
+		textureLoad(contributor_count, pixel, i32(sample)).r == 1.0 && winner_at(pixel, sample).a > 0.0;
+#else
+	return false;
+#endif
+}
+
+fn debug_color(winner: vec4f) -> vec3f {
+#if PARAMS.get("force_single_contributor", false) or PARAMS.get("winner_mix", "average") == "fill"
+	return max(winner.rgb/max(winner.a, 1e-6), vec3f(0.0));
+#else
+	return max(winner.rgb, vec3f(0.0));
+#endif
+}
+
+fn guide_depth(pixel: vec2i, sample: u32) -> f32 {
+	let depth = min(textureLoad(opaque_depth, pixel, i32(sample)), textureLoad(transparent_depth, pixel, i32(sample)));
+	return linear_depth(depth, frame.clip.x, frame.clip.y);
+}
+
+// Weighted winner samples remain unnormalized until the neighborhood reduction.
+struct FilterData {
+	transmission: vec4f,
+	winner: vec4f,
+	guide: vec4f,
+	depths: vec2f,
+}
+
+#if PARAMS.get("tiled_reconstruction", false)
+// 8x8 output with a radius-four halo: 256 cached samples, 14 KiB total.
+var<workgroup> cached_transmission: array<vec4f, 256>;
+var<workgroup> cached_winner: array<vec4f, 256>;
+var<workgroup> cached_guide: array<vec4f, 256>;
+var<workgroup> cached_depths: array<vec2f, 256>;
+#endif
+
+fn load_filter_data(pixel: vec2i, sample: u32) -> FilterData {
+	let opaque = textureLoad(opaque_depth, pixel, i32(sample));
+	let transparent = textureLoad(transparent_depth, pixel, i32(sample));
+	return FilterData(textureLoad(transmittance, pixel, i32(sample)), filter_input_at(pixel, sample),
+		textureLoad(transparent_guide, pixel, i32(sample)),
+		vec2f(linear_depth(min(opaque, transparent), frame.clip.x, frame.clip.y),
+			linear_depth(opaque, frame.clip.x, frame.clip.y)));
+}
+
+fn filter_data_at(pixel: vec2i, sample: u32, origin: vec2i, side: u32) -> FilterData {
+#if PARAMS.get("tiled_reconstruction", false)
+	let offset = vec2u(pixel-origin);
+	let index = offset.y*side+offset.x;
+	return FilterData(cached_transmission[index], cached_winner[index], cached_guide[index], cached_depths[index]);
+#else
+	return load_filter_data(pixel, sample);
+#endif
+}
+
+fn bilateral_weight(center: FilterData, neighbor: FilterData, offset: vec2i) -> f32 {
+	let sigmas = bilateral.sigmas;
+	let dt = neighbor.transmission-center.transmission;
+	let spatial = f32(offset.x*offset.x+offset.y*offset.y)/(2.0*sigmas.x*sigmas.x);
+	let depth = center.depths.x;
+	let depth_q = neighbor.depths.x;
+	var difference = abs(depth_q-depth);
+	if center.guide.w > 0.0 && neighbor.guide.w > 0.0 {
+		let predicted_q = 1.0/max(1.0/depth+dot(center.guide.yz, vec2f(offset)), 1e-6);
+		let predicted_p = 1.0/max(1.0/depth_q-dot(neighbor.guide.yz, vec2f(offset)), 1e-6);
+		difference = max(abs(depth_q-predicted_q), abs(depth-predicted_p));
+	}
+	let depth_delta = difference/max(depth*sigmas.y, sigmas.w);
+	let opaque_delta = (neighbor.depths.y-center.depths.y)/max(center.depths.y*sigmas.y, sigmas.w);
+	let transmission_delta = dot(dt, dt)/(2.0*sigmas.z*sigmas.z);
+	return exp(-spatial - 0.5*(depth_delta*depth_delta+opaque_delta*opaque_delta) - transmission_delta);
+}
+
+fn point_reconstruction(pixel: vec2i, sample: u32) -> vec4f {
+	let t = textureLoad(transmittance, pixel, i32(sample));
+	let acceptance = 1.0-t.a;
+	if acceptance <= 1e-6 { return vec4f(0.0); }
+	return vec4f((vec3f(1.0)-t.rgb)*winner_at(pixel, sample).rgb/max(acceptance, 1e-6), 1.0);
+}
+
+fn needs_reconstruction(pixel: vec2i, sample: u32) -> bool {
+	if 1.0-textureLoad(transmittance, pixel, i32(sample)).a <= 1e-6 { return false; }
+	if bilateral.kernel.y == 4u { return true; }
+	return textureLoad(transparent_guide, pixel, i32(sample)).x != 1.0 && !forced_at(pixel, sample);
+}
+
+#if not PARAMS.get("compute_reconstruction", false) or PARAMS.get("tiled_reconstruction", false)
+struct FilterReduction {
+	pair: vec4f,
+	weight_sum: f32,
+	squared_sum: f32,
+}
+
+fn reduce_neighborhood(pixel: vec2i, sample: u32, origin: vec2i, side: u32) -> FilterReduction {
+	let dimensions = vec2i(textureDimensions(transmittance));
+	let center = filter_data_at(pixel, sample, origin, side);
+	var pair = vec4f(0.0);
+	var weight_sum = 0.0;
+	var squared_sum = 0.0;
+	let radius = i32(bilateral.kernel.x);
+	for (var y = -radius; y <= radius; y += 1) {
+		for (var x = -radius; x <= radius; x += 1) {
+			let q = pixel+vec2i(x, y);
+			if any(q < vec2i(0)) || any(q >= dimensions) { continue; }
+			let neighbor = filter_data_at(q, sample, origin, side);
+			let weight = bilateral_weight(center, neighbor, vec2i(x, y));
+			pair += weight*neighbor.winner;
+			weight_sum += weight;
+			squared_sum += weight*weight;
+		}
+	}
+	return FilterReduction(pair, weight_sum, squared_sum);
+}
+
+fn reconstruct_pair(pixel: vec2i, sample: u32, origin: vec2i, side: u32) -> vec4f {
+	if 1.0-textureLoad(transmittance, pixel, i32(sample)).a <= 1e-6 { return vec4f(0.0); }
+	if !needs_reconstruction(pixel, sample) { return winner_at(pixel, sample); }
+	let reduced = reduce_neighborhood(pixel, sample, origin, side);
+	// Average the unnormalized pair. Apply opacity and normalize only at the end.
+	return reduced.pair/max(reduced.weight_sum, 1e-6);
+}
+
+fn reconstruct_transparency(pixel: vec2i, sample: u32, origin: vec2i, side: u32) -> vec4f {
+	let t = textureLoad(transmittance, pixel, i32(sample));
+	if 1.0-t.a <= 1e-6 { return vec4f(0.0); }
+	if bilateral.kernel.x == 0u { return point_reconstruction(pixel, sample); }
+	if !needs_reconstruction(pixel, sample) {
+		let own = winner_at(pixel, sample);
+		return vec4f((vec3f(1.0)-t.rgb)*own.rgb/max(own.a, 1e-6), 0.0);
+	}
+	let reduced = reduce_neighborhood(pixel, sample, origin, side);
+	let width = f32(2u*bilateral.kernel.x+1u);
+	return vec4f((vec3f(1.0)-t.rgb)*reduced.pair.rgb/max(reduced.pair.a, 1e-6),
+		reduced.weight_sum*reduced.weight_sum/max(reduced.squared_sum, 1e-6)/(width*width));
+}
+#endif
+

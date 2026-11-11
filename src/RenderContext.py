@@ -471,13 +471,14 @@ class CommandContext(_OwnedResource):
 		color: ColorAttachment | Sequence[ColorAttachment] = (),
 		depth: DepthAttachment | None = None,
 		label: str | None = None,
+		timestamp_writes: dict | None = None,
 	) -> RenderPass:
 		self._check_device()
-		return RenderPass(self, color=color, depth=depth, label=label)
+		return RenderPass(self, color=color, depth=depth, label=label, timestamp_writes=timestamp_writes)
 
-	def compute_pass(self, *, label: str | None = None) -> ComputePass:
+	def compute_pass(self, *, label: str | None = None, timestamp_writes: dict | None = None) -> ComputePass:
 		self._check_device()
-		return ComputePass(self, label=label)
+		return ComputePass(self, label=label, timestamp_writes=timestamp_writes)
 
 	def clear_buffer(
 		self,
@@ -528,11 +529,13 @@ class RenderPass:
 		color: ColorAttachment | Sequence[ColorAttachment] = (),
 		depth: DepthAttachment | None = None,
 		label: str | None = None,
+		timestamp_writes: dict | None = None,
 	):
 		self.commands = commands
 		self.color = [color] if isinstance(color, ColorAttachment) else list(color)
 		self.depth = depth
 		self.label = label
+		self.timestamp_writes = timestamp_writes
 
 		self.handle: wgpu.GPURenderPassEncoder | None = None
 		self.pipeline: RenderPipeline | None = None
@@ -581,6 +584,7 @@ class RenderPass:
 			label=self.label or "",
 			color_attachments=[attachment.descriptor() for attachment in self.color],
 			depth_stencil_attachment=self.depth.descriptor() if self.depth else None,
+			**({"timestamp_writes": self.timestamp_writes} if self.timestamp_writes is not None else {}),
 		)
 		return self
 
@@ -770,14 +774,16 @@ class RenderPass:
 
 
 class ComputePass:
-	def __init__(self, commands: CommandContext, *, label: str | None = None):
+	def __init__(self, commands: CommandContext, *, label: str | None = None, timestamp_writes: dict | None = None):
 		self.commands = commands
 		self.label = label
+		self.timestamp_writes = timestamp_writes
 		self.handle: wgpu.GPUComputePassEncoder | None = None
 		self.pipeline: ComputePipeline | None = None
 
 	def __enter__(self) -> ComputePass:
-		self.handle = self.commands.handle.begin_compute_pass(label=self.label or "")
+		self.handle = self.commands.handle.begin_compute_pass(label=self.label or "",
+			**({"timestamp_writes": self.timestamp_writes} if self.timestamp_writes is not None else {}))
 		return self
 
 	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
@@ -839,14 +845,24 @@ class DepthAttachment:
 	read_only: bool = False
 	sample_count: int = 1
 	device_generation: int | None = None
+	stencil_clear: int | None = None
+	stencil_read_only: bool = False
 
 	def descriptor(self) -> wgpu.RenderPassDepthStencilAttachment:
+		stencil = {}
+		if "stencil" in self.format:
+			stencil = dict(stencil_read_only=self.stencil_read_only)
+			if not self.stencil_read_only:
+				stencil.update(stencil_clear_value=self.stencil_clear or 0,
+					stencil_load_op="clear" if self.stencil_clear is not None else "load",
+					stencil_store_op="store" if self.store else "discard")
 		return wgpu.RenderPassDepthStencilAttachment(
 			view=self.view,
 			depth_clear_value=self.clear or 0.0,
 			depth_load_op="clear" if self.clear is not None else "load",
 			depth_store_op="store" if self.store else "discard",
 			depth_read_only=self.read_only,
+			**stencil,
 		)
 
 # numpy buffers ---------------------------------------------------------------
@@ -1242,9 +1258,12 @@ class Texture(_OwnedResource):
 		clear: float | None = None,
 		store: bool = True,
 		read_only: bool = False,
+		stencil_clear: int | None = None,
+		stencil_read_only: bool = False,
 	) -> DepthAttachment:
 		self._check_device()
-		return DepthAttachment(self.binding, self.format, clear, store, read_only, self.sample_count, self._device_generation)
+		return DepthAttachment(self.binding, self.format, clear, store, read_only, self.sample_count, self._device_generation,
+			stencil_clear, stencil_read_only)
 
 
 @dataclass(frozen=True)
@@ -2132,6 +2151,11 @@ class BindGroupLayout(_OwnedResource):
 		self._check_device()
 		slots = {(bindings.group, entry["binding"]) for entry in self.entries}
 		return _cached_bind_group(self, self.handle, bindings, slots)
+
+	def clear_cache(self):
+		"""Release cached resource bindings while keeping the layout usable."""
+		self._check_device()
+		with self._lock: self._bind_groups.clear()
 
 	def close(self):
 		self._bind_groups.clear()

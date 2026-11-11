@@ -53,11 +53,32 @@ import paths start with `scenes.` when running from the repository root.
 
 ## Transparency controls
 
-The settings window is visible at startup. **Winner draws** selects one (default)
-or two stochastic selections, independently of MSAA. Two draws reduce missing
-winners and noise; they add a selection/shading pass and do not supersample edges.
+The settings window is visible at startup. **Winner draws** accepts a positive
+integer, independently of MSAA. Average mode supports one or two (default);
+Fill accepts any positive count. Extra attempts reduce missing winners but add
+selection/shading work and do not supersample edges.
 Diagnostic views include each stream and the valid-stream fraction. See the
-[two-winner plan and findings](../transparency_multiple_winners.md).
+[two-winner plan and findings](../src/transparency_multiple_winners.md).
+The diagnostic dropdown and **D** shortcut follow the active technique. A/B
+views appear only for two-draw Average mode; Fill labels its binary mask
+**winner_validity**. Single-draw mode hides stream/count views, disabled forcing
+hides **forced**, and 1x1 hides **filter_support**. A view that becomes unavailable
+returns to **final** when editing settings.
+**Filter implementation** selects the default Fragment path or experimental
+Compute reconstruction. They share the same bilateral estimator; measured tree
+profiles did not justify changing the default. See the
+[profiling report](../src/transparency_reconstruction.md).
+**Force single contributor** deterministically accepts exactly one visible
+contributor at its opacity, including fractional MASK edges; it adds a small
+count target and is off by default. **Winner mix** offers experimental hole
+filling with default-source Object hash or Anchored blue noise. Select two draws,
+then Fill, before raising the count further. Reduce to two before returning to Average.
+Other noise modes retain averaging. The **forced** view marks deterministic
+samples; weighted color views show color with its weight removed.
+**Reconstruction passes** stacks the selected kernel, filtering weighted pairs
+and applying opacity once at the end. Two 3x3 passes reach up to 5x5 support;
+four reach 9x9, with different weights from a single large kernel. A 1x1 kernel
+bypasses all stages. The FPS/frame-time overlay remains visible when settings hide.
 Drag values or Ctrl+click to type;
 hover controls for units and tuning guidance. ImGui captures input while editing
 widgets, so those actions do not also move the camera or trigger scene shortcuts.
@@ -78,7 +99,7 @@ widgets, so those actions do not also move the camera or trigger scene shortcuts
 
 Arrow edits are disabled while the settings window is hidden.
 Startup uses the defaults in code; controls update live without a profile file.
-UV blue CDF lerp is the default; stochastic picking and Bayer
+Anchored blue with two averaged winner draws is the default; UV CDF lerp, stochastic picking and Bayer
 remain experimental comparisons. The settings window also exposes these controls.
 
 The noise selector includes correlated UV hierarchies and triplanar object-space
@@ -106,7 +127,7 @@ It reads pixel-sized grain around rest-space coarse anchors, without requiring
 UVs. Its anchor target defaults to 24 pixels and shift subdivisions to 4. Higher
 subdivisions reduce close-layer correlation at the cost of more shift seams.
 The mode keeps grain much more isotropic at tilt, but can reshuffle more during
-orbit/dolly. It is experimental; UV CDF lerp remains the default. See the
+orbit/dolly. It is the example's default noise mode. See the
 [anchored noise audit](../src/stochastic_transparency.md#pixel-lattice-anchored-blue).
 
 "Fade grazing surfaces" starts enabled. Its two editable angles default to
