@@ -4,7 +4,7 @@ Run: python main.py scenes/material_example.py [--frames 120]
 M toggles MSAA; Space toggles orbit; D replaces the opaque shader's default.
 The bottom-left pair shares a dictionary; the bottom-right transparent sphere
 adds rim lighting through a Jinja child template. No transparency code is copied.
-The top-middle sphere uses time-driven vertex displacement in the WGSL below.
+The top-middle sphere uses time-driven displacement in the Jinja material below.
 """
 from pathlib import Path
 from math import cos, sin
@@ -21,20 +21,18 @@ from numpyecs.TransparencyData import VERTEX_DTYPE
 
 
 STRIPED_SHADER = '''
-// Extra shared parameters are reflected just like other shader structs.
-<MaterialParameters> stripe_color: vec3f;
-<MaterialParameters> stripe_frequency: f32;
-<MaterialParameters> displacement: f32;
-<MaterialParameters> speed: f32;
-<FrameParameters> time: f32;
+#extends "default_material.shader"
 
-const default_stripe_color = vec3f(1.0, 0.15, 0.03);
-const default_stripe_frequency = 8.0;
-const default_displacement = 0.18;
-const default_speed = 2.0;
+#block parameters
+{{ super() }}
+<MaterialParameters> stripe_color: vec3f = (1, 0.15, 0.03);
+<MaterialParameters> stripe_frequency: f32 = 8.0;
+<MaterialParameters> displacement: f32 = 0.18;
+<MaterialParameters> speed: f32 = 2.0;
+<FrameParameters> time: f32 = 0.0;
+#endblock
 
-fn vertex(p: Params, position: vec3f, normal: vec3f, uv: vec2f) -> MaterialVertex {
-	// Ripple the sphere radially. Return the analytic normal of the radial graph.
+#block vertex
 	let radius = max(length(position), 1e-6);
 	let direction = position/radius;
 	let phase = direction.y*8.0-p.time*p.speed;
@@ -42,17 +40,17 @@ fn vertex(p: Params, position: vec3f, normal: vec3f, uv: vec2f) -> MaterialVerte
 	let gradient = p.displacement*8.0*cos(phase)*(vec3f(0.0, 1.0, 0.0)-direction.y*direction);
 	let displaced_normal = normalize(direction-gradient/max(displaced_radius, 1e-6));
 	return MaterialVertex(direction*displaced_radius, displaced_normal, uv);
-}
+#endblock
 
-fn shade(material: Material, p: Params, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
-	// UV-based bands work in both fragment and compute shading without derivatives.
+#block lighting
 	let band = smoothstep(-0.2, 0.2, sin(uv.y*p.stripe_frequency*6.2831853));
 	let color = mix(material.base_color.rgb, p.stripe_color, band);
 	var striped = material;
 	striped.base_color = vec4f(color, material.base_color.a);
-	return default_lighting(striped, p, uv, position, normal, lod);
-}
+	return default_lighting_{{ PREFIX }}(striped, p, uv, position, normal, lod);
+#endblock
 '''
+
 
 
 def sphere_vertices():

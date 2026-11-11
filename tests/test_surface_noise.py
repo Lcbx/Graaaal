@@ -15,20 +15,18 @@ def thresholds(request):
 	shader = Shader(source='''
 		#include "utils.shaderlib"
 		#include "stochastic_noise.shaderlib"
-		struct Sample {
-			position: vec4f,
-			dx: vec4f,
-			dy: vec4f,
-			parameters: vec4u,
-			uv: vec4f,
-			uv_gradients: vec4f,
-			normal: vec4f,
-			screen: vec4f,
-		};
-		@group(0) @binding(0) var<storage, read> samples: array<Sample>;
-		@group(0) @binding(1) var<storage, read_write> values: array<f32>;
-		@group(0) @binding(2) var noise: texture_2d<f32>;
-		@group(0) @binding(3) var hierarchy: texture_2d<f32>;
+		<Sample> position: vec4f;
+		<Sample> dx: vec4f;
+		<Sample> dy: vec4f;
+		<Sample> parameters: vec4u;
+		<Sample> uv: vec4f;
+		<Sample> uv_gradients: vec4f;
+		<Sample> normal: vec4f;
+		<Sample> screen: vec4f;
+		storage<0, 0, read> samples: array<Sample>;
+		storage<0, 1, read_write> values: array<f32>;
+		{{ binding('noise', 'texture_2d<f32>', 0, 2) }}
+		{{ binding('hierarchy', 'texture_2d<f32>', 0, 3) }}
 		@compute @workgroup_size(64)
 		fn evaluate(@builtin(global_invocation_id) id: vec3u) {
 			if id.x >= arrayLength(&samples) { return; }
@@ -347,11 +345,11 @@ def _native_sample_positions(count):
 		usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING)
 	reader = Shader(source='''
         #if PARAMS.samples > 1
-        @group(0) @binding(0) var samples: texture_multisampled_2d<f32>;
+        {{ binding('samples', 'texture_multisampled_2d<f32>', 0, 0) }}
         #else
-        @group(0) @binding(0) var samples: texture_2d<f32>;
+        {{ binding('samples', 'texture_2d<f32>', 0, 0) }}
         #endif
-        @group(0) @binding(1) var<storage, read_write> values: array<vec4f>;
+        storage<0, 1, read_write> values: array<vec4f>;
         @compute @workgroup_size(1) fn read(@builtin(global_invocation_id) id: vec3u) {
             values[id.x] = textureLoad(samples, vec2i(0), i32(id.x));
         }

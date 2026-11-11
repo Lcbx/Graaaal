@@ -11,6 +11,8 @@ import re
 import numpy as np
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
+from .ShaderShorthand import ShaderShorthand, MISSING
+
 
 SHADERS = Path(__file__).with_name("shaders")
 KINDS = {"f32": 1, "vec2f": 2, "vec3f": 3, "vec4f": 4, "u32": 1, "bool": 1}
@@ -111,15 +113,10 @@ class MaterialShader:
 		if type(self.transparent) is not bool: raise ValueError("transparent must be boolean")
 		if sum(value is not None for value in (self.template, self.source, self.filepath)) != 1:
 			raise ValueError("Supply exactly one of template, source or filepath")
-		self._wgsl = None
-		if self.template is None:
-			from .MaterialSource import MaterialSource
-			self._wgsl = MaterialSource(self.source if self.source is not None else Path(self.filepath).read_text(encoding="utf-8"))
-		base = self.template if self.template is not None else self.source_template()
-		path = None if base is None else Path(base).resolve()
+		path = None if self.source is not None else Path(self.template or self.filepath).resolve()
 		env = Environment(loader=FileSystemLoader(([str(path.parent)] if path else [])+[str(SHADERS)]),
-			undefined=StrictUndefined, autoescape=False, line_statement_prefix="#")
-		self._template = None if path is None else env.get_template(path.name)
+			undefined=StrictUndefined, autoescape=False, line_statement_prefix="#", extensions=[ShaderShorthand])
+		self._template = env.from_string(self.source) if self.source is not None else env.get_template(path.name)
 		self._render_cache = {}
 		_, declarations = self._render(0)
 		self._parameters = MappingProxyType(declarations)
@@ -129,12 +126,9 @@ class MaterialShader:
 				raise ValueError(f"Unsupported frame parameter: {name} ({p.kind})")
 		self.validate(self.default_material)
 
-	def source_template(self):
-		"""Optional adapter defaults for plain WGSL; generic shaders own all hooks."""
-		return None
-
-	def _render(self, prefix):
-		key = (prefix, self.transparent)
+	def _render(self, prefix, hooks=None):
+		hooks = frozenset(h.name for h in self.interface.hooks) if hooks is None else frozenset(hooks)
+		key = (prefix, self.transparent, hooks)
 		if key in self._render_cache: return self._render_cache[key]
 		declarations = {}
 		def parameter(name, kind, default, scope="material"):
@@ -145,15 +139,17 @@ class MaterialShader:
 				raise ValueError(f"Inherited parameter {name} requires {declarations[name].kind}")
 			declarations[name] = value
 			return ""
-		code = "" if self._template is None else self._template.render(PREFIX=prefix, TRANSPARENT=self.transparent, parameter=parameter)
-		if self._wgsl is not None:
-			declarations = self._wgsl.declarations(declarations)
-			code = self._wgsl.link(prefix, code)
+		def field(struct, name, kind, *, default=MISSING, **attributes):
+			scopes = {"MaterialParameters": "material", "InstanceParameters": "instance", "FrameParameters": "frame"}
+			if struct not in scopes or attributes: raise ValueError(f"Invalid material field declaration: {struct}.{name}")
+			if default is MISSING: raise ValueError(f"Material parameter {name} requires a default")
+			return parameter(name, kind, default, scopes[struct])
+		code = self._template.render(PREFIX=prefix, TRANSPARENT=self.transparent, field=field, HOOKS=hooks)
 		self._render_cache[key] = code, declarations
 		return code, declarations
 
-	def render(self, prefix):
-		code, declarations = self._render(prefix)
+	def render(self, prefix, hooks=None):
+		code, declarations = self._render(prefix, hooks)
 		if declarations != self.parameters:
 			raise ValueError("Shader declarations changed; create a new MaterialShader")
 		return code
@@ -243,13 +239,17 @@ class MaterialLibrary:
 		self._records = records
 		return slots(headers), slots(shared), slots(instances), np.array(ids, dtype=np.uint32), np.array(offsets, dtype=np.uint32)
 
-	def _source(self):
+	def source_for(self, hooks):
+		selected = frozenset(hooks)
+		unknown = selected - {hook.name for hook in self.interface.hooks}
+		if unknown: raise ValueError(f"Unknown material hooks: {sorted(unknown)}")
+		return self._source(selected)
+
+	def _source(self, hooks=None):
+		if hooks is None: hooks = frozenset(hook.name for hook in self.interface.hooks)
 		parts = ["struct Materials { values: array<vec4u>, }",
 			"struct InstanceOverrides { values: array<vec4u>, }",
 			"struct MaterialHeaders { values: array<vec4u>, }",
-			"@group(2) @binding(6) var<storage, read> material_parameters: Materials;",
-			"@group(2) @binding(7) var<storage, read> instance_parameters: InstanceOverrides;",
-			"@group(2) @binding(8) var<storage, read> material_headers: MaterialHeaders;",
 			"fn library_material_count() -> u32 { return arrayLength(&material_headers.values); }"]
 		functions = []
 		frame_parameters = {p.name: p for p in self.interface.frame_parameters}
@@ -270,11 +270,12 @@ class MaterialLibrary:
 			parts.append(f"struct Params{index} {{ {' '.join(fields) if fields else '_unused: u32,'} }}")
 			header = "let material_offset = material_headers.values[material_id].y;" if self.parameter_layouts[shader]["material"].slot_count else ""
 			parts.append(f"fn parameters_{index}(material_id: u32, instance_offset: u32) -> Params{index} {{ {header} var p: Params{index}; {' '.join(assignments)} return p; }}")
-			code = shader.render(index)
+			code = shader.render(index, hooks)
 			parts.append(code)
 			from .RenderContext import ShaderSource
 			functions.append(ShaderSource(code).functions if any(h.optional_function for h in self.interface.hooks) else {})
 		for hook in self.interface.hooks:
+			if hook.name not in hooks: continue
 			parts.append(f"fn {hook.name}(id: u32{', ' if hook.arguments else ''}{hook.arguments}) -> {hook.result} {{ let key = {self.interface.address}; switch material_headers.values[key.x].x {{")
 			for index in range(len(self.shaders)):
 				expression = hook.expression.format(i=index)

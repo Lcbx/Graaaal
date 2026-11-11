@@ -23,11 +23,15 @@ class NoiseProbe:
 		self.shader = Shader(source='''
             #include "utils.shaderlib"
             #include "stochastic_noise.shaderlib"
-            struct Probe { local: vec4f, dx: vec4f, dy: vec4f, pixel: vec4f, info: vec4u, }
-            @group(0) @binding(0) var<storage, read> probes: array<Probe>;
-            @group(0) @binding(1) var<storage, read_write> values: array<f32>;
-            @group(0) @binding(2) var noise: texture_2d<f32>;
-            @group(0) @binding(3) var hierarchy: texture_2d<f32>;
+            <Probe> local: vec4f;
+            <Probe> dx: vec4f;
+            <Probe> dy: vec4f;
+            <Probe> pixel: vec4f;
+            <Probe> info: vec4u;
+            storage<0, 0, read> probes: array<Probe>;
+            storage<0, 1, read_write> values: array<f32>;
+            {{ binding('noise', 'texture_2d<f32>', 0, 2) }}
+            {{ binding('hierarchy', 'texture_2d<f32>', 0, 3) }}
             @compute @workgroup_size(64) fn evaluate(@builtin(global_invocation_id) id: vec3u) {
                 if id.x >= arrayLength(&probes) { return; }
                 let p = probes[id.x];

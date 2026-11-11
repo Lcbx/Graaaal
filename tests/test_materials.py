@@ -16,8 +16,8 @@ def test_shared_dicts_defaults_and_instance_scopes(tmp_path):
 	path.write_text('''#extends "default_material.shader"
 #block parameters
 {{ super() }}
-{{ parameter("gain", "f32", 2) }}
-{{ parameter("phase", "f32", 0, "instance") }}
+<MaterialParameters> gain: f32 = 2;
+<InstanceParameters> phase: f32 = 0;
 #endblock
 ''')
 	shader = DefaultMaterialShader(template=path)
@@ -44,14 +44,17 @@ def test_parameters_reject_invalid_types_and_values(kind, value):
 	with pytest.raises(ValueError): Parameter(kind, value)
 
 
-def test_plain_wgsl_keeps_default_features_and_adds_typed_parameters(tmp_path, monkeypatch):
+def test_jinja_material_keeps_default_features_and_adds_typed_parameters(tmp_path, monkeypatch):
 	monkeypatch.chdir(tmp_path)
 	shader = DefaultMaterialShader(transparent=True, source='''
-struct MaterialParameters { custom: f32, }
-const default_custom = 0.2;
-fn shade(material: Material, p: Params, uv: vec2<f32>, position: vec3<f32>, normal: vec3f, lod: f32) -> vec3<f32> {
-    return vec3f(p.custom);
-}
+#extends "default_material.shader"
+#block parameters
+{{ super() }}
+<MaterialParameters> custom: f32 = 0.2;
+#endblock
+#block lighting
+	return vec3f(p.custom);
+#endblock
 ''')
 	source = MaterialLibrary([shader]).source
 	assert "return vec3f(p.custom)" in source
@@ -74,9 +77,9 @@ def test_child_template_owns_defaults_scopes_and_route_dependent_values(tmp_path
 	path.write_text('''#extends "default_material.shader"
 #block parameters
 {{ super() }}
-{{ parameter("roughness", "f32", 0.15) }}
-{{ parameter("grazing_fade", "bool", false, "instance") }}
-{{ parameter("rim_power", "f32", 3.0, "instance") }}
+<MaterialParameters> roughness: f32 = 0.15;
+<InstanceParameters> grazing_fade: bool = false;
+<InstanceParameters> rim_power: f32 = 3.0;
 #endblock
 ''')
 	opaque = DefaultMaterialShader(template=path)
@@ -94,16 +97,17 @@ def test_child_template_owns_defaults_scopes_and_route_dependent_values(tmp_path
 
 
 @pytest.mark.parametrize("declaration", [
-	'parameter("bad-name", "f32", 1)',
-	'parameter("value", "f64", 1)',
-	'parameter("value", "f32", 1, "entity")',
-	'parameter("value", "vec3f", (1, 2))',
+	'<MaterialParameters> bad-name: f32 = 1;',
+	'<MaterialParameters> value: f64 = 1;',
+	'<BadParameters> value: f32 = 1;',
+	'<MaterialParameters> value: vec3f = (1, 2);',
 ])
 def test_invalid_shader_declarations_fail_before_gpu_creation(tmp_path, declaration):
 	path = tmp_path / "bad.shaderlib"
-	path.write_text('#extends "material_surface.shaderlib"\n#block parameters\n{{ '+declaration+' }}\n#endblock\n')
+	path.write_text('#extends "material_surface.shaderlib"\n#block parameters\n'+declaration+'\n#endblock\n')
 	with pytest.raises(ValueError):
 		MaterialShader(interface=TRANSPARENCY_INTERFACE, template=path)
+
 
 
 def test_layout_changes_require_relinking_but_default_edits_do_not():
@@ -125,7 +129,7 @@ def test_builtin_types_and_grazing_intervals_are_checked(tmp_path):
 	path.write_text('''#extends "default_material.shader"
 #block parameters
 {{ super() }}
-{{ parameter("base_color", "f32", 1) }}
+<MaterialParameters> base_color: f32 = 1;
 #endblock
 ''')
 	with pytest.raises(ValueError, match="base_color"):
@@ -250,7 +254,8 @@ def test_material_record_preserves_external_opaque_color_and_occlusion(count, lo
 		opaque_color=color, opaque_depth=depth, winner_count=winner_count, force_single_contributor=force)
 	# Another renderer supplies blue HDR color and a left-half foreground occluder.
 	shader = Shader(source='''
-        struct Output { @location(0) color: vec4f, @builtin(frag_depth) depth: f32, }
+        <Output> @location(0) color: vec4f;
+        <Output> @builtin(frag_depth) depth: f32;
         @vertex fn vertex(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
             return vec4f(vec2f(f32((i << 1u) & 2u), f32(i & 2u))*2.0-1.0, 0.0, 1.0);
         }

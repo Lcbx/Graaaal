@@ -54,13 +54,13 @@ from numpyecs.DefaultMaterial import DefaultMaterialShader
 from numpyecs.MaterialRenderer import MaterialMesh, MaterialRenderer
 from numpyecs.RenderContext import RenderContext
 from numpyecs.EcsMaterials import (
-	MaterialInstance, MaterialTransform, EcsMaterialAdapter,
+    MaterialInstance, MaterialTransform, EcsMaterialAdapter,
 )
 
 glass = DefaultMaterialShader(
-	transparent=True,
-	template="scenes/shaders/glass_material.shader",
-	default_material={"roughness": 0.3},
+    transparent=True,
+    template="scenes/shaders/glass_material.shader",
+    default_material={"roughness": 0.3},
 )
 shared = {"base_color": (0.2, 0.6, 0.9, 0.5)}
 mesh = MaterialMesh(vertices, glass, indices=indices, material=shared)
@@ -138,115 +138,64 @@ an upload to reduce queue overhead. Membership changes can rebuild record
 addresses. Dictionary edits and default replacement require no shader compilation.
 Instance values do not split draw batches.
 
-## Shader-defined schemas
+## Shader-defined materials
 
-MaterialShader requires an interface and exactly one of `source` (plain WGSL),
-`filepath` (a plain WGSL file), or `template` (a Jinja template file).
-Python supplies material values and instance overrides; declarations stay in
-the shader. DefaultMaterialShader supplies default surface and lighting behavior.
-A minimal unlit shader can use a color-only schema; it does not need roughness,
-alpha_mode or grazing parameters.
+`MaterialShader` accepts exactly one of `source` (inline Jinja2 template),
+`filepath` or `template` (path to a Jinja2 file), plus a `MaterialInterface`.
+`DefaultMaterialShader` supplies the built-in lighting, alpha and vertex hooks.
+Custom materials extend its template and override only the hooks they need.
 
-## Plain WGSL materials
-
-The example's `STRIPED_SHADER` is ordinary WGSL embedded in Python. It has no
-Jinja statements or substitutions:
+For example, this is the striped material used in
+[material_example.py](../scenes/material_example.py), with a minimal lighting override:
 
 ```python
 striped = DefaultMaterialShader(source='''
-struct MaterialParameters {
-	stripe_color: vec3f,
-	stripe_frequency: f32,
-}
-const default_stripe_color = vec3f(1.0, 0.15, 0.03);
-const default_stripe_frequency = 8.0;
-
-fn shade(material: Material, p: Params, uv: vec2f,
-         position: vec3f, normal: vec3f, lod: f32) -> vec3f {
-	let band = smoothstep(-0.2, 0.2, sin(uv.y*p.stripe_frequency*6.2831853));
-	var striped = material;
-	striped.base_color = vec4f(mix(material.base_color.rgb, p.stripe_color, band),
-                              material.base_color.a);
-	return default_lighting(striped, p, uv, position, normal, lod);
-}
+#extends "default_material.shader"
+#block parameters
+{{ super() }}
+<MaterialParameters> stripe_color: vec3f = (1, 0.15, 0.03);
+<MaterialParameters> stripe_frequency: f32 = 8.0;
+#endblock
+#block lighting
+    let band = smoothstep(-0.2, 0.2, sin(uv.y*p.stripe_frequency*6.2831853));
+    var striped = material;
+    striped.base_color = vec4f(mix(material.base_color.rgb, p.stripe_color, band), material.base_color.a);
+    return default_lighting_{{ PREFIX }}(striped, p, uv, position, normal, lod);
+#endblock
 ''')
 ```
 
-The existing `ShaderSource` reflection reads `MaterialParameters` for shared
-fields and `InstanceParameters` for per-instance fields. Both structs are
-optional. `const default_NAME` provides a field's default; supported defaults
-are scalar literals or float-vector constructors with literal components
-(including splats), rather than arbitrary constant expressions. Without an
-explicit default, inherited fields keep their defaults and new fields start at
-zero/false. Supported types match template parameters below. A declaration can
-change a built-in field's scope while retaining its type. Duplicate fields
-across parameter structs are rejected. `FrameParameters` additionally opts into
-renderer-owned values such as `time`, as described below.
+In a material's `parameters` block, `<MaterialParameters>` declares shared
+values, `<InstanceParameters>` declares per-instance overrides, and
+`<FrameParameters>` selects renderer-owned frame values. Each declaration
+requires a default, expressed as a Jinja2 value (scalar or tuple).
+The available inherited blocks are `parameters`, `helpers`, `surface`, `vertex`,
+`opacity`, `grazing` and `lighting`. `super()` retains inherited parameter
+schema and defaults. Parameters are accessed as `p.name`; the template owns
+material-family naming through `{{ PREFIX }}`. `TRANSPARENT` provides the
+routing choice and `HOOKS` identifies the hooks needed by the current pass.
+The `MaterialRenderer` supplies the frame, lighting and texture bindings;
+material templates must not declare GPU entry points.
 
-The renderer provides the combined `Params` type, including inherited fields,
-and passes the selected shared and instance values to each function. Custom
-types, constants, private globals and helper functions are namespaced for each
-shader family so multiple materials can use the same names. Struct member names
-are preserved. The resulting module uses the existing `Shader` compilation,
-uniform reflection and pipeline machinery.
-
-Source analysis is shared with the renderer: `ShaderSource.declarations` exposes
-module declarations and initializers, and `rename_symbols(mapping)` performs
-scope-aware rewriting. Reflected parameter/member `name_span` values and function
-`body_start` positions address the expanded `ShaderSource.source`, after compact
-struct declarations are expanded. Material linking uses this public API rather
-than parsing WGSL again. Comments are masked without moving positions; numeric
-literals and attribute enums are kept separate from symbol references.
-
-With DefaultMaterialShader, implement any of these functions; omitted functions
-keep their default behavior. Argument names may vary; types and order must match:
-
-```wgsl
-fn surface(p: Params) -> Material
-fn shade(material: Material, p: Params, uv: vec2f,
-         position: vec3f, normal: vec3f, lod: f32) -> vec3f
-fn opacity(material: Material, p: Params, alpha: vec3f,
-           uv: vec2f, position: vec3f, lod: f32) -> vec3f
-fn grazing(p: Params) -> vec3f
-fn vertex(p: Params, position: vec3f, normal: vec3f, uv: vec2f) -> MaterialVertex
-```
-
-`shade` returns straight linear HDR color. `opacity` returns RGB opacity used
-consistently in guide, transmittance and selection. `grazing` returns start angle,
-end angle and enabled state. The existing implementations are callable as
-`default_surface`, `default_shade`, `default_opacity`, `default_grazing`, `default_vertex`, and
-`default_lighting`, with their corresponding signatures. Function names starting
-with `default_` are reserved. Generic MaterialShader has no implicit defaults:
-its source must supply the functions expected by its MaterialInterface. The
-vertex hook is optional on this interface and falls back to unchanged geometry.
-
-Frame uniforms (`frame.view`, `frame.proj`,
-`frame.camera_position`, `frame.clip`, `frame.grazing`, `frame.time`), the Material type,
-the separate lighting uniform (`lighting.light_dir`),
-`base_color(material, uv, lod)`, `base_textures`, and `material_sampler` are
-provided by the existing opaque/stochastic shaders. Reference these resources
-directly; material source must not redeclare bindings or GPU entry points.
-Geometry entry points and pass outputs remain renderer-owned. Shading functions
-must work in fragment and compute stages: sample textures with explicit LOD and
-avoid fragment-only derivatives. Transparency, reconstruction and MSAA remain
-shared across custom and default materials.
+A generic `MaterialShader` can extend `material_surface.shaderlib` and implement
+its own hooks without depending on the default lit material. The
+`MaterialInterface` specifies the required hook contract.
 
 ## Time and vertex displacement
 
-Time is an optional frame-scope parameter, declared in the shader:
+Time is an optional frame-scope parameter, declared in a Jinja parameters block:
 
-```wgsl
-struct FrameParameters { time: f32, }
+```jinja2
+#block parameters
+{{ super() }}
+<FrameParameters> time: f32 = 0.0;
+#endblock
 
-fn vertex(p: Params, position: vec3f, normal: vec3f, uv: vec2f) -> MaterialVertex {
+#block vertex
     let offset = 0.1*sin(p.time*2.0);
     return MaterialVertex(position+vec3f(offset, 0.0, 0.0), normal, uv);
-}
+#endblock
 ```
-
-The compact form `<FrameParameters> time: f32;` is also supported by the existing
-ShaderSource struct syntax. Jinja templates declare the same value with
-`parameter("time", "f32", 0.0, "frame")` in their parameters block.
 
 `p.time` is elapsed seconds since the MaterialRenderer was created. Supply
 `renderer.record(..., time=seconds)` to use an application clock, seek, pause or
@@ -264,7 +213,7 @@ The vertex hook receives object-space position/normal and UVs, and returns
 `MaterialVertex(position, normal, uv)` before the instance transform. Update the
 normal when deformation changes the surface orientation. The example computes
 an analytic normal for its radial ripple. Static materials retain the identity
-hook. A Jinja child can override the `vertex` block with the same behavior.
+hook. A Jinja child can override the `vertex` block for custom deformation.
 
 All raster passes use the hook, and transparent winner shading applies it to
 each original triangle vertex before barycentric interpolation. This keeps
@@ -278,16 +227,16 @@ example reserves a 1.3 radius for its maximum 0.3 displacement.
 
 ## Template parameter declarations
 
-Existing Jinja files remain supported through `template=`. Declare types,
+Use `source=`, `filepath=` or `template=` to supply Jinja2. Declare types,
 defaults and scope inside a Jinja parameters block:
 
 ```jinja
 #extends "default_material.shader"
 #block parameters
 {{ super() }}
-{{ parameter("rim_strength", "f32", 0.8) }}
-{{ parameter("rim_color", "vec3f", (0.3, 0.7, 1.0)) }}
-{{ parameter("rim_power", "f32", 3.0, "instance") }}
+<MaterialParameters> rim_strength: f32 = 0.8;
+<MaterialParameters> rim_color: vec3f = (0.3, 0.7, 1.0);
+<InstanceParameters> rim_power: f32 = 3.0;
 #endblock
 ```
 
@@ -298,9 +247,9 @@ available as p.name in WGSL; declarations produce no WGSL text themselves.
 
 ```python
 rim = DefaultMaterialShader(
-	transparent=True,
-	template="scenes/shaders/rim_material.shader",
-	default_material={"rim_strength": 1.5},
+    transparent=True,
+    template="scenes/shaders/rim_material.shader",
+    default_material={"rim_strength": 1.5},
 )
 ```
 
@@ -360,8 +309,8 @@ Available blocks:
 #extends "default_material.shader"
 #block parameters
 {{ super() }}
-{{ parameter("rim_strength", "f32", 0.8) }}
-{{ parameter("rim_color", "vec3f", (0.3, 0.7, 1)) }}
+<MaterialParameters> rim_strength: f32 = 0.8;
+<MaterialParameters> rim_color: vec3f = (0.3, 0.7, 1);
 #endblock
 #block lighting
     let view = normalize(frame.camera_position.xyz-position);
@@ -445,11 +394,12 @@ examples above. Default lighting math lives once in `material_lighting.shaderlib
 family-specific `default_lighting` adapters retain each family's coefficients.
 
 `Frame` and `Lighting` are declared once in `frame.shaderlib` and included by
-raster, deferred and composition modules. Supply lighting from Python with:
+raster, deferred and composition modules. `Frame` is currently 192 bytes and
+`Lighting` 16 bytes. Supply lighting from Python with:
 
 ```python
 renderer.record(commands, size, camera, output, time=seconds,
-				light_dir=(0.4, 0.8, 0.3))
+                light_dir=(0.4, 0.8, 0.3))
 ```
 
 The low-level `TransparencyPass.update_frame()` and `update_camera()` accept the
@@ -462,13 +412,34 @@ reflection rather than retaining the earlier Frame byte offsets.
 Lighting currently supports a scene directional light; no local-light distribution
 compute pass is implemented.
 
-## Binding resources
+## Bind-group convention and lifetime
 
-For custom WGSL, use the public struct names and bindings above. For multiple
-views recorded before submission, provide separate buffers or aligned ranges
-rather than overwriting the same frame buffer. The built-in adapter maintains
-bindings as resources change.
+Built-in material passes derive explicit layouts from reflected shader bindings.
+The same group-layout objects own bounded GPU bind-group caches across compatible
+pipelines and across 1x/4x MSAA. Cache keys include buffer handles and bound sizes,
+so growth or resource replacement selects a new bind group; changing contents
+preserves it. Custom shader sets keep the automatic-layout path.
 
-Resource caching decisions and the earlier measurements are kept in the
-[implementation work log](../IMPLEMENTATION_WORK.md#material-binding-internals-and-lifetime)
-and the [dated material audit](materials_audit.md).
+| Group | Raster geometry | Deferred shading | Composition |
+| --- | --- | --- | --- |
+| 0 | `Frame` + `Lighting` | Same shared group | Same shared group |
+| 1 | Instance/visibility indexing | Winner input/output textures | Color/depth/guide textures and `BilateralSettings` |
+| 2 | Material tables, metadata, texture array and sampler | Material resources plus vertex/transform tables | Unused |
+| 3 | Pass-specific depth/noise inputs | Unused | Unused |
+
+Group 1 retains the existing DrawBatches convention. Pass groups can differ;
+compatible low-index layout prefixes allow bindings to survive pipeline changes.
+Bindings have explicit resource types and stage visibility; pass texture groups
+include only resources needed by that pass. Default depth geometry is compiled
+lazily when requested.
+
+Buffer update cadence is separate from binding cadence: frame contents change
+each frame while the group remains stable throughout the draws. Continue using
+indexed storage for per-instance values. Do not overwrite one frame buffer for
+multiple views recorded before the same submission; each such view needs its
+own buffer or aligned range. `upload_changed()` on reflected uniform buffers
+tracks raw bytes, including padding; ordinary `upload()` remains available.
+
+The [dated material audit](materials_audit.md) records storage and upload
+measurements for the six-sphere example. These describe that setup, not general
+performance guarantees.

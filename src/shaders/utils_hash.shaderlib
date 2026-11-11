@@ -1,0 +1,23 @@
+fn hash_u32(value: u32) -> u32 {
+	var x = value;
+	x = (x ^ (x >> 16u)) * 0x7feb352du;
+	x = (x ^ (x >> 15u)) * 0x846ca68bu;
+	return x ^ (x >> 16u);
+}
+
+fn hash3d_u32(cell: vec3u, seed: u32) -> u32 {
+	return hash_u32(hash_u32(cell.x ^ seed) ^ hash_u32(cell.y + 0x9e3779b9u) ^ hash_u32(cell.z + 0x85ebca6bu));
+}
+
+// A linear blend of independent uniform thresholds is not uniform. Apply its
+// CDF to retain P(threshold < alpha) = alpha through noise-scale transitions.
+// The endpoint case avoids the singular denominators at blend = 0 or 1.
+fn blend_uniform_thresholds(thresholds: vec2f, blend: f32) -> f32 {
+	if blend <= 1e-6 { return thresholds.x; }
+	if blend >= 1.0-1e-6 { return thresholds.y; }
+	let x = mix(thresholds.x, thresholds.y, blend);
+	let a = min(blend, 1.0-blend);
+	if x < a { return x*x/(2.0*a*(1.0-a)); }
+	if x > 1.0-a { return 1.0-(1.0-x)*(1.0-x)/(2.0*a*(1.0-a)); }
+	return (x-0.5*a)/(1.0-a);
+}

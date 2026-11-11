@@ -1,4 +1,4 @@
-"""Plain WGSL parameter reflection, material contracts and linked-family shading."""
+"""Jinja material declarations, inheritance, and mixed-family rendering."""
 import numpy as np
 import pytest
 
@@ -6,45 +6,39 @@ from numpyecs.DefaultMaterial import DefaultMaterialShader
 from numpyecs.Materials import MaterialBinding, MaterialLibrary
 from numpyecs.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
 from numpyecs.Math import Camera
-from numpyecs.RenderContext import RenderContext, ShaderSource, Texture, TextureUsage
+from numpyecs.RenderContext import RenderContext, Texture, TextureUsage
 from numpyecs.TransparencyData import VERTEX_DTYPE
 
 
-def test_reflection_exposes_material_functions_without_treating_them_as_entry_points():
-	info = ShaderSource('''
-fn helper(value: vec3f,) -> f32 { return value.x; }
-fn generic(value: ptr<function, array<vec3f, 2>>,) {}
-@compute @workgroup_size(1) fn main() {}
-''')
-	assert set(info.functions) == {"helper", "generic", "main"}
-	assert set(info.entry_points) == {"main"}
-	assert info.functions["helper"].parameters[0].type_name == "vec3f"
-	assert info.functions["helper"].return_type == "f32"
-	assert info.functions["generic"].parameters[0].type_name == "ptr<function,array<vec3f,2>>"
+SOURCE = '''
+#extends "default_material.shader"
+#block parameters
+{{ super() }}
+<MaterialParameters> color: vec3f = (1, 0, 0);
+<InstanceParameters> coverage: f32 = 1;
+<MaterialParameters> count: u32 = 16;
+<MaterialParameters> enabled: bool = true;
+#endblock
+#block lighting
+	return p.color;
+#endblock
+#block opacity
+	return alpha*p.coverage;
+#endblock
+'''
 
 
-def test_source_parameters_keep_shader_defaults_and_instance_scopes(tmp_path, monkeypatch):
-	path = tmp_path / "custom.wgsl"
-	path.write_text('''
-struct MaterialParameters { color: vec3<f32>, count: u32, enabled: bool, roughness: f32, }
-struct InstanceParameters { phase: f32, grazing_fade: bool, }
-const default_color = vec3<f32>(0.25f);
-const default_count: u32 = 0x10u;
-const default_enabled = true;
-const default_phase = -1.5e-2;
-''')
-	monkeypatch.chdir(tmp_path)
-	shader = DefaultMaterialShader(filepath=path)
-	assert shader.parameters["color"].default == (0.25,)*3
+def test_jinja_source_parameters_keep_shader_defaults_and_instance_scopes():
+	shader = DefaultMaterialShader(transparent=True, source=SOURCE)
+	assert shader.parameters["color"].default == (1, 0, 0)
 	assert shader.parameters["count"].default == 16
 	assert shader.parameters["enabled"].default is True
+	assert shader.parameters["coverage"].scope == "instance"
 	assert shader.parameters["roughness"].default == 0.7
-	assert shader.parameters["phase"].default == -0.015
-	assert shader.parameters["grazing_fade"].scope == "instance"
 	library = MaterialLibrary([shader])
 	shared = {"count": 2}
-	a = library.pack([MaterialBinding(shader, shared), MaterialBinding(shader, shared, {"phase": 1.0})])
-	assert len(a[0]) == 1  # schema changes do not break dictionary identity sharing
+	a = library.pack([MaterialBinding(shader, shared), MaterialBinding(shader, shared, {"coverage": 0.5})])
+	assert len(a[0]) == 1
 	np.testing.assert_array_equal(a[3], [0, 0])
 	with pytest.raises(ValueError, match="shared"):
 		library.pack([MaterialBinding(shader, overrides={"count": 3})])
@@ -53,74 +47,23 @@ const default_phase = -1.5e-2;
 		library.pack([])
 
 
-@pytest.mark.parametrize("source, message", [
-	('fn shade() -> vec3f { return vec3f(1.0); }', "signature"),
-	('struct MaterialParameters { base_color: f32, }', "base_color"),
-	('struct MaterialParameters { value: f32, } struct InstanceParameters { value: f32, }', "duplicate"),
-	('struct MaterialParameters { value: mat4x4f, }', "parameter type"),
-	('struct MaterialParameters { value: f32, } const default_value = 1.0+2.0;', "default_value"),
-	('struct Params { value: f32, }', "provided"),
-	('struct Other { value: vec4f, } @group(0) @binding(0) var<uniform> another: Other;', "renderer-provided"),
-	('@fragment fn fragment() -> @location(0) vec4f { return vec4f(1.0); }', "renderer-provided"),
-	('fn default_lighting() {}', "reserved"),
-	('#extends "default_material.shader"', "plain WGSL"),
+@pytest.mark.parametrize("declaration", [
+	'<MaterialParameters> base_color: f32 = 1;',
+	'<MaterialParameters> color: f64 = 1;',
+	'<MaterialParameters> color: vec3f = (1, 2);',
+	'<InvalidParameters> color: f32 = 1;',
 ])
-def test_invalid_material_contracts_fail_before_gpu_creation(source, message):
-	with pytest.raises(ValueError, match=message):
-		DefaultMaterialShader(source=source)
+def test_invalid_jinja_material_parameters_fail_before_gpu_creation(declaration):
+	with pytest.raises(ValueError):
+		DefaultMaterialShader(source='#extends "default_material.shader"\n#block parameters\n{{ super() }}\n'+declaration+'\n#endblock')
+
 
 
 @pytest.mark.parametrize("count", [1, 4])
-def test_linked_plain_families_share_transparency_and_update_instance_opacity(count):
+def test_linked_jinja_families_share_transparency_and_update_instance_opacity(count):
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
-	source = '''
-struct MaterialParameters { color: vec3f, }
-struct InstanceParameters { coverage: f32, }
-const default_color = vec3f(1.0, 0.0, 0.0);
-const default_coverage = 1.0;
-const weights = array<f32, 2>(0.5, 0.5);
-const factor = 2.0;
-// Comments may mention {{ template syntax }} in an otherwise plain WGSL module.
-const constant = weights[0];
-const_assert(constant == 0.5);
-// The member 'shade' must survive namespacing of the function with that name.
-struct Layer { color: vec3f, shade: f32, }
-fn scoped(grazing: f32, grazing_0: f32,) -> f32 {
-    let default_lighting = grazing+grazing_0;
-    return default_lighting;
-}
-fn evaluate(color: vec3f) -> vec3f {
-    let layer = Layer(color, 1.0);
-    var sum = vec3f(0.0);
-    for (var i = 0u; i < 2u; i++) { sum += layer.color*weights[i]; }
-    // Local and parameter names must not be rewritten as default helper names,
-    // or collide with generated names for either of these linked families.
-    let grazing = 1.0;
-    let grazing_0 = 2.0;
-    let grazing_1 = 3.0;
-    var gain = scoped(grazing, grazing_0);
-    { let grazing = grazing_1; gain += grazing; }
-    for (var grazing = 0u; grazing < 2u; grazing++) { gain += f32(grazing); }
-    gain += grazing;
-    // The for-local must expire; this factor refers to the module constant.
-    for (var factor = 0u; factor < 1u; factor++) { gain += f32(factor); }
-    let factor = factor; // initializer resolves the outer module constant
-    return sum*layer . shade*(gain/8.0)*(factor/2.0);
-}
-fn surface(p: Params,) -> Material { return default_surface(p); }
-fn shade(material: Material, p: Params, uv: vec2f, position: vec3f, normal: vec3f, lod: f32,) -> vec3f {
-    // These locals must not capture calls to the namespaced evaluate helper.
-    let evaluate_0 = 1.0;
-    let evaluate_1 = 1.0;
-    return evaluate(p.color)*evaluate_0*evaluate_1;
-}
-fn opacity(material: Material, p: Params, alpha: vec3f, uv: vec2f, position: vec3f, lod: f32,) -> vec3f {
-    return default_opacity(material, p, alpha, uv, position, lod)*p.coverage;
-}
-fn grazing(p: Params,) -> vec3f { return default_grazing(p); }
-'''
-	left = DefaultMaterialShader(transparent=True, source=source)
-	right = DefaultMaterialShader(transparent=True, source=source, default_material={"color": (0, 1, 0)})
+	left = DefaultMaterialShader(transparent=True, source=SOURCE)
+	right = DefaultMaterialShader(transparent=True, source=SOURCE, default_material={"color": (0, 1, 0)})
 	vertices = np.zeros(6, dtype=VERTEX_DTYPE)
 	vertices["position"] = [(-1.4, -2, 0), (1.4, -2, 0), (1.4, 2, 0), (-1.4, -2, 0), (1.4, 2, 0), (-1.4, 2, 0)]
 	vertices["normal"] = (0, 0, 1)

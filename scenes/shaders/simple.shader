@@ -5,14 +5,11 @@
 <Uniforms> light_dir: vec4f;
 <Uniforms> light_view_proj: mat4x4f;
 
-@group(0) @binding(0)
-var<uniform> uniforms: Uniforms;
+uniform<0, 0> uniforms: Uniforms;
 
-@group(1) @binding(0)
-var shadow_map: texture_depth_2d;
+{{ binding('shadow_map', 'texture_depth_2d', 1, 0) }}
 
-@group(1) @binding(1)
-var shadow_sampler: sampler_comparison;
+{{ binding('shadow_sampler', 'sampler_comparison', 1, 1) }}
 
 <VertexInput> position: vec3f;
 <VertexInput> normal: vec3f;

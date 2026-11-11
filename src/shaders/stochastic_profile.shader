@@ -1,5 +1,6 @@
+#set RECONSTRUCT_MODE = "profile"
 #include "stochastic_reconstruction.shaderlib"
-@group(2) @binding(0) var<storage, read_write> counters: array<atomic<u32>>;
+storage<2, 0, read_write> counters: array<atomic<u32>>;
 var<workgroup> tile_filter: atomic<u32>;
 
 @compute @workgroup_size(8, 8)

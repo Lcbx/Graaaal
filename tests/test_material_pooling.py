@@ -23,8 +23,8 @@ def test_example_pools_pack_scalar_lanes_and_preserve_shader_declarations():
 	np.testing.assert_array_equal(ids, [0, 1, 2, 2, 3, 4])
 	assert len(set(offsets)) == 6
 	assert "struct Materials" in library.source and "struct InstanceOverrides" in library.source
-	assert "fn default_vertex_3" in library.source and "fn default_shade_3" in library.source
-	assert "struct MaterialParameters_3" in library.source
+	assert "fn vertex_3" in library.source and "fn shade_3" in library.source
+	assert "struct Params3" in library.source
 	assert "fn vertex_3" in library.source and "fn vertex_0" in library.source
 
 
@@ -53,7 +53,7 @@ def test_targeted_updates_reuse_other_records_and_invalidate_inherited_defaults(
 def test_shared_explicit_bindings_refresh_after_buffer_growth_and_respect_close():
 	RenderContext.setup_graphics_backend(True)
 	shader = Shader(source='''
-@group(0) @binding(0) var<storage, read_write> words: array<u32>;
+storage<0, 0, read_write> words: array<u32>;
 @compute @workgroup_size(1) fn main() { words[0] += arrayLength(&words); }
 ''')
 	group = BindGroupLayout([dict(binding=0, visibility=wgpu.ShaderStage.COMPUTE, buffer=dict(type="storage"))])
@@ -132,29 +132,36 @@ def test_animation_and_dictionary_edits_upload_words_and_share_frame_binding(cou
 def test_packed_vectors_uint_and_bool_reach_the_gpu_without_bit_loss(count):
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	shader = MaterialShader(interface=TRANSPARENCY_INTERFACE, source='''
-struct MaterialParameters { color: vec3f, pair: vec2f, gain: f32, key: u32, enabled: bool, }
-struct InstanceParameters { other: vec2f, valid: bool, }
-const default_color = vec3f(0.1, 0.2, 0.3);
-const default_pair = vec2f(0.4, 0.5);
-const default_gain = 0.6;
-const default_key = 0xfedcba98u;
-const default_enabled = true;
-const default_other = vec2f(0.7, 0.8);
-const default_valid = true;
-@must_use fn unused_helper() -> f32 { return 0.0; }
-fn surface(p: Params) -> Material {
+#extends "material_surface.shaderlib"
+#block parameters
+<MaterialParameters> color: vec3f = (0.1, 0.2, 0.3);
+<MaterialParameters> pair: vec2f = (0.4, 0.5);
+<MaterialParameters> gain: f32 = 0.6;
+<MaterialParameters> key: u32 = 4275878552;
+<MaterialParameters> enabled: bool = true;
+<InstanceParameters> other: vec2f = (0.7, 0.8);
+<InstanceParameters> valid: bool = true;
+#endblock
+#block helpers
+@must_use fn unused_helper_{{ PREFIX }}() -> f32 { return 0.0; }
+#endblock
+#block surface
     var material: Material;
     material.base_color = vec4f(1.0);
     material.opacity_rgb = vec4f(1.0);
     material.flags = vec4u(0u, 1u, 0u, 0u);
     return material;
-}
-fn shade(material: Material, p: Params, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
+#endblock
+#block lighting
     if p.key != 0xfedcba98u || !p.enabled || !p.valid { return vec3f(0.0); }
     return p.color+vec3f(p.pair, p.gain)+vec3f(p.other, 0.0);
-}
-fn opacity(material: Material, p: Params, alpha: vec3f, uv: vec2f, position: vec3f, lod: f32) -> vec3f { return alpha; }
-fn grazing(p: Params) -> vec3f { return vec3f(0.0); }
+#endblock
+#block opacity
+    return alpha;
+#endblock
+#block grazing
+    return vec3f(0.0);
+#endblock
 ''')
 	renderer = MaterialRenderer([DrawInstance(MaterialMesh(sphere_vertices(), shader))],
 		target_format="rgba8unorm", sample_count=count)

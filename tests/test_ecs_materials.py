@@ -19,24 +19,22 @@ def renderer(meshes, **kwargs):
 	return MaterialRenderer(meshes=meshes, blue_noise=noise, target_format="rgba8unorm", **kwargs)
 
 
-def test_minimal_plain_shader_requires_no_default_material_fields():
+def test_minimal_jinja_shader_requires_no_default_material_fields():
 	shader = MaterialShader(interface=TRANSPARENCY_INTERFACE, transparent=True, source='''
-struct MaterialParameters { color: vec4f, }
-const default_color = vec4f(0.1, 0.3, 0.8, 0.6);
-fn surface(p: Params) -> Material {
+#extends "material_surface.shaderlib"
+#block parameters
+<MaterialParameters> color: vec4f = (0.1, 0.3, 0.8, 0.6);
+#endblock
+#block surface
     var m = Material();
     m.base_color = p.color;
     m.opacity_rgb = vec4f(1.0);
     m.flags = vec4u(0u, 1u, 0u, 0u);
     return m;
-}
-fn shade(material: Material, p: Params, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
+#endblock
+#block lighting
     return material.base_color.rgb;
-}
-fn opacity(material: Material, p: Params, alpha: vec3f, uv: vec2f, position: vec3f, lod: f32) -> vec3f {
-    return alpha;
-}
-fn grazing(p: Params) -> vec3f { return vec3f(0.0); }
+#endblock
 ''')
 	assert set(shader.parameters) == {"color"}
 	r = renderer([MaterialMesh(sphere_vertices(), shader)])

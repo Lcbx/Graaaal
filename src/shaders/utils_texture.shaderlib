@@ -1,0 +1,6 @@
+// Isotropic mip footprint from screen-space UV derivatives, in base texels.
+fn texture_lod_from_gradients(dx: vec2f, dy: vec2f, dimensions: vec2f) -> f32 {
+	let x = dx*dimensions;
+	let y = dy*dimensions;
+	return max(0.0, 0.5*log2(max(max(dot(x, x), dot(y, y)), 1e-8)));
+}

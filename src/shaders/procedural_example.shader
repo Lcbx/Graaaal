@@ -1,9 +1,9 @@
 #include "draw_common.shaderlib"
-#include "utils.shaderlib"
+#include "utils_transform.shaderlib"
 #include "instance_transform.shaderlib"
 
-@group(1) @binding(0) var<storage, read> instances: array<MeshInstance>;
-@group(1) @binding(1) var<storage, read> visible_instances: array<u32>;
+storage<1, 0, read> instances: array<MeshInstance>;
+storage<1, 1, read> visible_instances: array<u32>;
 
 @vertex
 fn vertex(@location(0) position: vec3f, @builtin(instance_index) instance: u32) -> @builtin(position) vec4f {

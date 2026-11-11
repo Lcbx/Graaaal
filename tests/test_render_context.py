@@ -9,17 +9,19 @@ from numpyecs import RenderContext as rc
 
 
 def test_binding_traversal_does_not_call_functions_named_like_struct_fields():
-    source = rc.ShaderSource('''
-        struct Surface { base_color: vec4f, }
-        @group(0) @binding(0) var image: texture_2d<f32>;
-        fn base_color() -> vec4f { return textureLoad(image, vec2i(0), 0); }
-        @compute @workgroup_size(1) fn main() {
-            var surface: Surface;
-            let color = surface.base_color;
-        }
-    ''')
-    assert source.used_bindings(("main",)) == {}
-    assert "image" in source.used_bindings(("base_color",))
+	loader = rc.Shader.__new__(rc.Shader)
+	code, declarations = loader._render_source('''
+	    <Surface> base_color: vec4f;
+	    {{ binding('image', 'texture_2d<f32>', 0, 0) }}
+	    fn base_color() -> vec4f { return textureLoad(image, vec2i(0), 0); }
+	    @compute @workgroup_size(1) fn main() {
+	        var surface: Surface;
+	        let color = surface.base_color;
+	    }
+	''', None, None, None, None)
+	source = rc.ShaderSource(code, declarations=declarations)
+	assert source.used_bindings(("main",)) == {}
+	assert "image" in source.used_bindings(("base_color",))
 
 
 @pytest.mark.parametrize("size", [(2560, 1369), (640, 480), (0, 0)])

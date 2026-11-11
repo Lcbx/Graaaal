@@ -1,9 +1,10 @@
+#set RECONSTRUCT_MODE = "pair" if PARAMS.get("filter_pairs", false) else "color"
 #include "stochastic_reconstruction.shaderlib"
 
 #if PARAMS.get("sample_count", 1) > 1
-@group(2) @binding(0) var filter_output: texture_storage_2d_array<rgba16float, write>;
+{{ binding('filter_output', 'texture_storage_2d_array<rgba16float, write>', 2, 0) }}
 #else
-@group(2) @binding(0) var filter_output: texture_storage_2d<rgba16float, write>;
+{{ binding('filter_output', 'texture_storage_2d<rgba16float, write>', 2, 0) }}
 #endif
 
 var<workgroup> needs_cache: atomic<u32>;

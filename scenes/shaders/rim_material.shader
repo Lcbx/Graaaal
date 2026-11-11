@@ -2,8 +2,8 @@
 
 #block parameters
 {{ super() }}
-{{ parameter("rim_strength", "f32", 0.8) }}
-{{ parameter("rim_color", "vec3f", (0.3, 0.7, 1)) }}
+<MaterialParameters> rim_strength: f32 = 0.8;
+<MaterialParameters> rim_color: vec3f = (0.3, 0.7, 1);
 #endblock
 
 #block lighting

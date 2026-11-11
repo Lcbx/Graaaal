@@ -35,19 +35,19 @@
 <CameraUniforms> padding: u32;
 <CameraUniforms> camera_position: vec4f;
 
-@group(0) @binding(0) var<storage, read> instances: array<MeshInstance>;
-@group(0) @binding(1) var<storage, read_write> prepass_draw_cmd: array<DrawIndexedIndirect>;
-@group(0) @binding(2) var<storage, read_write> frustum_candidates: array<FrustumCandidate>;
-@group(0) @binding(3) var<storage, read> mesh_metadata: array<MeshMetadata>;
-@group(0) @binding(4) var<storage, read_write> batches: array<CullParams>;
-@group(0) @binding(5) var<storage, read> workgroups: array<CullWorkgroup>;
-@group(0) @binding(6) var<storage, read_write> prepass_visible_instances: array<u32>;
-@group(0) @binding(7) var<storage, read> lod_distances: array<f32>;
+storage<0, 0, read> instances: array<MeshInstance>;
+storage<0, 1, read_write> prepass_draw_cmd: array<DrawIndexedIndirect>;
+storage<0, 2, read_write> frustum_candidates: array<FrustumCandidate>;
+storage<0, 3, read> mesh_metadata: array<MeshMetadata>;
+storage<0, 4, read_write> batches: array<CullParams>;
+storage<0, 5, read> workgroups: array<CullWorkgroup>;
+storage<0, 6, read_write> prepass_visible_instances: array<u32>;
+storage<0, 7, read> lod_distances: array<f32>;
 
-@group(1) @binding(0) var<uniform> camera_params: CameraUniforms;
-@group(1) @binding(1) var hzb_texture: texture_2d<f32>;
-@group(1) @binding(2) var<storage, read_write> main_draw_cmd: array<DrawIndexedIndirect>;
-@group(1) @binding(3) var<storage, read_write> main_visible_instances: array<u32>;
+uniform<1, 0> camera_params: CameraUniforms;
+{{ binding('hzb_texture', 'texture_2d<f32>', 1, 1) }}
+storage<1, 2, read_write> main_draw_cmd: array<DrawIndexedIndirect>;
+storage<1, 3, read_write> main_visible_instances: array<u32>;
 
 #include "utils.shaderlib"
 

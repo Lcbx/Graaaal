@@ -41,11 +41,14 @@ def measure(*, mode="uv_blue_lerp", screen_size=128, oversample=8, pixels=1.0, s
 	shader = Shader(source='''
         #include "utils.shaderlib"
         #include "stochastic_noise.shaderlib"
-        struct Settings { shape: vec4u, derivatives: vec4f, values: vec4f, anchor: vec4f, }
-        @group(0) @binding(0) var<uniform> settings: Settings;
-        @group(0) @binding(1) var<storage, read_write> result: array<f32>;
-        @group(0) @binding(2) var noise: texture_2d<f32>;
-        @group(0) @binding(3) var hierarchy: texture_2d<f32>;
+        <Settings> shape: vec4u;
+        <Settings> derivatives: vec4f;
+        <Settings> values: vec4f;
+        <Settings> anchor: vec4f;
+        uniform<0, 0> settings: Settings;
+        storage<0, 1, read_write> result: array<f32>;
+        {{ binding('noise', 'texture_2d<f32>', 0, 2) }}
+        {{ binding('hierarchy', 'texture_2d<f32>', 0, 3) }}
         @compute @workgroup_size(8, 8)
         fn evaluate(@builtin(global_invocation_id) id: vec3u) {
             if any(id.xy >= settings.shape.xy) { return; }

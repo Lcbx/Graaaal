@@ -8,13 +8,10 @@
 
 // Kept to exercise struct/type parsing without requiring creation of
 // a CPU uniform dtype for padded vec3 arrays yet.
-struct ArrayParsingTest {
-	test: array<vec3f, 5>,
-	test2: array<array<vec3f, 5>, 3>,
-};
+<ArrayParsingTest> test: array<vec3f, 5>;
+<ArrayParsingTest> test2: array<array<vec3f, 5>, 3>;
 
-@group(0) @binding(0)
-var<uniform> uniforms: Uniforms;
+uniform<0, 0> uniforms: Uniforms;
 
 #if FEATURES.BIAS
 
@@ -24,10 +21,8 @@ const bias: f32 = {{ PARAMS.bias | default(0.0001) }};
 
 #endif
 
-struct VertexOutput {
-	@builtin(position) position: vec4f,
-	@location(0) fragColor: vec4f,
-};
+<VertexOutput> @builtin(position) position: vec4f;
+<VertexOutput> @location(0) fragColor: vec4f;
 
 @vertex
 fn vertex(input: VertexInput) -> VertexOutput {

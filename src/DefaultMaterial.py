@@ -32,9 +32,6 @@ class DefaultMaterialShader(MaterialShader):
 			source=source, filepath=filepath,
 			default_material={} if default_material is None else default_material)
 
-	def source_template(self):
-		return "default_material.shader"
-
 	def validate_resolved(self, values):
 		if not 0 <= np.float32(values["grazing_start"]) < np.float32(values["grazing_end"]) <= 90:
 			raise ValueError("Grazing angles must satisfy 0 <= start < end <= 90")

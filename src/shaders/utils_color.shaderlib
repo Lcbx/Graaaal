@@ -1,0 +1,9 @@
+fn linear_to_srgb(color: vec3f) -> vec3f {
+	let positive = max(color, vec3f(0.0));
+	return select(1.055*pow(positive, vec3f(1.0/2.4))-0.055,
+		positive*12.92, positive <= vec3f(0.0031308));
+}
+
+fn srgb_to_linear(color: vec3f) -> vec3f {
+	return select(pow((color+0.055)/1.055, vec3f(2.4)), color/12.92, color <= vec3f(0.04045));
+}

@@ -11,10 +11,10 @@ const WINNER_FORCED_BIT: u32 = 0x00010000u;
 <MaterialVertex> position: vec3f;
 <MaterialVertex> normal: vec3f;
 <MaterialVertex> uv: vec2f;
-@group(2) @binding(0) var<storage, read> metadata: array<vec4u>;
-@group(2) @binding(1) var<storage, read> materials: array<Material>;
-@group(2) @binding(2) var base_textures: texture_2d_array<f32>;
-@group(2) @binding(3) var material_sampler: sampler;
+storage<2, 0, read> metadata: array<vec4u>;
+storage<2, 1, read> materials: array<Material>;
+{{ binding('base_textures', 'texture_2d_array<f32>', 2, 2) }}
+{{ binding('material_sampler', 'sampler', 2, 3) }}
 
 fn base_color(material: Material, uv: vec2f, lod: f32) -> vec4f {
 	return material.base_color * textureSampleLevel(base_textures, material_sampler, uv, i32(material.flags.x), lod);
@@ -27,6 +27,9 @@ fn opacity(material: Material, uv: vec2f, lod: f32) -> vec3f {
 #include "material_lighting.shaderlib"
 
 #if PARAMS.get("material_library") is not none
+storage<2, 6, read> material_parameters: Materials;
+storage<2, 7, read> instance_parameters: InstanceOverrides;
+storage<2, 8, read> material_headers: MaterialHeaders;
 {{ PARAMS.material_library }}
 #elif PARAMS.get("material_source") is not none
 {{ PARAMS.material_source }}

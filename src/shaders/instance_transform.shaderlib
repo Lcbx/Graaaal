@@ -1,4 +1,4 @@
-// Include draw_common.shaderlib and utils.shaderlib before these helpers.
+// Include draw_common.shaderlib and utils_transform.shaderlib before these helpers.
 // The default storage ABI remains usable independently of transform policy.
 fn instance_position(inst: MeshInstance, position: vec3f) -> vec3f {
     return inst.iPosition + quat_rotate(unpack_rotation(inst.iRotation), position * unpack_scale(inst.iScale));

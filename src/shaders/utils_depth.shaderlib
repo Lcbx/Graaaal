@@ -1,0 +1,6 @@
+// Standard forward perspective depth: WebGPU [0,1], near/far in world units.
+// Returns positive view-space distance. Orthographic/reversed-Z need a
+// different conversion; no camera uniforms are assumed by this helper.
+fn linear_depth(depth: f32, near: f32, far: f32) -> f32 {
+	return near * far / max(far - depth * (far-near), 1e-6);
+}

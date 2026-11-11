@@ -14,11 +14,9 @@ def run_scene():
 	msaa_texture = None
 	try:
 		shader = Shader(source="""
-			struct Frame {
-				angle: f32,
-				aspect: f32,
-			}
-			@group(0) @binding(0) var<uniform> frame: Frame;
+			<Frame> angle: f32;
+			<Frame> aspect: f32;
+			uniform<0, 0> frame: Frame;
 
 			@vertex
 			fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {

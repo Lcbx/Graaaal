@@ -1,0 +1,11 @@
+// Analytic pixel coverage for an alpha-tested texture. Callers evaluate the
+// alpha derivative before divergent branches/discards in every raster pass.
+fn sharpen_alpha(alpha: f32, cutoff: f32, width: f32) -> f32 {
+	return clamp((alpha-cutoff)/max(width, 1e-5)+0.5, 0.0, 1.0);
+}
+
+// Symmetric for front/back faces; interpolate in angle, not in cosine space.
+fn grazing_fade_factor(cosine: f32, start_degrees: f32, end_degrees: f32) -> f32 {
+	let angle = degrees(acos(clamp(abs(cosine), 0.0, 1.0)));
+	return 1.0-smoothstep(start_degrees, end_degrees, angle);
+}

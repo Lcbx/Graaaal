@@ -11,8 +11,8 @@
 <Frame> noise_footprint_balance: f32;
 // Anchored blue: coarse target in pixels, fine shift subdivisions, reserved.
 <Frame> noise_anchor: vec4f;
-@group(0) @binding(0) var<uniform> frame: Frame;
+uniform<0, 0> frame: Frame;
 
 // Scene lighting changes independently of camera motion and frame time.
 <Lighting> light_dir: vec4f;
-@group(0) @binding(1) var<uniform> lighting: Lighting;
+uniform<0, 1> lighting: Lighting;

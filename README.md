@@ -44,7 +44,7 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | --- | --- |
 | `RenderContext` | Singleton `RenderContext.init_window/setup_graphics_backend`, `window_loop`, `screen`, `commands/submit`, `subscribe_event`, `cleanup` manage the backend and frames; `enable_statistics/inspect_resources` expose counters. |
 | `RenderContext` resources | `GpuBuffer.write/write_changed/upload_range/reserve/set_count`, `Texture.view/color_attachment/depth_attachment`, `Sampler`, and `Mesh.release` manage GPU data. |
-| `RenderContext` recording/shaders | `CommandContext.render_pass/compute_pass/finish`, `RenderPass.draw_mesh`, `ComputePass.dispatch`, `Shader.uniform_buffer/bind_group`, `RenderPipeline`, `ComputePipeline`, `BindGroupLayout`, and `PipelineLayout` compose work. `ShaderSource` reflects WGSL; `ShaderInterface` supplies explicit metadata. |
+| `RenderContext` recording/shaders | `CommandContext.render_pass/compute_pass/finish`, `RenderPass.draw_mesh`, `ComputePass.dispatch`, `Shader.uniform_buffer/bind_group`, `RenderPipeline`, `ComputePipeline`, `BindGroupLayout`, and `PipelineLayout` compose work. Jinja `field()`/`binding()` declarations provide shader metadata; `ShaderInterface` supplies explicit metadata. |
 | `MeshArena` | `MeshArena.allocate/compact/inspect/close` pools mesh storage; `MeshAllocation.release` returns a range for reuse. |
 | `DrawBatches` | `DrawBatches.register_mesh/register_lod_group/register_shader`, `sync`, `write_instances`, `create_visibility`, `draw` manage shared draws. `RenderShader` maps names to `ShaderPass`; `Visibility.all_visible/write` prepares visibility; `FrustumCuller.record` and `HiZCuller.record` record GPU culling. |
 | `EcsDrawing` | `EcsDrawAdapter.sync` extracts ECS mesh references; `mesh_field` returns attributes in draw order. |
@@ -193,7 +193,31 @@ accept a texture, texture view, or `RenderContext.screen()` attachment as
 `resolve_target`. Attachment formats/counts and sample compatibility are
 validated when preparing a pipeline.
 
-`ShaderInterface` replaces Python reflection with explicit bindings, entries,
+Shader templates accept complete-line WGSL-like declarations for struct fields and
+uniform/storage bindings. These work in both `Shader(source=...)` and
+`Shader(filepath=...)`, including Jinja `#include`, `#if` and macros:
+
+```wgsl
+<Frame> view_proj: mat4x4f;
+uniform<0, 0, read> frame: Frame;
+<VertexInput> position: vec3f;
+
+@vertex fn vertex(input: VertexInput) -> @builtin(position) vec4f {
+    return frame.view_proj * vec4f(input.position, 1);
+}
+```
+
+`<Struct> @location(2) field: type;` also accepts `@builtin`, `@interpolate`,
+`@align` and `@size`. An optional `= value` records a Jinja2-expression
+default; regular uniform buffers are still initialized to zero. Omit `read`
+for uniforms if preferred; storage bindings accept `read` or `read_write`.
+`Shader.uniform_buffer()` uses the declared struct to derive NumPy layouts.
+For textures, samplers or dynamic declarations, the existing Jinja2
+`binding(name, type, group, binding, storage=..., access=...)` and
+`field(struct, name, type, ...)` callbacks remain available.
+Use `ShaderInterface` when supplying your own layouts.
+
+`ShaderInterface` provides explicit bindings, entries,
 vertex inputs, and `UniformInfo` NumPy offsets/strides. This supports padded
 matrices without treating a packed matrix as WGSL-aligned. Automatic layouts
 traverse entry-point function dependencies. Explicit interfaces' `active_bindings`

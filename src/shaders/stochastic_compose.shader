@@ -1,10 +1,14 @@
+#set RECONSTRUCT_MODE = "compose"
 #include "stochastic_reconstruction.shaderlib"
+#if not PARAMS.srgb_surface
+#include "utils_color.shaderlib"
+#endif
 
 #if PARAMS.get("compute_reconstruction", false)
 #if PARAMS.get("sample_count", 1) > 1
-@group(1) @binding(11) var reconstructed: texture_2d_array<f32>;
+{{ binding('reconstructed', 'texture_2d_array<f32>', 1, 11) }}
 #else
-@group(1) @binding(11) var reconstructed: texture_2d<f32>;
+{{ binding('reconstructed', 'texture_2d<f32>', 1, 11) }}
 #endif
 #endif
 

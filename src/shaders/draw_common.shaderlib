@@ -10,9 +10,9 @@
 <Uniforms> proj: mat4x4f;
 <Uniforms> light_dir: vec4f;
 
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+uniform<0, 0> uniforms: Uniforms;
 
 // Group 1: instance data and the visibility list for the selected pass.
-@group(1) @binding(0) var<storage, read> instances: array<MeshInstance>;
-@group(1) @binding(1) var<storage, read> visible_instances: array<u32>;
+storage<1, 0, read> instances: array<MeshInstance>;
+storage<1, 1, read> visible_instances: array<u32>;
 #endmacro

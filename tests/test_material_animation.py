@@ -16,18 +16,23 @@ from scenes.material_example import make_world
 
 
 ANIMATED_SOURCE = '''
-struct FrameParameters { time: f32, }
-fn vertex(p: Params, position: vec3f, normal: vec3f, uv: vec2f) -> MaterialVertex {
-    var v = default_vertex(p, position, normal, uv);
+#extends "default_material.shader"
+#block parameters
+{{ super() }}
+<FrameParameters> time: f32 = 0.0;
+#endblock
+#block vertex
+    var v = MaterialVertex(position, normal, uv);
     v.position.x += p.time*(0.4+0.3*position.y*position.y);
     v.normal = vec3f(position.y*position.y+0.2*p.time, 0.0, 1.0);
     v.uv += vec2f(0.1*p.time, 0.0);
     return v;
-}
-fn shade(material: Material, p: Params, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
+#endblock
+#block lighting
     return vec3f(0.3+position.x*0.2, 0.2+uv.x*0.25, 0.2+normal.x*0.25);
-}
+#endblock
 '''
+
 
 
 def test_time_is_opt_in_and_does_not_occupy_material_or_instance_slots():
@@ -43,9 +48,11 @@ def test_time_is_opt_in_and_does_not_occupy_material_or_instance_slots():
 	for binding in (MaterialBinding(animated, {"time": 1}), MaterialBinding(animated, overrides={"time": 1})):
 		with pytest.raises(ValueError, match="renderer-owned"):
 			library.pack([binding])
-	for declaration in ("struct FrameParameters { time: vec2f, }", "struct FrameParameters { unknown: f32, }"):
+	for declaration in ('<FrameParameters> time: vec2f = (0, 0);',
+		'<FrameParameters> unknown: f32 = 0.0;'):
 		with pytest.raises(ValueError, match="Unsupported frame"):
-			DefaultMaterialShader(source=declaration)
+			DefaultMaterialShader(source='#extends "default_material.shader"\n#block parameters\n{{ super() }}\n'+declaration+'\n#endblock')
+
 
 
 @pytest.mark.parametrize("count", [1, 4])

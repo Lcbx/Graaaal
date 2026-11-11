@@ -2,5 +2,5 @@
 
 #block parameters
 {{ super() }}
-{{ parameter("grazing_fade", "bool", false, "instance") }}
+<InstanceParameters> grazing_fade: bool = false;
 #endblock

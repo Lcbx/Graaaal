@@ -1,0 +1,21 @@
+fn unpack_rotation(packed: vec2u) -> vec4f {
+	return vec4f( unpack2x16snorm(packed.x), unpack2x16snorm(packed.y) );
+}
+
+fn unpack_scale(packed: vec2u) -> vec3f {
+	return vec3f( unpack2x16float(packed.x).xy, unpack2x16float(packed.y).x );
+}
+
+fn quat_rotate(q: vec4f, v: vec3f) -> vec3f {
+	let t = cross(q.xyz, v) * 2.0;
+	return v + q.w * t + cross(q.xyz, t);
+}
+
+fn world_position(
+	position: vec3f,
+	iPosition: vec3f,
+	iRotation: vec4f,
+	iScale: vec3f,
+) -> vec3f {
+	return iPosition + quat_rotate(iRotation, position * iScale);
+}

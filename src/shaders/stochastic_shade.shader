@@ -1,56 +1,56 @@
 #include "stochastic_common.shaderlib"
 #include "draw_common.shaderlib"
-#include "utils.shaderlib"
+#include "utils_transform.shaderlib"
 #include "instance_transform.shaderlib"
 
 <ShadingVertex> position: vec4f;
 <ShadingVertex> normal: vec4f;
 <ShadingVertex> uv: vec4f;
-@group(2) @binding(4) var<storage, read> vertices: array<ShadingVertex>;
-@group(2) @binding(5) var<storage, read> shading_instances: array<MeshInstance>;
+storage<2, 4, read> vertices: array<ShadingVertex>;
+storage<2, 5, read> shading_instances: array<MeshInstance>;
 #if PARAMS.get("sample_count", 1) > 1
-@group(1) @binding(0) var winners: texture_multisampled_2d<u32>;
-@group(1) @binding(1) var winner_color: texture_storage_2d_array<rgba16float, write>;
-@group(1) @binding(2) var winners_extra: texture_multisampled_2d<u32>;
+{{ binding('winners', 'texture_multisampled_2d<u32>', 1, 0) }}
+{{ binding('winner_color', 'texture_storage_2d_array<rgba16float, write>', 1, 1) }}
+{{ binding('winners_extra', 'texture_multisampled_2d<u32>', 1, 2) }}
 #else
-@group(1) @binding(0) var winners: texture_2d<u32>;
-@group(1) @binding(1) var winner_color: texture_storage_2d<rgba16float, write>;
+{{ binding('winners', 'texture_2d<u32>', 1, 0) }}
+{{ binding('winner_color', 'texture_storage_2d<rgba16float, write>', 1, 1) }}
 #endif
 
 #if PARAMS.get("force_single_contributor", false) or PARAMS.get("winner_mix", "average") == "fill"
 #if PARAMS.get("sample_count", 1) > 1
-@group(1) @binding(6) var shade_transmittance: texture_multisampled_2d<f32>;
+{{ binding('shade_transmittance', 'texture_multisampled_2d<f32>', 1, 6) }}
 #else
-@group(1) @binding(6) var shade_transmittance: texture_2d<f32>;
+{{ binding('shade_transmittance', 'texture_2d<f32>', 1, 6) }}
 #endif
 #endif
 #if PARAMS.get("force_single_contributor", false)
 #if PARAMS.get("sample_count", 1) > 1
-@group(1) @binding(7) var contributor_count: texture_multisampled_2d<f32>;
+{{ binding('contributor_count', 'texture_multisampled_2d<f32>', 1, 7) }}
 #else
-@group(1) @binding(7) var contributor_count: texture_2d<f32>;
+{{ binding('contributor_count', 'texture_2d<f32>', 1, 7) }}
 #endif
 #endif
 
 #if PARAMS.get("winner_mix", "average") == "fill"
 #if PARAMS.get("sample_count", 1) > 1
-@group(1) @binding(8) var winner_source: texture_storage_2d_array<r32uint, write>;
+{{ binding('winner_source', 'texture_storage_2d_array<r32uint, write>', 1, 8) }}
 #else
-@group(1) @binding(8) var winner_source: texture_storage_2d<r32uint, write>;
+{{ binding('winner_source', 'texture_storage_2d<r32uint, write>', 1, 8) }}
 #endif
 #endif
 
 #if PARAMS.get("winner_count", 1) > 1 or PARAMS.get("winner_mix", "average") == "fill"
 <WinnerSettings> info: vec4u;
-@group(1) @binding(5) var<uniform> winner_settings: WinnerSettings;
+uniform<1, 5> winner_settings: WinnerSettings;
 #endif
 #if PARAMS.get("winner_count", 1) == 2 and PARAMS.get("winner_mix", "average") == "average"
 #if PARAMS.get("sample_count", 1) > 1
-@group(1) @binding(3) var first_color: texture_2d_array<f32>;
-@group(1) @binding(4) var winner_guide: texture_multisampled_2d<f32>;
+{{ binding('first_color', 'texture_2d_array<f32>', 1, 3) }}
+{{ binding('winner_guide', 'texture_multisampled_2d<f32>', 1, 4) }}
 #else
-@group(1) @binding(3) var first_color: texture_2d<f32>;
-@group(1) @binding(4) var winner_guide: texture_2d<f32>;
+{{ binding('first_color', 'texture_2d<f32>', 1, 3) }}
+{{ binding('winner_guide', 'texture_2d<f32>', 1, 4) }}
 #endif
 #endif
 

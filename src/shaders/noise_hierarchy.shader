@@ -1,6 +1,6 @@
-#include "utils.shaderlib"
-@group(0) @binding(0) var source: texture_2d<f32>;
-@group(0) @binding(1) var destination: texture_storage_2d<r32float, write>;
+#include "utils_hash.shaderlib"
+{{ binding('source', 'texture_2d<f32>', 0, 0) }}
+{{ binding('destination', 'texture_storage_2d<r32float, write>', 0, 1) }}
 
 @compute @workgroup_size(8, 8)
 fn average_children(@builtin(global_invocation_id) id: vec3u) {

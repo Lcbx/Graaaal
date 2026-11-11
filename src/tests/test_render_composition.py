@@ -18,7 +18,7 @@ def read(texture, dtype, channels):
 def test_draw_mesh_uses_gpu_generated_instances_with_offset():
     rc.RenderContext.setup_graphics_backend(True)
     shader = rc.Shader(source='''
-        @group(0) @binding(0) var<storage, read_write> positions: array<vec2f>;
+        storage<0, 0, read_write> positions: array<vec2f>;
         @compute @workgroup_size(1) fn generate() {
             positions[0] = vec2f(-0.5, 0.0);
             positions[1] = vec2f(0.5, 0.0);
@@ -62,8 +62,8 @@ def test_two_view_visibility_and_named_passes_share_instances(monkeypatch):
         #include "draw_common.shaderlib"
         #include "utils.shaderlib"
         #include "instance_transform.shaderlib"
-        @group(1) @binding(0) var<storage, read> instances: array<MeshInstance>;
-        @group(1) @binding(1) var<storage, read> visible_instances: array<u32>;
+        storage<1, 0, read> instances: array<MeshInstance>;
+        storage<1, 1, read> visible_instances: array<u32>;
         @vertex fn vertex(@location(0) position: vec3f, @builtin(instance_index) index: u32) -> @builtin(position) vec4f {
             return vec4f(instance_position(instances[visible_instances[index]], position), 1.0);
         }
@@ -111,8 +111,8 @@ def test_explicit_uniform_layout_bypasses_reflector_and_gpu_only_buffer():
     rc.RenderContext.setup_graphics_backend(True)
     source = '''
         struct Frame { matrix: mat3x3f, }
-        @group(0) @binding(0) var<uniform> frame: Frame;
-        @group(0) @binding(1) var<storage, read_write> result: array<f32>;
+        uniform<0, 0> frame: Frame;
+        storage<0, 1, read_write> result: array<f32>;
         @compute @workgroup_size(1) fn run() { result[0] = frame.matrix[1].y; }
     '''
     dtype = np.dtype({"names": ["column0", "column1", "column2"],
@@ -141,8 +141,10 @@ def test_explicit_uniform_layout_bypasses_reflector_and_gpu_only_buffer():
 def test_msaa_resolve_normalized_attributes_and_per_attachment_state(resolve_target_kind):
     rc.RenderContext.setup_graphics_backend(True)
     shader = rc.Shader(source='''
-        struct VertexOutput { @builtin(position) position: vec4f, @location(0) color: vec4f, }
-        struct FragmentOutput { @location(0) first: vec4f, @location(1) second: vec4f, }
+        <VertexOutput> @builtin(position) position: vec4f;
+        <VertexOutput> @location(0) color: vec4f;
+        <FragmentOutput> @location(0) first: vec4f;
+        <FragmentOutput> @location(1) second: vec4f;
         @vertex fn vertex(@location(0) position: vec2f, @location(1) color: vec4f) -> VertexOutput {
             return VertexOutput(vec4f(position, 0.0, 1.0), color);
         }

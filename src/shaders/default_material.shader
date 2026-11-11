@@ -2,29 +2,31 @@
 
 #block parameters
 {{ super() }}
-{{ parameter("base_color", "vec4f", (1, 1, 1, 1)) }}
-{{ parameter("emission", "vec3f", (0, 0, 0)) }}
-{{ parameter("roughness", "f32", 0.7) }}
-{{ parameter("metallic", "f32", 0) }}
-{{ parameter("opacity_rgb", "vec3f", (1, 1, 1)) }}
-{{ parameter("alpha_cutoff", "f32", 0.5) }}
-{{ parameter("alpha_mode", "u32", 2 if TRANSPARENT else 0) }}
-{{ parameter("texture_layer", "u32", 0) }}
-{{ parameter("double_sided", "bool", true) }}
-{{ parameter("grazing_fade", "bool", false) }}
-{{ parameter("grazing_start", "f32", 70) }}
-{{ parameter("grazing_end", "f32", 85) }}
-{{ parameter("ambient", "f32", 0.25) }}
-{{ parameter("diffuse", "f32", 0.75) }}
-{{ parameter("specular", "f32", 1) }}
-{{ parameter("tint", "vec4f", (1, 1, 1, 1), "instance") }}
-{{ parameter("opacity_multiplier", "f32", 1, "instance") }}
+<MaterialParameters> base_color: vec4f = (1, 1, 1, 1);
+<MaterialParameters> emission: vec3f = (0, 0, 0);
+<MaterialParameters> roughness: f32 = 0.7;
+<MaterialParameters> metallic: f32 = 0;
+<MaterialParameters> opacity_rgb: vec3f = (1, 1, 1);
+<MaterialParameters> alpha_cutoff: f32 = 0.5;
+<MaterialParameters> alpha_mode: u32 = 2 if TRANSPARENT else 0;
+<MaterialParameters> texture_layer: u32 = 0;
+<MaterialParameters> double_sided: bool = true;
+<MaterialParameters> grazing_fade: bool = false;
+<MaterialParameters> grazing_start: f32 = 70;
+<MaterialParameters> grazing_end: f32 = 85;
+<MaterialParameters> ambient: f32 = 0.25;
+<MaterialParameters> diffuse: f32 = 0.75;
+<MaterialParameters> specular: f32 = 1;
+<InstanceParameters> tint: vec4f = (1, 1, 1, 1);
+<InstanceParameters> opacity_multiplier: f32 = 1;
 #endblock
 
 #block helpers
+#if "library_shade" in HOOKS
 fn default_lighting_{{PREFIX}}(material: Material, p: Params{{PREFIX}}, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
 	return evaluate_lighting(material, uv, position, normal, lod, p.ambient, p.diffuse, p.specular);
 }
+#endif
 #endblock
 
 #block surface

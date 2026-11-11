@@ -23,6 +23,7 @@ from wgpu.utils.glfw_present_info import get_glfw_present_info  # type: ignore[i
 
 from .utils import higher_pow2
 from .ShaderSyntax import ShaderSyntax, SourceSpan, strip_comments
+from .ShaderShorthand import ShaderShorthand, MISSING
 
 
 Color = tuple[float, float, float, float]
@@ -1400,6 +1401,82 @@ def _wgsl_vector_type(type_name: str) -> tuple[np.dtype, int] | None:
 	return _SCALAR_TYPES[match.group(2)][0], int(match.group(1))
 
 
+class ShaderDeclarations:
+	"""Jinja declaration callbacks; emit WGSL and collect Python layout metadata."""
+	def __init__(self):
+		self._fields: dict[str, list[ShaderField]] = {}
+		self.bindings: dict[str, BindingInfo] = {}
+		self.defaults: dict[str, dict[str, object]] = {}
+
+	@staticmethod
+	def _identifier(name):
+		if not isinstance(name, str) or not name.isascii() or not name.isidentifier():
+			raise ValueError(f"Invalid WGSL identifier {name!r}")
+		return name
+
+	def field(self, struct, name, type_name, *, location=None, builtin=None, interpolate=None, align=None, size=None, default=MISSING):
+		struct, name = self._identifier(struct), self._identifier(name)
+		if not isinstance(type_name, str) or not type_name.strip():
+			raise ValueError("Field requires a WGSL type")
+		attributes = []
+		for key, value in (("location", location), ("builtin", builtin), ("interpolate", interpolate),
+			("align", align), ("size", size)):
+			if value is not None: attributes.append(ShaderAttribute(key, str(value)))
+		fields = self._fields.setdefault(struct, [])
+		declaration = ShaderField(name, type_name.strip(), tuple(attributes))
+		previous = next((field for field in fields if field.name == name), None)
+		if previous is not None:
+			if previous != declaration: raise ValueError(f"Conflicting WGSL field {struct}.{name}")
+			if default is not MISSING and name in self.defaults.get(struct, {}) and self.defaults[struct][name] != default:
+				raise ValueError(f"Conflicting default for {struct}.{name}")
+		else:
+			fields.append(declaration)
+		if default is not MISSING: self.defaults.setdefault(struct, {})[name] = default
+		return ""
+
+	def binding(self, name, type_name, group, binding, *, storage=None, access=None):
+		name = self._identifier(name)
+		if name in self.bindings:
+			raise ValueError(f"Duplicate WGSL binding {name}")
+		if not isinstance(type_name, str) or not type_name.strip():
+			raise ValueError("Binding requires a WGSL type")
+		if storage is None and access is not None:
+			raise ValueError("Binding access requires a storage address space")
+		group, binding = int(group), int(binding)
+		if group < 0 or binding < 0 or any((info.group, info.binding) == (group, binding) for info in self.bindings.values()):
+			raise ValueError(f"Duplicate or invalid binding slot ({group}, {binding})")
+		self.bindings[name] = BindingInfo(name, group, binding, storage, access, type_name.strip())
+		space = f"<{storage}{', '+access if access else ''}>" if storage else ""
+		return f"@group({group}) @binding({binding}) var{space} {name}: {type_name};"
+
+	@property
+	def structs(self):
+		result = {}
+		for name, fields in self._fields.items():
+			resolved, next_location = [], 0
+			for field in fields:
+				attrs = list(field.attributes)
+				loc = field.attribute("location")
+				if loc is not None: next_location = loc.int_value()+1
+				elif ("Input" in name or "Output" in name) and field.attribute("builtin") is None:
+					attrs.insert(0, ShaderAttribute("location", str(next_location)))
+					next_location += 1
+				resolved.append(ShaderField(field.name, field.type_name, tuple(attrs)))
+			result[name] = ShaderStruct(name, tuple(resolved))
+		return result
+
+	def definitions(self):
+		parts = []
+		for name, struct in self.structs.items():
+			lines = [f"struct {name} {{"]
+			for field in struct.fields:
+				attrs = " ".join(f"@{a.name}({a.value})" for a in field.attributes)
+				lines.append("\t"+(attrs+" " if attrs else "")+f"{field.name}: {field.type_name},")
+			lines.append("};")
+			parts.append("\n".join(lines))
+		return "\n\n".join(parts)
+
+
 class ShaderSource:
 	_ATTRIBUTE: ClassVar[str] = r"@\w+(?:\s*\([^)]*\))?"
 	_ATTRIBUTES: ClassVar[str] = rf"(?:{_ATTRIBUTE}\s*)*"
@@ -1407,25 +1484,6 @@ class ShaderSource:
 
 	_attribute_pattern: ClassVar[re.Pattern[str]] = re.compile(
 		r"@(?P<name>\w+)(?:\s*\(\s*(?P<value>[^)]*?)\s*\))?"
-	)
-
-	_struct_pattern: ClassVar[re.Pattern[str]] = re.compile(
-		r"\bstruct\s+(?P<name>\w+)\s*\{(?P<body>.*?)\}\s*;?",
-		re.S,
-	)
-
-	_field_pattern: ClassVar[re.Pattern[str]] = re.compile(
-		rf"(?P<attributes>{_ATTRIBUTES})(?P<name>\w+)\s*:\s*"
-		rf"(?P<type>.+?)"
-		rf"(?=,\s*(?:{_ATTRIBUTE}\s*)*\w+\s*:|,\s*$|\s*$)",
-		re.S,
-	)
-
-	_binding_pattern: ClassVar[re.Pattern[str]] = re.compile(
-		rf"(?P<attributes>{_ATTRIBUTES})"
-		r"var(?:\s*<\s*(?P<storage>[^>]+?)\s*>)?\s+"
-		r"(?P<name>\w+)\s*:\s*(?P<type>[^;]+?)\s*;",
-		re.S,
 	)
 
 	_entry_pattern: ClassVar[re.Pattern[str]] = re.compile(
@@ -1443,25 +1501,15 @@ class ShaderSource:
 		re.S,
 	)
 
-	_storage_pattern: ClassVar[re.Pattern[str]] = re.compile(
-		r"^\s*(?P<storage>\w+)(?:\s*,\s*(?P<access>\w+))?\s*$"
-	)
 
-	_dsl_pattern: ClassVar[re.Pattern[str]] = re.compile(
-		rf"^[ \t]*<(?P<struct>\w+)>\s*(?P<attributes>{_ATTRIBUTES})"
-		r"(?P<name>\w+)\s*:\s*(?P<type>[^;]+);\s*(?:\r?\n)?",
-		re.S | re.M
-	)
+	def __init__(self, source: str, *, declarations: ShaderDeclarations | None = None):
 
-
-	def __init__(self, source: str):
-
-		# Reflect the expanded text so every recorded span addresses .source,
-		# including fields introduced through the compact struct declaration DSL.
-		code = self._process_dsl(_strip_wgsl_comments(source))
+		# Jinja callbacks supply struct/binding metadata; only function entry points are parsed.
+		code = _strip_wgsl_comments(source)
 		self.source = code
-		self.structs  = self._parse_structs(code)
-		self.bindings = self._parse_bindings(code)
+		self.structs = {} if declarations is None else declarations.structs
+		self.defaults = {} if declarations is None else {name: dict(fields) for name, fields in declarations.defaults.items()}
+		self.bindings = {} if declarations is None else dict(declarations.bindings)
 		# Material libraries also reflect ordinary functions. Pipeline entry points
 		# remain restricted to functions carrying a vertex/fragment/compute stage.
 		self.functions = self._parse_functions(code)
@@ -1471,21 +1519,8 @@ class ShaderSource:
 
 	def _source_syntax(self):
 		if self._syntax is None:
-			self._syntax = ShaderSyntax(self.source, self.functions, self.structs)
+			self._syntax = ShaderSyntax(self.source, self.functions)
 		return self._syntax
-
-	@property
-	def declarations(self):
-		"""Module declarations and initializers, with spans in the expanded source."""
-		return self._source_syntax().declarations
-
-	def rename_symbols(self, names: dict[str, str]) -> str:
-		"""Return source with module/free names renamed, preserving lexical scope.
-
-		Locals which would capture a generated name receive a fresh name. Struct
-		members, attributes and comment text are not treated as module references.
-		"""
-		return self._source_syntax().rename_symbols(names)
 
 	def used_bindings(self, entries):
 		"""Conservative function-call traversal for automatic pipeline layouts.
@@ -1577,52 +1612,6 @@ class ShaderSource:
 
 		return entries
 
-	def _parse_structs(self, source: str) -> dict[str, ShaderStruct]:
-		structs = {}
-		for struct_match in self._struct_pattern.finditer(source):
-			struct_name = struct_match.group("name")
-			fields = []
-			
-			for field_match in self._field_pattern.finditer(struct_match.group("body")):
-				attrs = self._attributes(field_match.group("attributes") or "")
-				fields.append( ShaderField(
-					name=field_match.group("name"),
-					type_name=field_match.group("type").strip(),
-					attributes=tuple(attrs.values()),
-					name_span=SourceSpan(struct_match.start("body")+field_match.start("name"),
-						struct_match.start("body")+field_match.end("name")),
-				))
-			structs[struct_name] = ShaderStruct(struct_name, tuple(fields))
-			
-		return structs
-
-	def _parse_bindings(self, source: str) -> dict[str, BindingInfo]:
-		bindings = {}
-
-		for match in self._binding_pattern.finditer(source):
-			attributes = self._attributes(match.group("attributes"))
-
-			group = attributes.get("group")
-			binding = attributes.get("binding")
-
-			if group is None or binding is None:
-				continue
-
-			storage, access = self._storage(match.group("storage"))
-			name = match.group("name")
-
-			bindings[name] = BindingInfo(
-				name=name,
-				group=group.int_value(),
-				binding=binding.int_value(),
-				storage=storage,
-				access=access,
-				type_name=self._type_name(match.group("type")),
-			)
-
-		return bindings
-
-
 	def _parse_functions(self, source: str) -> dict[str, EntryPointInfo]:
 		entry_points = {}
 
@@ -1656,62 +1645,6 @@ class ShaderSource:
 
 		return entry_points
 
-
-	def _process_dsl(self, source: str) -> str:
-		dsl_fields = defaultdict(list)
-
-		def dsl_replacer(match):
-			struct_name = match.group("struct")
-			attr_str = match.group("attributes") or ""
-			field_name = match.group("name")
-			wgsl_type = match.group("type").strip()
-			
-			attrs = self._attributes(attr_str)
-			dsl_fields[struct_name].append((field_name, wgsl_type, attrs, attr_str))
-
-			#return "\n" * match.group(0).count('\n')
-			return ''
-
-		source = self._dsl_pattern.sub(dsl_replacer, source)
-
-		if not dsl_fields:
-			return source
-
-		injected_wgsl = []
-		
-		for struct_name, fields in dsl_fields.items():
-			lines = [f"struct {struct_name} {{"]
-			
-			is_io_struct = "Input" in struct_name or "Output" in struct_name
-			loc_idx = 0
-			
-			for field_name, wgsl_type, attrs, attr_str in fields:
-				
-				# auto-assign @location for IO structs
-				if is_io_struct:
-					if "builtin" not in attrs and "location" not in attrs:
-						attrs["location"] = ShaderAttribute("location", str(loc_idx))
-						attr_str = f"@location({loc_idx}) {attr_str}".strip()
-						loc_idx += 1
-					elif "location" in attrs:
-						loc_idx = attrs["location"].int_value() + 1
-						
-				lines.append(f"	{attr_str}{' ' if attr_str else ''}{field_name}: {wgsl_type},")
-			lines.append("};")
-			injected_wgsl.append("\n".join(lines))
-
-		return "\n\n".join(injected_wgsl) + "\n\n" + source
-
-	def _storage(self, text: str | None) -> tuple[str | None, str | None]:
-		if text is None:
-			return None, None
-
-		match = self._storage_pattern.fullmatch(text)
-
-		if match is None:
-			raise ValueError(f"Cannot parse WGSL address space {text!r}")
-
-		return match.group("storage"), match.group("access")
 
 	def _field(self, match: re.Match, *, offset=0) -> ShaderField:
 		return ShaderField(
@@ -1937,15 +1870,9 @@ class Shader(_OwnedResource):
 		if source is None and filepath is None:
 			raise ValueError("Shader requires source= or filepath=")
 
-		source = self._load_source(
-			source,
-			filepath,
-			basedir,
-			features,
-			params,
-		)
+		source, declarations = self._render_source(source, filepath, basedir, features, params)
 
-		self.info = ShaderSource(source) if interface is None else deepcopy(interface)
+		self.info = ShaderSource(source, declarations=declarations) if interface is None else deepcopy(interface)
 		if interface is not None: self.info.source = source
 
 		try:
@@ -1997,14 +1924,17 @@ class Shader(_OwnedResource):
 
 		return entries[0]
 
-	def _load_source(
+	def _load_source(self, source, filepath, basedir, features, params):
+		return self._render_source(source, filepath, basedir, features, params)[0]
+
+	def _render_source(
 		self,
 		source: str | None,
 		filepath: str | None,
 		basedir: str | None,
 		features: Sequence[str] | None,
 		params: dict[str, Any] | None,
-	) -> str:
+	) -> tuple[str, ShaderDeclarations]:
 		if source is not None:
 			text = source
 		else:
@@ -2023,6 +1953,7 @@ class Shader(_OwnedResource):
 
 		env = Environment(
 			loader=FileSystemLoader(base),
+			extensions=[ShaderShorthand],
 			undefined=StrictUndefined,
 			autoescape=False,
 			keep_trailing_newline=True,
@@ -2040,12 +1971,10 @@ class Shader(_OwnedResource):
 				for feature in features
 			})
 
-		rendered_wgsl = template.render(
-			FEATURES=feature_dict,
-			PARAMS=params or {},
-		)
-		
-		return rendered_wgsl
+		declarations = ShaderDeclarations()
+		env.globals.update(field=declarations.field, binding=declarations.binding)
+		rendered_wgsl = template.render(FEATURES=feature_dict, PARAMS=params or {})
+		return declarations.definitions()+"\n\n"+rendered_wgsl, declarations
 
 
 class DefaultFalseDict(dict):

@@ -1,9 +1,8 @@
+#set RECONSTRUCT_MODE = "pair"
 #include "stochastic_reconstruction.shaderlib"
 
-struct FilterVertex {
-	@builtin(position) position: vec4f,
-	@location(0) @interpolate(flat) sample: u32,
-}
+<FilterVertex> @builtin(position) position: vec4f;
+<FilterVertex> @location(0) @interpolate(flat) sample: u32;
 
 @vertex
 fn fullscreen(@builtin(vertex_index) index: u32, @builtin(instance_index) sample: u32) -> FilterVertex {

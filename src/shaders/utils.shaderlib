@@ -1,93 +1,15 @@
-
-// Standard forward perspective depth: WebGPU [0,1], near/far in world units.
-// Returns positive view-space distance. Orthographic/reversed-Z need a
-// different conversion; no camera uniforms are assumed by this helper.
-fn linear_depth(depth: f32, near: f32, far: f32) -> f32 {
-	return near * far / max(far - depth * (far-near), 1e-6);
-}
-
-fn linear_to_srgb(color: vec3f) -> vec3f {
-	let positive = max(color, vec3f(0.0));
-	return select(1.055*pow(positive, vec3f(1.0/2.4))-0.055,
-		positive*12.92, positive <= vec3f(0.0031308));
-}
-
-fn srgb_to_linear(color: vec3f) -> vec3f {
-	return select(pow((color+0.055)/1.055, vec3f(2.4)), color/12.92, color <= vec3f(0.04045));
-}
-
-// Isotropic mip footprint from screen-space UV derivatives, in base texels.
-fn texture_lod_from_gradients(dx: vec2f, dy: vec2f, dimensions: vec2f) -> f32 {
-	let x = dx*dimensions;
-	let y = dy*dimensions;
-	return max(0.0, 0.5*log2(max(max(dot(x, x), dot(y, y)), 1e-8)));
-}
-
-fn hash_u32(value: u32) -> u32 {
-	var x = value;
-	x = (x ^ (x >> 16u)) * 0x7feb352du;
-	x = (x ^ (x >> 15u)) * 0x846ca68bu;
-	return x ^ (x >> 16u);
-}
-
-fn hash3d_u32(cell: vec3u, seed: u32) -> u32 {
-	return hash_u32(hash_u32(cell.x ^ seed) ^ hash_u32(cell.y + 0x9e3779b9u) ^ hash_u32(cell.z + 0x85ebca6bu));
-}
-
-// A linear blend of independent uniform thresholds is not uniform. Apply its
-// CDF to retain P(threshold < alpha) = alpha through noise-scale transitions.
-// The endpoint case avoids the singular denominators at blend = 0 or 1.
-fn blend_uniform_thresholds(thresholds: vec2f, blend: f32) -> f32 {
-	if blend <= 1e-6 { return thresholds.x; }
-	if blend >= 1.0-1e-6 { return thresholds.y; }
-	let x = mix(thresholds.x, thresholds.y, blend);
-	let a = min(blend, 1.0-blend);
-	if x < a { return x*x/(2.0*a*(1.0-a)); }
-	if x > 1.0-a { return 1.0-(1.0-x)*(1.0-x)/(2.0*a*(1.0-a)); }
-	return (x-0.5*a)/(1.0-a);
-}
-
-// Analytic pixel coverage for an alpha-tested texture. Callers evaluate the
-// alpha derivative before divergent branches/discards in every raster pass.
-fn sharpen_alpha(alpha: f32, cutoff: f32, width: f32) -> f32 {
-	return clamp((alpha-cutoff)/max(width, 1e-5)+0.5, 0.0, 1.0);
-}
-
-// Symmetric for front/back faces; interpolate in angle, not in cosine space.
-fn grazing_fade_factor(cosine: f32, start_degrees: f32, end_degrees: f32) -> f32 {
-	let angle = degrees(acos(clamp(abs(cosine), 0.0, 1.0)));
-	return 1.0-smoothstep(start_degrees, end_degrees, angle);
-}
-
-fn unpack_rotation(packed: vec2u) -> vec4f {
-	return vec4f( unpack2x16snorm(packed.x), unpack2x16snorm(packed.y) );
-}
-
-fn unpack_scale(packed: vec2u) -> vec3f {
-	return vec3f( unpack2x16float(packed.x).xy, unpack2x16float(packed.y).x );
-}
-
-fn quat_rotate(q: vec4f, v: vec3f) -> vec3f {
-	let t = cross(q.xyz, v) * 2.0;
-	return v + q.w * t + cross(q.xyz, t);
-}
-
-fn world_position(
-	position: vec3f,
-	iPosition: vec3f,
-	iRotation: vec4f,
-	iScale: vec3f,
-) -> vec3f {
-	return iPosition + quat_rotate(iRotation, position * iScale);
-}
+#include "utils_depth.shaderlib"
+#include "utils_color.shaderlib"
+#include "utils_texture.shaderlib"
+#include "utils_hash.shaderlib"
+#include "utils_alpha.shaderlib"
+#include "utils_transform.shaderlib"
 
 #macro instance_transform_unpacking(InstanceType)
 
-struct InstanceTransform {
-	rotation:  vec4f,
-	scale:     vec3f,
-	world_pos: vec3f,
-};
+<InstanceTransform> rotation: vec4f;
+<InstanceTransform> scale: vec3f;
+<InstanceTransform> world_pos: vec3f;
 
 fn unpack_instance_transform(vertex_position: vec3f, inst: {{ InstanceType }}) -> InstanceTransform {
 	let rotation = unpack_rotation(inst.iRotation);

@@ -1,27 +1,25 @@
-#include "utils.shaderlib"
+#include "utils_color.shaderlib"
 
 <MipParams> info: vec4u;
 <MipParams> cutoff: vec4f;
-@group(0) @binding(0) var<uniform> params: MipParams;
-@group(0) @binding(1) var source: texture_2d<f32>;
-@group(0) @binding(2) var linear_destination: texture_storage_2d<rgba32float, write>;
-@group(0) @binding(3) var encoded_destination: texture_storage_2d_array<rgba8unorm, write>;
+uniform<0, 0> params: MipParams;
+{{ binding('source', 'texture_2d<f32>', 0, 1) }}
+{{ binding('linear_destination', 'texture_storage_2d<rgba32float, write>', 0, 2) }}
+{{ binding('encoded_destination', 'texture_storage_2d_array<rgba8unorm, write>', 0, 3) }}
 
-struct CoverageState {
-	target_hits: atomic<u32>,
-	candidate_hits: atomic<u32>,
-	min_alpha_bits: atomic<u32>,
-	target_total: u32,
-	candidate_total: u32,
-	low: f32,
-	high: f32,
-	scale: f32,
-	best_scale: f32,
-	best_error: f32,
-	phase: u32,
-	done: u32,
-};
-@group(0) @binding(4) var<storage, read_write> coverage: CoverageState;
+<CoverageState> target_hits: atomic<u32>;
+<CoverageState> candidate_hits: atomic<u32>;
+<CoverageState> min_alpha_bits: atomic<u32>;
+<CoverageState> target_total: u32;
+<CoverageState> candidate_total: u32;
+<CoverageState> low: f32;
+<CoverageState> high: f32;
+<CoverageState> scale: f32;
+<CoverageState> best_scale: f32;
+<CoverageState> best_error: f32;
+<CoverageState> phase: u32;
+<CoverageState> done: u32;
+storage<0, 4, read_write> coverage: CoverageState;
 var<workgroup> hit_counts: array<u32, 64>;
 var<workgroup> minimums: array<u32, 64>;
 
