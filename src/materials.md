@@ -1,9 +1,9 @@
 # Dictionary materials
 
 The generic [Materials.py](Materials.py) handles shader-defined schemas,
-dictionary resolution, packing and linking. It contains no lighting, alpha or
+dictionary resolution and packing. It contains no lighting, alpha or
 grazing policy. [DefaultMaterial.py](DefaultMaterial.py) supplies the default
-lit schema, validation and opaque/stochastic interface. The default WGSL
+lit schema and validation. The default WGSL
 template interprets those parameters.
 
 Run the ECS example:
@@ -27,9 +27,9 @@ This non-exhaustive map covers the material modules. Import from
 
 | Module | Classes and methods |
 | --- | --- |
-| `Materials` | `MaterialShader(interface=..., source/filepath/template=...)` declares a family; `.parameters` exposes its schema; `.validate(values)` checks dictionary fields. `MaterialBinding(shader, material, overrides)` selects values. |
-| `Materials` | `MaterialLibrary(shaders).pack(bindings)` returns headers, shared slots, instance slots, material IDs and instance offsets; `.source` contains linked WGSL; `.parameter_layouts` exposes slot/lane offsets. |
-| `Materials` | `MaterialInterface`, `ShaderHook`, and `FrameParameter` describe a rendering adapter's dispatch and frame-data contract; `ParameterLayout.pack` applies a declared slot layout. |
+| `Materials` | `MaterialShader(source/filepath/template=...)` declares a family; `.parameters` exposes its schema; `.validate(values)` checks dictionary fields. `MaterialBinding(shader, material, overrides)` selects values. |
+| `Materials` | `MaterialLibrary(shaders).pack(bindings)` returns headers, shared slots, instance slots, material IDs and instance offsets; `.parameter_layouts` exposes slot/lane offsets. |
+| `Materials` | `ParameterLayout.pack` applies a declared slot layout. |
 | `DefaultMaterial` | `DefaultMaterialShader` provides the lit schema, shader hooks, alpha routing and semantic validation used in this guide. |
 | `MaterialRenderer` | `MaterialMesh(vertices, shader, ...)` registers geometry; `DrawInstance` describes optional direct inputs. `MaterialRenderer.record` records a frame; `update` accepts explicit arrays; `update_transforms` skips material packing; `set_sample_count` switches 1x/4x passes. |
 | `EcsMaterials` | `MaterialInstance` stores mesh/material references and overrides; `MaterialTransform` stores numeric transforms. `EcsMaterialAdapter.sync` extracts changed ECS data; `touch_materials(*dicts)` marks nested edits for repacking. |
@@ -141,7 +141,7 @@ Instance values do not split draw batches.
 ## Shader-defined materials
 
 `MaterialShader` accepts exactly one of `source` (inline Jinja2 template),
-`filepath` or `template` (path to a Jinja2 file), plus a `MaterialInterface`.
+`filepath` or `template` (path to a Jinja2 file).
 `DefaultMaterialShader` supplies the built-in lighting, alpha and vertex hooks.
 Custom materials extend its template and override only the hooks they need.
 
@@ -167,47 +167,37 @@ striped = DefaultMaterialShader(source='''
 
 In a material's `parameters` block, `<MaterialParameters>` declares shared
 values, `<InstanceParameters>` declares per-instance overrides, and
-`<FrameParameters>` selects renderer-owned frame values. Each declaration
-requires a default, expressed as a Jinja2 value (scalar or tuple).
+Each parameter declaration requires a default, expressed as a Jinja2 value (scalar or tuple).
 The available inherited blocks are `parameters`, `helpers`, `surface`, `vertex`,
 `opacity`, `grazing` and `lighting`. `super()` retains inherited parameter
 schema and defaults. Parameters are accessed as `p.name`; the template owns
 material-family naming through `{{ PREFIX }}`. `TRANSPARENT` provides the
-routing choice and `HOOKS` identifies the hooks needed by the current pass.
+routing choice and `STAGE` selects the renderer stage (`geometry` or `shading`).
 The `MaterialRenderer` supplies the frame, lighting and texture bindings;
 material templates must not declare GPU entry points.
 
 A generic `MaterialShader` can extend `material_surface.shaderlib` and implement
-its own hooks without depending on the default lit material. The
-`MaterialInterface` specifies the required hook contract.
+its own hooks without depending on the default lit material. The inherited base template supplies the required five hook functions.
 
 ## Time and vertex displacement
 
-Time is an optional frame-scope parameter, declared in a Jinja parameters block:
+Time is available directly from the renderer-owned `frame` uniform:
 
 ```jinja2
-#block parameters
-{{ super() }}
-<FrameParameters> time: f32 = 0.0;
-#endblock
-
 #block vertex
-    let offset = 0.1*sin(p.time*2.0);
+    let offset = 0.1*sin(frame.time*2.0);
     return MaterialVertex(position+vec3f(offset, 0.0, 0.0), normal, uv);
 #endblock
 ```
 
-`p.time` is elapsed seconds since the MaterialRenderer was created. Supply
+`frame.time` is elapsed seconds since the MaterialRenderer was created. Supply
 `renderer.record(..., time=seconds)` to use an application clock, seek, pause or
 render reproducibly. The example accumulates RenderContext.frame_time and stops
 advancing its clock while paused. Low-level TransparencyPass.update_frame() and
 update_camera() accept `time=seconds`, defaulting to zero.
 
-Frame parameters are read directly from the frame uniform. They do not occupy
-shared/instance parameter slots or require material dictionaries to be repacked,
-and cannot be assigned through those dictionaries. `time: f32` is currently the
-frame parameter exposed by the opaque/stochastic MaterialInterface. The generic
-MaterialLibrary takes frame expressions from its adapter's FrameParameter metadata.
+Frame uniforms do not occupy shared/instance parameter slots or require material
+dictionaries to be repacked. They cannot be assigned through those dictionaries.
 
 The vertex hook receives object-space position/normal and UVs, and returns
 `MaterialVertex(position, normal, uv)` before the instance transform. Update the
@@ -327,9 +317,8 @@ fragment-only derivatives.
 
 A custom shader can instead extend material_surface.shaderlib, override surface
 to fill the technique's surface record, and use its default unlit lighting and
-disabled grazing. ShaderHook/MaterialInterface describe the adapter's function
-contract and metadata addressing; MaterialLibrary generates dispatch without
-interpreting any parameter names.
+disabled grazing. The renderer-owned material-library template generates dispatch
+from the registered material families without interpreting parameter names.
 
 All transparent families share winner selection, reconstruction and MSAA targets.
 Transparent draws have no opaque prepass. MaterialRenderer uses frustum culling
@@ -365,9 +354,8 @@ and headers at binding 8. Its metadata y/w fields select material/instance data.
 
 These names describe the built-in opaque/stochastic adapter's ABI. Shared types
 use PascalCase; bound values use snake_case. Custom material code uses the
-provided values and types without redeclaring bindings. Family-owned declarations
-are namespaced automatically, so local helper/type names can be reused between
-families.
+provided values and types without redeclaring bindings. Family helpers must use `{{ PREFIX }}` to avoid name collisions between
+material families.
 
 | Struct | Bound value / use | Ownership and updates |
 | --- | --- | --- |
@@ -382,11 +370,11 @@ families.
 | `ShadingVertex` | Deferred `vertices` table | Original triangle vertices for winner reconstruction |
 | `BilateralSettings` | `bilateral`, composition uniform | Reconstruction sigmas, kernel and debug mode; changed ranges on edit |
 | `CameraUniforms` | Culling `camera_params` uniform | Derived view-projection/planes/camera plus culling counts; unchanged cameras skip updates |
-| `ParamsN` | Generated shader-local family value | Typed access to shared fields, overrides and opted-in frame parameters |
+| `ParamsN` | Generated shader-local family value | Typed access to shared fields and instance overrides |
 
-`MaterialParameters`, `InstanceParameters` and `FrameParameters` are material
-authoring schemas, not extra bound GPU blocks. The linker preserves declarations
-after namespacing; it does not analyze reachability or remove unused code.
+`MaterialParameters` and `InstanceParameters` are material authoring schemas,
+not extra bound GPU blocks. Jinja2 generates family-specific functions and dispatch;
+it does not analyze reachability or remove unused code.
 Control emitted shader size by splitting reusable WGSL into granular Jinja
 includes or macros, importing only the helpers a template needs. Jinja-authored
 family helpers should use `PREFIX` to keep their names unique, as in the template

@@ -29,13 +29,12 @@ STRIPED_SHADER = '''
 <MaterialParameters> stripe_frequency: f32 = 8.0;
 <MaterialParameters> displacement: f32 = 0.18;
 <MaterialParameters> speed: f32 = 2.0;
-<FrameParameters> time: f32 = 0.0;
 #endblock
 
 #block vertex
 	let radius = max(length(position), 1e-6);
 	let direction = position/radius;
-	let phase = direction.y*8.0-p.time*p.speed;
+	let phase = direction.y*8.0-frame.time*p.speed;
 	let displaced_radius = radius+p.displacement*sin(phase);
 	let gradient = p.displacement*8.0*cos(phase)*(vec3f(0.0, 1.0, 0.0)-direction.y*direction);
 	let displaced_normal = normalize(direction-gradient/max(displaced_radius, 1e-6));

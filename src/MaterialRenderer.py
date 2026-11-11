@@ -81,8 +81,7 @@ class MaterialRenderer:
 			base_textures = white.view(dimension="2d-array")
 		self.transparency = TransparencyPass(materials=GpuBuffer(np.zeros(1, dtype=MATERIAL_DTYPE), usage), base_textures=base_textures,
 			vertices=GpuBuffer(np.concatenate(vertices), usage), blue_noise=blue_noise,
-			material_library=self.library.source_for(("library_vertex", "library_material", "library_opacity", "library_grazing", "library_shade")),
-			material_shading_library=self.library.source_for(("library_vertex", "library_material", "library_shade")),
+			material_library=self.library,
 			**transparency_options)
 		self.geometry = [self.transparency.create_geometry_passes(self.metadata, transparent=transparent,
 			instances=self.draws.buffers["instances"], geometry_resources=self.parameters,

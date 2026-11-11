@@ -1,7 +1,7 @@
 """Dictionary materials with shader-defined layouts and explicit instance overrides.
 
 CPU preparation is independent of ECS and GPU setup. MaterialLibrary packs
-headers/parameters and links functions declared by a rendering adapter interface.
+headers and parameter buffers; rendering templates generate WGSL dispatch.
 """
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,8 +25,8 @@ class Parameter:
 	scope: str = "material"
 
 	def __post_init__(self):
-		if self.kind not in KINDS or self.scope not in ("material", "instance", "frame"):
-			raise ValueError("Expected a supported parameter type and material/instance/frame scope")
+		if self.kind not in KINDS or self.scope not in ("material", "instance"):
+			raise ValueError("Expected a supported parameter type and material/instance scope")
 		self.pack(self.default)
 
 	def pack(self, value):
@@ -70,34 +70,8 @@ class ParameterLayout:
 		return data
 
 
-@dataclass(frozen=True)
-class ShaderHook:
-	name: str
-	result: str
-	arguments: str
-	expression: str
-	fallback: str
-	optional_function: str | None = None
-
-
-@dataclass(frozen=True)
-class FrameParameter:
-	name: str
-	kind: str
-	expression: str
-
-
-@dataclass(frozen=True)
-class MaterialInterface:
-	"""Rendering adapter contract; expressions address an instance's material data."""
-	address: str
-	hooks: tuple[ShaderHook, ...]
-	frame_parameters: tuple[FrameParameter, ...] = ()
-
-
 @dataclass(eq=False)
 class MaterialShader:
-	interface: MaterialInterface
 	template: str | Path | None = None
 	default_material: dict = field(default_factory=dict)
 	transparent: bool = False
@@ -120,15 +94,11 @@ class MaterialShader:
 		self._render_cache = {}
 		_, declarations = self._render(0)
 		self._parameters = MappingProxyType(declarations)
-		frame_parameters = {p.name: p for p in self.interface.frame_parameters}
-		for name, p in declarations.items():
-			if p.scope == "frame" and (name not in frame_parameters or frame_parameters[name].kind != p.kind):
-				raise ValueError(f"Unsupported frame parameter: {name} ({p.kind})")
 		self.validate(self.default_material)
 
-	def _render(self, prefix, hooks=None):
-		hooks = frozenset(h.name for h in self.interface.hooks) if hooks is None else frozenset(hooks)
-		key = (prefix, self.transparent, hooks)
+	def _render(self, prefix, stage="geometry"):
+		if stage not in ("geometry", "shading"): raise ValueError(f"Unknown material stage: {stage}")
+		key = (prefix, self.transparent, stage)
 		if key in self._render_cache: return self._render_cache[key]
 		declarations = {}
 		def parameter(name, kind, default, scope="material"):
@@ -140,16 +110,16 @@ class MaterialShader:
 			declarations[name] = value
 			return ""
 		def field(struct, name, kind, *, default=MISSING, **attributes):
-			scopes = {"MaterialParameters": "material", "InstanceParameters": "instance", "FrameParameters": "frame"}
+			scopes = {"MaterialParameters": "material", "InstanceParameters": "instance"}
 			if struct not in scopes or attributes: raise ValueError(f"Invalid material field declaration: {struct}.{name}")
 			if default is MISSING: raise ValueError(f"Material parameter {name} requires a default")
 			return parameter(name, kind, default, scopes[struct])
-		code = self._template.render(PREFIX=prefix, TRANSPARENT=self.transparent, field=field, HOOKS=hooks)
+		code = self._template.render(PREFIX=prefix, TRANSPARENT=self.transparent, field=field, STAGE=stage)
 		self._render_cache[key] = code, declarations
 		return code, declarations
 
-	def render(self, prefix, hooks=None):
-		code, declarations = self._render(prefix, hooks)
+	def render(self, prefix, stage="geometry"):
+		code, declarations = self._render(prefix, stage)
 		if declarations != self.parameters:
 			raise ValueError("Shader declarations changed; create a new MaterialShader")
 		return code
@@ -158,7 +128,6 @@ class MaterialShader:
 		for name, value in values.items():
 			if name not in self.parameters: raise ValueError(f"Unknown material parameter: {name}")
 			parameter = self.parameters[name]
-			if parameter.scope == "frame": raise ValueError(f"{name} is a renderer-owned frame parameter")
 			if overrides and parameter.scope != "instance":
 				raise ValueError(f"{name} is shared; declare it with instance scope to override it")
 			try: parameter.pack(value)
@@ -177,27 +146,24 @@ class MaterialBinding:
 
 
 class MaterialLibrary:
-	"""Generic schema packing and shader linking. No surface or lighting policy.
+	"""Material parameter packing. No surface or lighting policy.
 
 	pack() produces headers, shared slots, instance slots, material IDs and instance
 	offsets. A header contains shader ID and shared offset; no material parameters
 	are interpreted here. Shader layouts are fixed; dictionary values remain live.
 	"""
+	kind_widths = MappingProxyType(KINDS)
 	def __init__(self, shaders):
 		self.shaders = tuple(dict.fromkeys(shaders))
 		if not self.shaders: raise ValueError("Supply at least one material shader")
-		self.interface = self.shaders[0].interface
-		if any(s.interface != self.interface for s in self.shaders):
-			raise ValueError("Linked shaders must implement the same rendering interface")
 		self.shader_ids = {shader: index for index, shader in enumerate(self.shaders)}
 		self.parameter_layouts = {shader: {scope: ParameterLayout(shader.parameters, scope)
 			for scope in ("material", "instance")} for shader in self.shaders}
 		self._records = {}
 		self._layouts = self._layout_keys()
-		self.source = self._source()
 
 	def _layout_keys(self):
-		return tuple((s.transparent, str(s.template), s.source, str(s.filepath), s.interface, tuple((name, p.kind, p.scope)
+		return tuple((s.transparent, str(s.template), s.source, str(s.filepath), tuple((name, p.kind, p.scope)
 			for name, p in s.parameters.items())) for s in self.shaders)
 
 	def pack(self, bindings, *, dirty_materials=None):
@@ -238,49 +204,3 @@ class MaterialLibrary:
 			return np.array(rows or [(0, 0, 0, 0)], dtype=np.uint32).reshape(-1, 4)
 		self._records = records
 		return slots(headers), slots(shared), slots(instances), np.array(ids, dtype=np.uint32), np.array(offsets, dtype=np.uint32)
-
-	def source_for(self, hooks):
-		selected = frozenset(hooks)
-		unknown = selected - {hook.name for hook in self.interface.hooks}
-		if unknown: raise ValueError(f"Unknown material hooks: {sorted(unknown)}")
-		return self._source(selected)
-
-	def _source(self, hooks=None):
-		if hooks is None: hooks = frozenset(hook.name for hook in self.interface.hooks)
-		parts = ["struct Materials { values: array<vec4u>, }",
-			"struct InstanceOverrides { values: array<vec4u>, }",
-			"struct MaterialHeaders { values: array<vec4u>, }",
-			"fn library_material_count() -> u32 { return arrayLength(&material_headers.values); }"]
-		functions = []
-		frame_parameters = {p.name: p for p in self.interface.frame_parameters}
-		for index, shader in enumerate(self.shaders):
-			fields, assignments = [], []
-			for name, p in shader.parameters.items():
-				fields.append(f"{name}: {p.kind},")
-				if p.scope == "frame":
-					assignments.append(f"p.{name} = {frame_parameters[name].expression};")
-					continue
-				base = "material_offset" if p.scope == "material" else "instance_offset"
-				buffer = "material_parameters" if p.scope == "material" else "instance_parameters"
-				slot, lane = self.parameter_layouts[shader][p.scope].offsets[name]
-				value = f"{buffer}.values[{base}+{slot}u].{'xyzw'[lane:lane+KINDS[p.kind]]}"
-				if p.kind == "bool": value += " != 0u"
-				elif p.kind != "u32": value = f"bitcast<{p.kind}>({value})"
-				assignments.append(f"p.{name} = {value};")
-			parts.append(f"struct Params{index} {{ {' '.join(fields) if fields else '_unused: u32,'} }}")
-			header = "let material_offset = material_headers.values[material_id].y;" if self.parameter_layouts[shader]["material"].slot_count else ""
-			parts.append(f"fn parameters_{index}(material_id: u32, instance_offset: u32) -> Params{index} {{ {header} var p: Params{index}; {' '.join(assignments)} return p; }}")
-			code = shader.render(index, hooks)
-			parts.append(code)
-			from .RenderContext import ShaderSource
-			functions.append(ShaderSource(code).functions if any(h.optional_function for h in self.interface.hooks) else {})
-		for hook in self.interface.hooks:
-			if hook.name not in hooks: continue
-			parts.append(f"fn {hook.name}(id: u32{', ' if hook.arguments else ''}{hook.arguments}) -> {hook.result} {{ let key = {self.interface.address}; switch material_headers.values[key.x].x {{")
-			for index in range(len(self.shaders)):
-				expression = hook.expression.format(i=index)
-				if hook.optional_function and hook.optional_function.format(i=index) not in functions[index]:
-					expression = hook.fallback
-				parts.append(f"case {index}u: {{ return {expression}; }}")
-			parts.append(f"default: {{ return {hook.fallback}; }} }} }}")
-		return "\n".join(parts)

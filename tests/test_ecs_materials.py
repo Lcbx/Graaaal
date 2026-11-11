@@ -6,7 +6,6 @@ from numpyecs.ECS import ECS
 from numpyecs.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
 from numpyecs.Math import Vec3
 from numpyecs.Materials import MaterialShader
-from numpyecs.DefaultMaterial import TRANSPARENCY_INTERFACE
 from numpyecs.MaterialRenderer import MaterialRenderer, MaterialMesh
 from numpyecs.RenderContext import RenderContext, Texture, TextureUsage
 from scenes.material_example import make_world, sphere_vertices
@@ -20,7 +19,7 @@ def renderer(meshes, **kwargs):
 
 
 def test_minimal_jinja_shader_requires_no_default_material_fields():
-	shader = MaterialShader(interface=TRANSPARENCY_INTERFACE, transparent=True, source='''
+	shader = MaterialShader( transparent=True, source='''
 #extends "material_surface.shaderlib"
 #block parameters
 <MaterialParameters> color: vec4f = (0.1, 0.3, 0.8, 0.6);
@@ -52,7 +51,7 @@ def test_minimal_jinja_shader_requires_no_default_material_fields():
 	data = RenderContext.device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": 128}, (32, 32, 1))
 	pixels = np.frombuffer(data, dtype=np.uint8).reshape(32, 32, 4)
 	assert pixels[16, 16, 2] > pixels[16, 16, 0]+40
-	assert "grazing_start" not in r.library.source
+	assert "grazing_start" not in shader.parameters
 
 
 def test_ecs_versions_mutations_spawn_despawn_and_compaction(monkeypatch):

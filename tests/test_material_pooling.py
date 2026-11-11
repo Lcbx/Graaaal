@@ -1,11 +1,12 @@
 """Packed field fidelity, incremental uploads, and cross-pipeline binding reuse."""
 from unittest.mock import Mock
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from scenes.material_example import make_instances, make_world, sphere_vertices
-from numpyecs.DefaultMaterial import DefaultMaterialShader, TRANSPARENCY_INTERFACE
+from numpyecs.DefaultMaterial import DefaultMaterialShader
 from numpyecs.EcsMaterials import EcsMaterialAdapter
 from numpyecs.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
 from numpyecs.Materials import MaterialBinding, MaterialLibrary, MaterialShader
@@ -22,10 +23,11 @@ def test_example_pools_pack_scalar_lanes_and_preserve_shader_declarations():
 	assert headers.nbytes == 80 and shared.nbytes == 512 and overrides.nbytes == 192
 	np.testing.assert_array_equal(ids, [0, 1, 2, 2, 3, 4])
 	assert len(set(offsets)) == 6
-	assert "struct Materials" in library.source and "struct InstanceOverrides" in library.source
-	assert "fn vertex_3" in library.source and "fn shade_3" in library.source
-	assert "struct Params3" in library.source
-	assert "fn vertex_3" in library.source and "fn vertex_0" in library.source
+	source, _ = Shader.__new__(Shader)._render_source(None, str(Path(__file__).resolve().parents[1]/"src/shaders/stochastic_geometry.shader"), None, None, {"material_library": library})
+	assert "struct Materials" in source and "struct InstanceOverrides" in source
+	assert "fn vertex_3" in source and "fn shade_3" in source
+	assert "struct Params3" in source
+	assert "fn vertex_3" in source and "fn vertex_0" in source
 
 
 def test_targeted_updates_reuse_other_records_and_invalidate_inherited_defaults(monkeypatch):
@@ -131,7 +133,7 @@ def test_animation_and_dictionary_edits_upload_words_and_share_frame_binding(cou
 @pytest.mark.parametrize("count", [1, 4])
 def test_packed_vectors_uint_and_bool_reach_the_gpu_without_bit_loss(count):
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
-	shader = MaterialShader(interface=TRANSPARENCY_INTERFACE, source='''
+	shader = MaterialShader( source='''
 #extends "material_surface.shaderlib"
 #block parameters
 <MaterialParameters> color: vec3f = (0.1, 0.2, 0.3);
@@ -165,7 +167,7 @@ def test_packed_vectors_uint_and_bool_reach_the_gpu_without_bit_loss(count):
 ''')
 	renderer = MaterialRenderer([DrawInstance(MaterialMesh(sphere_vertices(), shader))],
 		target_format="rgba8unorm", sample_count=count)
-	assert "@must_use fn unused_helper_0" in renderer.library.source
+	assert "@must_use fn unused_helper_0" in renderer.transparency.shader.info.source
 	output = Texture((32, 32), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	commands = RenderContext.commands()
 	renderer.record(commands, (32, 32), Camera((0, 0, 4), (0, 0, 0), (0, 1, 0), 50), output.color_attachment(), time=0)

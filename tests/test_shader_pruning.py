@@ -9,9 +9,6 @@ from scenes.material_example import make_instances
 
 
 SHADERS = Path(__file__).resolve().parents[1] / "src" / "shaders"
-GEOMETRY_HOOKS = ("library_vertex", "library_material", "library_opacity", "library_grazing", "library_shade")
-SHADING_HOOKS = ("library_vertex", "library_material", "library_shade")
-
 
 def load_shader(name, **params):
 	loader = Shader.__new__(Shader)
@@ -22,10 +19,8 @@ def load_shader(name, **params):
 def test_material_library_only_emits_stage_hooks():
 	instances, _, _ = make_instances()
 	library = MaterialLibrary([instance.mesh.shader for instance in instances])
-	geometry = library.source_for(GEOMETRY_HOOKS)
-	shading = library.source_for(SHADING_HOOKS)
-	geometry_info = load_shader("stochastic_geometry.shader", material_library=geometry)
-	shading_info = load_shader("stochastic_shade.shader", material_library=shading)
+	geometry_info = load_shader("stochastic_geometry.shader", material_library=library)
+	shading_info = load_shader("stochastic_shade.shader", material_library=library)
 	assert "opaque" in geometry_info.entry_points
 	assert "library_shade" in geometry_info.functions
 	assert "shade_material" in geometry_info.functions
@@ -40,10 +35,30 @@ def test_material_library_only_emits_stage_hooks():
 	assert "default_lighting_3" in geometry_info.functions
 	assert "default_lighting_3" in shading_info.functions
 	assert "shade_3" in geometry_info.functions
-	assert "library_shade" in library.source  # full source remains available
-	assert library.source_for(hook.name for hook in library.interface.hooks) == library.source
-	with pytest.raises(ValueError, match="Unknown material hooks"):
-		library.source_for(("nonexistent",))
+	with pytest.raises(ValueError, match="Unknown material stage"):
+		library.shaders[0].render(0, "invalid")
+
+
+def test_material_parameter_decoder_matches_packed_lanes():
+	from numpyecs.Materials import MaterialShader
+	shader = MaterialShader(source='''
+#extends "material_surface.shaderlib"
+#block parameters
+<MaterialParameters> color: vec3f = (0.1, 0.2, 0.3);
+<MaterialParameters> gain: f32 = 0.5;
+<InstanceParameters> valid: bool = true;
+#endblock
+''')
+	library = MaterialLibrary([shader])
+	info = load_shader("stochastic_geometry.shader", material_library=library)
+	source = info.source
+	assert "p.color = bitcast<vec3f>(material_parameters.values[material_offset+0u].xyz);" in source
+	assert "p.gain = bitcast<f32>(material_parameters.values[material_offset+0u].w);" in source
+	assert "p.valid = instance_parameters.values[instance_offset+0u].x != 0u;" in source
+	assert "fn library_vertex(" in source and "fn library_opacity(" in source
+	shading = load_shader("stochastic_shade.shader", material_library=library)
+	assert "fn library_vertex(" in shading.source and "fn library_shade(" in shading.source
+	assert "fn library_opacity(" not in shading.source and "fn library_grazing(" not in shading.source
 
 
 @pytest.mark.parametrize("name,expected,missing", [
@@ -89,8 +104,8 @@ def test_material_shader_variants_expand(sample_count, winner_count, winner_mix,
 	library = MaterialLibrary([instance.mesh.shader for instance in instances])
 	base = {"sample_count": sample_count, "winner_count": min(winner_count, 2),
 		"winner_mix": winner_mix, "force_single_contributor": force}
-	geometry = load_shader("stochastic_geometry.shader", material_library=library.source_for(GEOMETRY_HOOKS), **base)
-	shading = load_shader("stochastic_shade.shader", material_library=library.source_for(SHADING_HOOKS), **base)
+	geometry = load_shader("stochastic_geometry.shader", material_library=library, **base)
+	shading = load_shader("stochastic_shade.shader", material_library=library, **base)
 	assert "select_winner" in geometry.entry_points
 	assert "shade_winner" in shading.entry_points
 	assert "library_shade" in geometry.functions

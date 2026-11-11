@@ -6,15 +6,12 @@
 #block helpers
 #endblock
 
-#if "library_vertex" in HOOKS
 fn vertex_{{PREFIX}}(p: Params{{PREFIX}}, position: vec3f, normal: vec3f, uv: vec2f) -> MaterialVertex {
 #block vertex
 	return MaterialVertex(position, normal, uv);
 #endblock
 }
-#endif
 
-#if "library_material" in HOOKS
 fn surface_{{PREFIX}}(p: Params{{PREFIX}}) -> Material {
 #block surface
 	var material: Material;
@@ -25,9 +22,8 @@ fn surface_{{PREFIX}}(p: Params{{PREFIX}}) -> Material {
 	return material;
 #endblock
 }
-#endif
 
-#if "library_grazing" in HOOKS
+#if STAGE == "geometry"
 fn grazing_{{PREFIX}}(p: Params{{PREFIX}}) -> vec3f {
 #block grazing
 	return vec3f(0.0);
@@ -35,15 +31,13 @@ fn grazing_{{PREFIX}}(p: Params{{PREFIX}}) -> vec3f {
 }
 #endif
 
-#if "library_shade" in HOOKS
 fn shade_{{PREFIX}}(material: Material, p: Params{{PREFIX}}, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
 #block lighting
 	return material.base_color.rgb;
 #endblock
 }
-#endif
 
-#if "library_opacity" in HOOKS
+#if STAGE == "geometry"
 fn opacity_{{PREFIX}}(material: Material, p: Params{{PREFIX}}, alpha: vec3f, uv: vec2f, position: vec3f, lod: f32) -> vec3f {
 #block opacity
 	return alpha;

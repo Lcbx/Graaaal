@@ -22,11 +22,9 @@
 #endblock
 
 #block helpers
-#if "library_shade" in HOOKS
 fn default_lighting_{{PREFIX}}(material: Material, p: Params{{PREFIX}}, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
 	return evaluate_lighting(material, uv, position, normal, lod, p.ambient, p.diffuse, p.specular);
 }
-#endif
 #endblock
 
 #block surface

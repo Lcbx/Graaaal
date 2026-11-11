@@ -3,31 +3,13 @@
 MaterialLibrary does not know these parameters or their meaning. A different
 shader may implement the same interface with an entirely different schema.
 """
-from .Materials import FrameParameter, MaterialInterface, MaterialShader, ShaderHook
+from .Materials import MaterialShader
 import numpy as np
-
-
-TRANSPARENCY_INTERFACE = MaterialInterface(
-	address="metadata[id].yw",
-	hooks=(
-		ShaderHook("library_material", "Material", "", "surface_{i}(parameters_{i}(key.x, key.y))", "Material()"),
-		ShaderHook("library_shade", "vec3f", "material: Material, uv: vec2f, position: vec3f, normal: vec3f, lod: f32",
-			"shade_{i}(material, parameters_{i}(key.x, key.y), uv, position, normal, lod)", "vec3f(0.0)"),
-		ShaderHook("library_opacity", "vec3f", "material: Material, alpha: vec3f, uv: vec2f, position: vec3f, lod: f32",
-			"opacity_{i}(material, parameters_{i}(key.x, key.y), alpha, uv, position, lod)", "alpha"),
-		ShaderHook("library_grazing", "vec3f", "", "grazing_{i}(parameters_{i}(key.x, key.y))", "vec3f(0.0)"),
-		ShaderHook("library_vertex", "MaterialVertex", "position: vec3f, normal: vec3f, uv: vec2f",
-			"vertex_{i}(parameters_{i}(key.x, key.y), position, normal, uv)",
-			"MaterialVertex(position, normal, uv)", optional_function="vertex_{i}"),
-	),
-	frame_parameters=(FrameParameter("time", "f32", "frame.time"),),
-)
-
 
 
 class DefaultMaterialShader(MaterialShader):
 	def __init__(self, *, transparent=False, template=None, source=None, filepath=None, default_material=None):
-		super().__init__(interface=TRANSPARENCY_INTERFACE, transparent=transparent,
+		super().__init__(transparent=transparent,
 			template=template if any(value is not None for value in (template, source, filepath)) else "default_material.shader",
 			source=source, filepath=filepath,
 			default_material={} if default_material is None else default_material)

@@ -19,13 +19,12 @@ ANIMATED_SOURCE = '''
 #extends "default_material.shader"
 #block parameters
 {{ super() }}
-<FrameParameters> time: f32 = 0.0;
 #endblock
 #block vertex
     var v = MaterialVertex(position, normal, uv);
-    v.position.x += p.time*(0.4+0.3*position.y*position.y);
-    v.normal = vec3f(position.y*position.y+0.2*p.time, 0.0, 1.0);
-    v.uv += vec2f(0.1*p.time, 0.0);
+    v.position.x += frame.time*(0.4+0.3*position.y*position.y);
+    v.normal = vec3f(position.y*position.y+0.2*frame.time, 0.0, 1.0);
+    v.uv += vec2f(0.1*frame.time, 0.0);
     return v;
 #endblock
 #block lighting
@@ -35,24 +34,21 @@ ANIMATED_SOURCE = '''
 
 
 
-def test_time_is_opt_in_and_does_not_occupy_material_or_instance_slots():
+def test_time_is_read_from_frame_without_material_or_instance_slots():
 	plain = DefaultMaterialShader()
 	animated = DefaultMaterialShader(source=ANIMATED_SOURCE)
 	assert "time" not in plain.parameters
-	assert animated.parameters["time"].scope == "frame"
+	assert "time" not in animated.parameters
 	library = MaterialLibrary([plain, animated])
 	_, shared, instances, _, offsets = library.pack([MaterialBinding(plain), MaterialBinding(animated)])
 	assert len(shared) == 2*library.parameter_layouts[plain]["material"].slot_count
 	assert len(instances) == 2*library.parameter_layouts[plain]["instance"].slot_count
 	assert offsets[1] == library.parameter_layouts[plain]["instance"].slot_count
 	for binding in (MaterialBinding(animated, {"time": 1}), MaterialBinding(animated, overrides={"time": 1})):
-		with pytest.raises(ValueError, match="renderer-owned"):
+		with pytest.raises(ValueError, match="Unknown material parameter"):
 			library.pack([binding])
-	for declaration in ('<FrameParameters> time: vec2f = (0, 0);',
-		'<FrameParameters> unknown: f32 = 0.0;'):
-		with pytest.raises(ValueError, match="Unsupported frame"):
-			DefaultMaterialShader(source='#extends "default_material.shader"\n#block parameters\n{{ super() }}\n'+declaration+'\n#endblock')
-
+	with pytest.raises(ValueError, match="Invalid material field"):
+		DefaultMaterialShader(source='#extends "default_material.shader"\n#block parameters\n{{ super() }}\n<FrameParameters> time: f32 = 0.0;\n#endblock')
 
 
 @pytest.mark.parametrize("count", [1, 4])

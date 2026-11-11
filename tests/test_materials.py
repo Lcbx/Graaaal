@@ -1,9 +1,10 @@
+from pathlib import Path
 """Dictionary semantics, shader inheritance and mixed-family GPU composition."""
 import numpy as np
 import pytest
 
 from numpyecs.Materials import MaterialBinding, MaterialLibrary, MaterialShader, Parameter
-from numpyecs.DefaultMaterial import DefaultMaterialShader, TRANSPARENCY_INTERFACE
+from numpyecs.DefaultMaterial import DefaultMaterialShader
 from numpyecs.MaterialRenderer import MaterialRenderer, MaterialMesh, DrawInstance
 from numpyecs.RenderContext import RenderContext, Texture, TextureUsage, Shader, RenderPipeline
 from numpyecs.TransparencyData import VERTEX_DTYPE
@@ -56,7 +57,7 @@ def test_jinja_material_keeps_default_features_and_adds_typed_parameters(tmp_pat
 	return vec3f(p.custom);
 #endblock
 ''')
-	source = MaterialLibrary([shader]).source
+	source = Shader.__new__(Shader)._render_source(None, str(Path(__file__).resolve().parents[1]/"src/shaders/stochastic_geometry.shader"), None, None, {"material_library": MaterialLibrary([shader])})[0]
 	assert "return vec3f(p.custom)" in source
 	assert "fn default_lighting_0" in source
 	assert "fn opacity_0" in source
@@ -69,7 +70,7 @@ def test_material_source_and_template_are_mutually_exclusive():
 	with pytest.raises(ValueError, match="exactly one"):
 		DefaultMaterialShader(template="default_material.shader", source="")
 	with pytest.raises(ValueError, match="exactly one"):
-		MaterialShader(interface=TRANSPARENCY_INTERFACE)
+		MaterialShader()
 
 
 def test_child_template_owns_defaults_scopes_and_route_dependent_values(tmp_path):
@@ -92,8 +93,9 @@ def test_child_template_owns_defaults_scopes_and_route_dependent_values(tmp_path
 	library = MaterialLibrary([transparent])
 	packed = library.pack([MaterialBinding(transparent, overrides={"rim_power": 5, "grazing_fade": True})])
 	assert packed[2].size > 0
-	assert "rim_power: f32" in library.source
-	assert "parameter(" not in library.source  # declarations never reach WGSL
+	source = Shader.__new__(Shader)._render_source(None, str(Path(__file__).resolve().parents[1]/"src/shaders/stochastic_geometry.shader"), None, None, {"material_library": library})[0]
+	assert "rim_power: f32" in source
+	assert "parameter(" not in source  # declarations never reach WGSL
 
 
 @pytest.mark.parametrize("declaration", [
@@ -106,7 +108,7 @@ def test_invalid_shader_declarations_fail_before_gpu_creation(tmp_path, declarat
 	path = tmp_path / "bad.shaderlib"
 	path.write_text('#extends "material_surface.shaderlib"\n#block parameters\n'+declaration+'\n#endblock\n')
 	with pytest.raises(ValueError):
-		MaterialShader(interface=TRANSPARENCY_INTERFACE, template=path)
+		MaterialShader( template=path)
 
 
 

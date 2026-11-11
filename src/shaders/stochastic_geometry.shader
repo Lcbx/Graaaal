@@ -1,4 +1,5 @@
 #include "draw_common.shaderlib"
+#set MATERIAL_STAGE = "geometry"
 #include "stochastic_common.shaderlib"
 #include "utils_transform.shaderlib"
 #include "utils_texture.shaderlib"

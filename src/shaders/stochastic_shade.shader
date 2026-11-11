@@ -1,3 +1,4 @@
+#set MATERIAL_STAGE = "shading"
 #include "stochastic_common.shaderlib"
 #include "draw_common.shaderlib"
 #include "utils_transform.shaderlib"

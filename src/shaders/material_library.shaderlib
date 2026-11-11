@@ -1,0 +1,96 @@
+// Parameter layouts and hook dispatch for the opaque/stochastic renderer.
+#set LIBRARY = PARAMS.material_library
+struct Materials { values: array<vec4u>, }
+struct InstanceOverrides { values: array<vec4u>, }
+struct MaterialHeaders { values: array<vec4u>, }
+
+fn library_material_count() -> u32 { return arrayLength(&material_headers.values); }
+
+#for shader in LIBRARY.shaders
+#set index = loop.index0
+struct Params{{ index }} {
+#if shader.parameters
+#for name, parameter in shader.parameters.items()
+	{{ name }}: {{ parameter.kind }},
+#endfor
+#else
+	_unused: u32,
+#endif
+}
+
+fn parameters_{{ index }}(material_id: u32, instance_offset: u32) -> Params{{ index }} {
+#if LIBRARY.parameter_layouts[shader]["material"].slot_count
+	let material_offset = material_headers.values[material_id].y;
+#endif
+	var p: Params{{ index }};
+#for name, parameter in shader.parameters.items()
+#set scope = parameter.scope
+#set slot, lane = LIBRARY.parameter_layouts[shader][scope].offsets[name]
+#set buffer = "material_parameters" if scope == "material" else "instance_parameters"
+#set offset = "material_offset" if scope == "material" else "instance_offset"
+#set swizzle = "xyzw"[lane:lane+LIBRARY.kind_widths[parameter.kind]]
+#if parameter.kind == "bool"
+	p.{{ name }} = {{ buffer }}.values[{{ offset }}+{{ slot }}u].{{ swizzle }} != 0u;
+#elif parameter.kind == "u32"
+	p.{{ name }} = {{ buffer }}.values[{{ offset }}+{{ slot }}u].{{ swizzle }};
+#else
+	p.{{ name }} = bitcast<{{ parameter.kind }}>({{ buffer }}.values[{{ offset }}+{{ slot }}u].{{ swizzle }});
+#endif
+#endfor
+	return p;
+}
+
+{{ shader.render(index, MATERIAL_STAGE) }}
+#endfor
+
+fn library_vertex(id: u32, position: vec3f, normal: vec3f, uv: vec2f) -> MaterialVertex {
+	let key = metadata[id].yw;
+	switch material_headers.values[key.x].x {
+#for shader in LIBRARY.shaders
+		case {{ loop.index0 }}u: { return vertex_{{ loop.index0 }}(parameters_{{ loop.index0 }}(key.x, key.y), position, normal, uv); }
+#endfor
+		default: { return MaterialVertex(position, normal, uv); }
+	}
+}
+
+fn library_material(id: u32) -> Material {
+	let key = metadata[id].yw;
+	switch material_headers.values[key.x].x {
+#for shader in LIBRARY.shaders
+		case {{ loop.index0 }}u: { return surface_{{ loop.index0 }}(parameters_{{ loop.index0 }}(key.x, key.y)); }
+#endfor
+		default: { return Material(); }
+	}
+}
+
+fn library_shade(id: u32, material: Material, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
+	let key = metadata[id].yw;
+	switch material_headers.values[key.x].x {
+#for shader in LIBRARY.shaders
+		case {{ loop.index0 }}u: { return shade_{{ loop.index0 }}(material, parameters_{{ loop.index0 }}(key.x, key.y), uv, position, normal, lod); }
+#endfor
+		default: { return vec3f(0.0); }
+	}
+}
+
+#if MATERIAL_STAGE == "geometry"
+fn library_opacity(id: u32, material: Material, alpha: vec3f, uv: vec2f, position: vec3f, lod: f32) -> vec3f {
+	let key = metadata[id].yw;
+	switch material_headers.values[key.x].x {
+#for shader in LIBRARY.shaders
+		case {{ loop.index0 }}u: { return opacity_{{ loop.index0 }}(material, parameters_{{ loop.index0 }}(key.x, key.y), alpha, uv, position, lod); }
+#endfor
+		default: { return alpha; }
+	}
+}
+
+fn library_grazing(id: u32) -> vec3f {
+	let key = metadata[id].yw;
+	switch material_headers.values[key.x].x {
+#for shader in LIBRARY.shaders
+		case {{ loop.index0 }}u: { return grazing_{{ loop.index0 }}(parameters_{{ loop.index0 }}(key.x, key.y)); }
+#endfor
+		default: { return vec3f(0.0); }
+	}
+}
+#endif

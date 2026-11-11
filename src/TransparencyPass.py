@@ -125,7 +125,7 @@ class TransparencyPass:
 		grazing_fade=None, sample_count=1, winner_count=2, noise_footprint_balance=0.0, noise_footprint_balancing=False,
 		force_single_contributor=False, winner_mix="average", reconstruction="fragment", reconstruction_passes=1, early_b_rejection=False,
 		noise_anchor_pixels=24.0, noise_anchor_subdivisions=4,
-		opaque_color=None, opaque_depth=None, material_source=None, material_library=None, material_shading_library=None,
+		opaque_color=None, opaque_depth=None, material_source=None, material_library=None,
 		geometry_shader=None, shading_shader=None, compose_shader=None):
 		if (geometry_shader is None) != (shading_shader is None):
 			raise ValueError("Custom deformation requires matched geometry and shading shaders")
@@ -168,7 +168,6 @@ class TransparencyPass:
 		self._custom_shaders = (geometry_shader, shading_shader, compose_shader)
 		self._material_source = material_source
 		self._material_library = material_library
-		self._material_shading_library = material_library if material_shading_library is None else material_shading_library
 		self._shader_sets = {}
 		self._geometry_shaders = {}
 		self._reconstruction_shaders = {}
@@ -257,7 +256,7 @@ class TransparencyPass:
 		if key not in self._shader_sets:
 			geometry, shading, compose = self._custom_shaders
 			params = {"material_source": self._material_source, "sample_count": count,
-				"material_library": self._material_shading_library,
+				"material_library": self._material_library,
 				"winner_count": min(self.winner_count, 2),
 				"force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix}
 			self._shader_sets[key] = (

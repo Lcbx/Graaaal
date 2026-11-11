@@ -30,7 +30,7 @@ fn opacity(material: Material, uv: vec2f, lod: f32) -> vec3f {
 storage<2, 6, read> material_parameters: Materials;
 storage<2, 7, read> instance_parameters: InstanceOverrides;
 storage<2, 8, read> material_headers: MaterialHeaders;
-{{ PARAMS.material_library }}
+#include "material_library.shaderlib"
 #elif PARAMS.get("material_source") is not none
 {{ PARAMS.material_source }}
 #else
