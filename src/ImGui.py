@@ -7,6 +7,7 @@ Create after init_window(), render after the scene, and close before cleanup().
 from contextlib import contextmanager
 
 import glfw
+from pathlib import Path
 
 from .RenderContext import RenderContext
 
@@ -25,9 +26,15 @@ class ImGui:
 		self._backend = None
 		previous = imgui.get_current_context()
 		self._imgui_context = imgui.create_context()
+		self.font = None
+
 		try:
 			imgui.set_current_context(self._imgui_context)
 			self._backend = ImguiWgpuBackend(context.device, context.presentation_format)
+
+			self.set_font(Path(__file__).parent / "data/GlacialIndifference-Regular.otf")
+			self.set_theme("black_is_black")
+			
 			self._keys = self._key_map()
 			self._update_display()
 			self.io.add_mouse_pos_event(*glfw.get_cursor_pos(context.window))
@@ -45,6 +52,20 @@ class ImGui:
 		finally:
 			if previous is not None:
 				imgui.set_current_context(previous)
+
+	def set_theme(self, name: str):
+		from imgui_bundle import hello_imgui
+		hello_imgui.apply_theme(hello_imgui.ImGuiTheme_[name])
+
+	def set_font(self,font_path:Path):
+		if font_path.exists():
+			try:
+				self.io.fonts.clear()
+				self.font = self.io.fonts.add_font_from_file_ttf(str(font_path), 18.0)
+			except Exception as e:
+				print(f"Error reading font file: {e}")
+		else:
+			print(f"font not found : {font_path}")
 
 	@property
 	def io(self):
