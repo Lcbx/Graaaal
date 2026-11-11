@@ -52,7 +52,7 @@ def load_transparency_scene(path):
 
 class GeometryBatches:
 	"""Static glTF primitives submitted directly through DrawBatches."""
-	def __init__(self, primitives, materials, transparency, transparent):
+	def __init__(self, primitives, materials, transparency:TransparencyPass, transparent:bool):
 		primitives = [p for p in primitives if (materials[p.material_id]["surface"][2] != 0) == transparent]
 		self.data = DrawBatches(MESH_INSTANCE_DTYPE)
 		self.metadata = GpuBuffer(np.zeros((1, 4), dtype=np.uint32), BufferUsage.STORAGE | BufferUsage.COPY_DST)
@@ -88,8 +88,8 @@ class GeometryBatches:
 
 
 transparency: TransparencyPass
-opaque: GeometryBatches
-transparent: GeometryBatches
+opaque_batches: GeometryBatches
+transparent_batches: GeometryBatches
 camera: Camera
 hzb: HZB
 center: np.ndarray
@@ -103,7 +103,7 @@ def init_scene(path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_P
 	sample_count=1, winner_count=2, winner_mix="average", noise_mode="anchored_blue",
 	reconstruction="fragment", reconstruction_passes=1):
 	"""Initialize the example's global render data after device setup."""
-	global transparency, opaque, transparent, camera, hzb, center, radius, angle, orbit, distance
+	global transparency, opaque_batches, transparent_batches, camera, hzb, center, radius, angle, orbit, distance
 	primitives, materials, images, vertices = load_transparency_scene(path)
 	# Ignore a large flat ground plane when framing the example.
 	objects = [p.vertices["position"] for p in primitives if np.ptp(p.vertices["position"][:, 1]) > 0.01]
@@ -125,8 +125,8 @@ def init_scene(path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_P
 		bilateral_filter=bilateral_filter, grazing_fade=grazing_fade, sample_count=sample_count, winner_count=winner_count,
 		winner_mix=winner_mix, noise_mode=noise_mode, reconstruction=reconstruction, reconstruction_passes=reconstruction_passes)
 	hzb = HZB()
-	opaque = GeometryBatches(primitives, materials, transparency, False)
-	transparent = GeometryBatches(primitives, materials, transparency, True)
+	opaque_batches = GeometryBatches(primitives, materials, transparency, False)
+	transparent_batches = GeometryBatches(primitives, materials, transparency, True)
 	camera = Camera(tuple(center + (radius, radius*0.65, radius)), tuple(center), (0, 1, 0), 55,
 		near=max(0.01, radius/1000), far=radius*100)
 	angle, orbit, distance = 0.65, False, radius*1.4
@@ -168,7 +168,7 @@ DEBUG_VIEW_HELP = {
 		"Use this to check opacity independently of winner selection and reconstruction.",
 	"winner": "Raw selected color: averaged in Average mode, or the first successful attempt in Fill mode. "
 		"Missing winners contribute zero. This view reveals the stochastic pattern before filtering.",
-	"reconstruction": "Transparent contribution without the opaque background: filtered when enabled, or the point estimate at 1 x 1. "
+	"reconstruction": "transparent contribution without the opaque background: filtered when enabled, or the point estimate at 1 x 1. "
 		"Use this to compare smoothing and edge preservation while tuning.",
 	"filter_support": "Effective filter support as a fraction of the kernel area. Brighter pixels have more useful "
 		"filter weight spread across neighbors. This includes samples without a winner; brightness does not count surviving fragments.",
@@ -443,7 +443,7 @@ def on_char(code):
 	if chr(code) == " ":
 		orbit = not orbit
 	elif chr(code).lower() == "r":
-		transparent.data.draw_batches.reverse()
+		transparent_batches.data.draw_batches.reverse()
 	elif chr(code) in ("1", "3", "5", "9"):
 		size = int(chr(code))
 		transparency.set_bilateral_filter(replace(transparency.bilateral_filter, kernel_size=size))
@@ -484,31 +484,31 @@ def render_frame(*, profiler=None):
 	view_projection = transparency.update_camera(camera)
 	commands = RenderContext.commands("stochastic_renderer")
 	if profiler is not None: commands = profiler.wrap(commands)
-	for geometry in (opaque, transparent):
+	for geometry in (opaque_batches, transparent_batches):
 		geometry.prepare(commands, camera, view_projection)
 	if transparency.sample_count == 1:
 		hzb.resize((width, height))
 		# Stochastic cutout surfaces cannot contribute conservative occluder depth.
 		with commands.render_pass(color=(), depth=hzb.depth_texture.depth_attachment(clear=1.0),
 			label="depth_prepass") as render:
-			opaque.draw(render, "prepass", pass_override=opaque.depth_pass)
+			opaque_batches.draw(render, "prepass", pass_override=opaque_batches.depth_pass)
 		hzb.build(commands)
-		for geometry in (opaque, transparent):
+		for geometry in (opaque_batches, transparent_batches):
 			HiZCuller().record(commands, geometry.visibility, hzb_view=hzb.view)
 	# Pixel-center depth cannot conservatively occlude all MSAA samples. At 4x,
 	# draw both lists directly from the frustum visibility prepared above.
 	with transparency.opaque_pass(commands) as render:
-		opaque.draw(render, "main")
+		opaque_batches.draw(render, "main")
 	# The point estimator never samples a reconstruction guide.
 	if transparency.bilateral_filter.kernel_size != 1:
 		with transparency.guide_pass(commands) as render:
-			transparent.draw(render, "main", pass_override=transparent.passes.guide)
+			transparent_batches.draw(render, "main", pass_override=transparent_batches.passes.guide)
 	with transparency.transmittance_pass(commands) as render:
-		transparent.draw(render, "transmittance")
+		transparent_batches.draw(render, "transmittance")
 	for stream in range(transparency.winner_count):
 		with transparency.selection_pass(commands, stream=stream) as render:
-			transparent.draw(render, transparency.selection_name(stream))
-		transparency.shade_winner(commands, transparent.passes, stream=stream)
+			transparent_batches.draw(render, transparency.selection_name(stream))
+		transparency.shade_winner(commands, transparent_batches.passes, stream=stream)
 	transparency.compose(commands, RenderContext.screen())
 	RenderContext.submit(commands.finish())
 	return True
