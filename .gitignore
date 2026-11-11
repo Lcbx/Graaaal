@@ -15,3 +15,6 @@ build/*
 
 # sublime
 project.sublime-workspace
+
+# benchmark result data
+scenes/benchmarks/results/*
