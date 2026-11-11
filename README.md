@@ -1,4 +1,4 @@
-# NumPy ECS and procedural rendering
+# Graaal game engine
 
 Install the checkout from its repository root with `pip install -e .`.
 The Python package is `numpyecs`; core simulation needs only NumPy. GPU rendering,

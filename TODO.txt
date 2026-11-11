@@ -5,10 +5,11 @@
 * implement ramp / toon shading
 * implement shadow maps (perspective warping, cascaded shadow maps (3–4 splits)
 * add SSAO
+* add FXAA
+* make wgpu-py Canvas use msaa for main buffer (?)
 * implement grid-based ambient probes
 * experiment with a kuwahara material
 * add post-process depth/normal edge detection outlines
-* support msaa (NOTE: wgpu-py Canvas does not per default)
 * ensure depth prepass only has close / big, not alpha-tested surfaces 
 * implement gpu animation using custom vertex attributes and animation texture atlas
 * use openAL for binaural audio
@@ -17,9 +18,9 @@
 * implement parallax texture mapping
 * implement triplanar mapping
 * networking : use udp hole punching (users must exchange IP) or steamPeer
-* consider history buffer for TAA, DLSS/FSR upscaling
 
 not doing :
 - Meshlets / task shaders
 - Dynamic GI / radiance cascades
 - Inverted-hull outlines
+- TAA, DLSS/FSR upscaling
