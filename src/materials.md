@@ -179,9 +179,35 @@ material templates must not declare GPU entry points.
 A generic `MaterialShader` can extend `material_surface.shaderlib` and implement
 its own hooks without depending on the default lit material. The inherited base template supplies the required five hook functions.
 
-## Time and vertex displacement
+## Custom frame fields and vertex displacement
 
-Time is available directly from the renderer-owned `frame` uniform:
+Applications can append uniform-compatible fields to the shared `Frame` struct at
+renderer construction. The schema is fixed for that renderer and shared by the
+geometry, winner-shading, composition and reconstruction shaders.
+
+```python
+renderer = MaterialRenderer(meshes=meshes, frame_fields={
+    "time": ("f32", 0.0),
+    "wind": ("vec3f", (0, 0, 0)),
+})
+renderer.record(commands, size, camera, output_attachment,
+    frame={"time": elapsed, "wind": wind})
+```
+
+Custom fields are accessed as `frame.time` or `frame.wind` in material and
+regular WGSL code. `frame` updates are optional: fields not supplied retain
+their previous values. The provided defaults initialize fields before the
+first frame. The application owns the clock; no time value is built into the
+renderer. Names cannot conflict with built-in `Frame` fields, and values must
+match the declared uniform type and be finite. Changing field types requires
+creating a new renderer; changing values does not recompile shaders.
+
+Low-level `TransparencyPass` accepts the same `frame_fields` constructor
+argument and `frame` values in `update_frame()` or `update_camera()`.
+Frame fields do not occupy material or instance parameter slots and do not
+repack material dictionaries.
+
+For example, a material can use application-supplied time in its vertex hook:
 
 ```jinja2
 #block vertex
@@ -189,15 +215,6 @@ Time is available directly from the renderer-owned `frame` uniform:
     return MaterialVertex(position+vec3f(offset, 0.0, 0.0), normal, uv);
 #endblock
 ```
-
-`frame.time` is elapsed seconds since the MaterialRenderer was created. Supply
-`renderer.record(..., time=seconds)` to use an application clock, seek, pause or
-render reproducibly. The example accumulates RenderContext.frame_time and stops
-advancing its clock while paused. Low-level TransparencyPass.update_frame() and
-update_camera() accept `time=seconds`, defaulting to zero.
-
-Frame uniforms do not occupy shared/instance parameter slots or require material
-dictionaries to be repacked. They cannot be assigned through those dictionaries.
 
 The vertex hook receives object-space position/normal and UVs, and returns
 `MaterialVertex(position, normal, uv)` before the instance transform. Update the
@@ -249,7 +266,7 @@ existing explicit invalidation path. TRANSPARENT is available in templates for
 route-dependent defaults, as used by the default alpha_mode declaration.
 
 Supported types are f32, vec2f, vec3f, vec4f, u32 and bool. Each parameter declares
-material, instance or frame scope. Shared dictionaries are deduplicated by identity per
+material or instance scope. Shared dictionaries are deduplicated by identity per
 shader. Fields share lanes in aligned 16-byte `vec4u` slots, preserving
 float/integer bits. Scalars use one lane, bools use uint32 zero/one, and vectors
 remain within one slot. `MaterialLibrary.parameter_layouts[shader][scope]`
@@ -359,7 +376,7 @@ material families.
 
 | Struct | Bound value / use | Ownership and updates |
 | --- | --- | --- |
-| `Frame` | `frame`, uniform at group 0 binding 0 | View/projection, camera position, clip/noise settings, legacy grazing and time; changed ranges only |
+| `Frame` | `frame`, uniform at group 0 binding 0 | View/projection, camera position, clip/noise settings, legacy grazing and optional application fields; changed ranges only |
 | `Lighting` | `lighting`, uniform at group 0 binding 1 | Scene directional light, currently `light_dir: vec4f`; uploaded only when changed |
 | `Material` | Shader-local evaluated surface value; direct materials also use `array<Material>` | Common color, emission, surface, opacity and flags contract |
 | `Materials` | `material_parameters`, storage at group 2 binding 6 | Runtime `values: array<vec4u>` containing compact shared dictionary records |
@@ -382,13 +399,17 @@ examples above. Default lighting math lives once in `material_lighting.shaderlib
 family-specific `default_lighting` adapters retain each family's coefficients.
 
 `Frame` and `Lighting` are declared once in `frame.shaderlib` and included by
-raster, deferred and composition modules. `Frame` is currently 192 bytes and
-`Lighting` 16 bytes. Supply lighting from Python with:
+raster, deferred and composition modules. The shared layout includes any
+`frame_fields` registered at construction. `Lighting` is 16 bytes. Supply
+lighting from Python with:
 
 ```python
-renderer.record(commands, size, camera, output, time=seconds,
-                light_dir=(0.4, 0.8, 0.3))
+renderer.record(commands, size, camera, output,
+                light_dir=(0.4, 0.8, 0.3), frame={"time": seconds})
 ```
+
+The `frame` argument requires `frame_fields={"time": ("f32", 0.0)}` at
+construction, as described above.
 
 The low-level `TransparencyPass.update_frame()` and `update_camera()` accept the
 same `light_dir` argument. Material response coefficients (`ambient`, `diffuse`,

@@ -120,7 +120,7 @@ def benchmark(size=256, frames=30, *, noise_mode="uv_blue_lerp", improvements=Fa
 			if timestamps:
 				cmd.handle.begin_compute_pass(timestamp_writes=dict(query_set=queries,
 					beginning_of_pass_write_index=0, end_of_pass_write_index=1)).end()
-			renderer.record(cmd, (size, size), camera, output.color_attachment(), time=0)
+			renderer.record(cmd, (size, size), camera, output.color_attachment())
 			if timestamps:
 				cmd.handle.begin_compute_pass(timestamp_writes=dict(query_set=queries,
 					beginning_of_pass_write_index=2, end_of_pass_write_index=3)).end()

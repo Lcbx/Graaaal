@@ -107,7 +107,7 @@ def run_scene():
 	RenderContext.init_window(1100, 760, "Materials | M: MSAA | D: default | Space: orbit",
 		required_gpu_features=["indirect-first-instance"])
 	world, entities, meshes, shared, opaque = make_world()
-	renderer = MaterialRenderer(meshes=meshes)
+	renderer = MaterialRenderer(meshes=meshes, frame_fields={"time": ("f32", 0.0)})
 	adapter = EcsMaterialAdapter(renderer, world)
 	overrides = world.get(MaterialInstance)[entities].overrides
 	striped = meshes[-1].shader.default_material
@@ -194,7 +194,7 @@ def run_scene():
 				camera.position = Vec3(9*sin(angle), 1.3, 9*cos(angle))
 				adapter.sync()
 				commands = RenderContext.commands("material_example")
-				renderer.record(commands, RenderContext.window_dimensions, camera, RenderContext.screen(), time=animation_time)
+				renderer.record(commands, RenderContext.window_dimensions, camera, RenderContext.screen(), frame={"time": animation_time})
 				RenderContext.submit(commands.finish())
 				gui.render(draw_controls)
 	finally:

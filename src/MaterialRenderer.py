@@ -1,7 +1,6 @@
 """DrawBatches integration for dictionary materials and inherited shading code."""
 from dataclasses import dataclass, field
 from itertools import count
-from time import perf_counter
 
 import numpy as np
 
@@ -46,7 +45,7 @@ class MaterialRenderer:
 	DrawInstance lists are an optional direct-draw convenience. record() uses frustum
 	culling and caller-owned commands/output; presentation/submission remain external.
 	"""
-	def __init__(self, instances=None, *, meshes=None, shaders=(), blue_noise=None, base_textures=None, **transparency_options):
+	def __init__(self, instances=None, *, meshes=None, shaders=(), blue_noise=None, base_textures=None, frame_fields=None, **transparency_options):
 		self.instances = None if instances is None else list(instances)
 		self.meshes = list(dict.fromkeys(meshes if meshes is not None else (i.mesh for i in self.instances or ())))
 		if not self.meshes: raise ValueError("Register at least one mesh")
@@ -81,7 +80,7 @@ class MaterialRenderer:
 			base_textures = white.view(dimension="2d-array")
 		self.transparency = TransparencyPass(materials=GpuBuffer(np.zeros(1, dtype=MATERIAL_DTYPE), usage), base_textures=base_textures,
 			vertices=GpuBuffer(np.concatenate(vertices), usage), blue_noise=blue_noise,
-			material_library=self.library,
+			material_library=self.library, frame_fields=frame_fields,
 			**transparency_options)
 		self.geometry = [self.transparency.create_geometry_passes(self.metadata, transparent=transparent,
 			instances=self.draws.buffers["instances"], geometry_resources=self.parameters,
@@ -89,7 +88,6 @@ class MaterialRenderer:
 		self._register_passes()
 		self.visibility = self.draws.create_visibility()
 		if self.instances is not None: self.sync()
-		self._clock_start = perf_counter()
 
 	def _bindings(self, instances):
 		return [MaterialBinding(i.shader or i.mesh.shader,
@@ -174,13 +172,13 @@ class MaterialRenderer:
 	def set_early_b_rejection(self, enabled):
 		if self.transparency.set_early_b_rejection(enabled): self._register_passes()
 
-	def record(self, commands, size, camera, output, *, time=None, light_dir=(0.4, 0.8, 0.3)):
-		"""Record a frame; time overrides elapsed seconds for deterministic animation."""
+	def record(self, commands, size, camera, output, *, frame=None, light_dir=(0.4, 0.8, 0.3)):
+		"""Record a frame, updating any supplied application frame fields."""
 		self.sync()
 		oit = self.transparency
 		if size[0] <= 0 or size[1] <= 0: return
 		oit.resize(size)
-		vp = oit.update_camera(camera, time=perf_counter()-self._clock_start if time is None else time, light_dir=light_dir)
+		vp = oit.update_camera(camera, frame=frame, light_dir=light_dir)
 		FrustumCuller().record(commands, self.visibility, camera_position=camera.position, view_projection=vp)
 		external = oit.has_external_opaque_inputs
 		if not external or any(batch.shader_id == 0 and batch.mesh_id is not None for batch in self.draws.draw_batches):

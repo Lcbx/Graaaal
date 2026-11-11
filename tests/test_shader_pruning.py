@@ -114,3 +114,17 @@ def test_material_shader_variants_expand(sample_count, winner_count, winner_mix,
 	compose = load_shader("stochastic_compose.shader", srgb_surface=True, compute_reconstruction=False, **base)
 	assert "compose" in compose.entry_points
 	assert "linear_to_srgb" not in compose.functions
+
+
+def test_custom_frame_schema_is_shared_across_render_stages():
+    frame_fields = {"time": "f32", "wind": "vec3f", "seed": "u32"}
+    params = dict(frame_fields=frame_fields, srgb_surface=False, sample_count=4,
+        winner_count=2, winner_mix="average", compute_reconstruction=True, filter_input=True,
+        filter_pairs=True, tiled_reconstruction=True)
+    modules = [load_shader(name, **params) for name in (
+        "stochastic_geometry.shader", "stochastic_shade.shader", "stochastic_compose.shader",
+        "stochastic_filter.shader", "stochastic_reconstruct.shader")]
+    dtype = modules[0].uniforms["frame"].dtype
+    assert dtype.names[-3:] == ("time", "wind", "seed")
+    assert all(module.uniforms["frame"].dtype == dtype for module in modules)
+    assert "time" not in load_shader("stochastic_geometry.shader").uniforms["frame"].dtype.names

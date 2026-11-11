@@ -91,14 +91,14 @@ storage<0, 0, read_write> words: array<u32>;
 def test_animation_and_dictionary_edits_upload_words_and_share_frame_binding(count):
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	world, _, meshes, shared, _ = make_world()
-	renderer = MaterialRenderer(meshes=meshes, target_format="rgba8unorm", sample_count=count)
+	renderer = MaterialRenderer(meshes=meshes, target_format="rgba8unorm", sample_count=count, frame_fields={"time": ("f32", 0.0)})
 	adapter = EcsMaterialAdapter(renderer, world)
 	adapter.sync()
 	camera = Camera((0, 1.3, 9), (0, 1.3, 0), (0, 1, 0), 50)
 	output = Texture((48, 32), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT)
 	def record(seconds):
 		commands = RenderContext.commands()
-		renderer.record(commands, (48, 32), camera, output.color_attachment(), time=seconds)
+		renderer.record(commands, (48, 32), camera, output.color_attachment(), frame={"time": seconds})
 		RenderContext.submit(commands.finish())
 	record(0)
 	try:
@@ -170,7 +170,7 @@ def test_packed_vectors_uint_and_bool_reach_the_gpu_without_bit_loss(count):
 	assert "@must_use fn unused_helper_0" in renderer.transparency.shader.info.source
 	output = Texture((32, 32), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	commands = RenderContext.commands()
-	renderer.record(commands, (32, 32), Camera((0, 0, 4), (0, 0, 0), (0, 1, 0), 50), output.color_attachment(), time=0)
+	renderer.record(commands, (32, 32), Camera((0, 0, 4), (0, 0, 0), (0, 1, 0), 50), output.color_attachment())
 	RenderContext.submit(commands.finish())
 	raw = RenderContext.device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": 128}, (32, 32, 1))
 	pixel = np.frombuffer(raw, dtype=np.uint8).reshape(32, 32, 4)[16, 16, :3]

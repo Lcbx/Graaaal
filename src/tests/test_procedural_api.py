@@ -109,27 +109,35 @@ def test_switching_between_arrays_and_ecs_invalidates_order(draws):
     np.testing.assert_array_equal(draws.mesh_field("lod_id"), [10, 20])
 
 
-def frame_state():
+def frame_state(frame_fields=None):
     oit = transparency.TransparencyPass.__new__(transparency.TransparencyPass)
     oit.size = (32, 16)
     oit.noise_scale = 1.0
     oit.sample_count = 1
     oit.noise_mode = "uv_blue_lerp"
-    oit.uniforms = NS(content={}, upload_changed=Mock())
+    oit.frame_fields = frame_fields or {}
+    if frame_fields:
+        shader = rc.Shader.__new__(rc.Shader)
+        source, declarations = shader._render_source(None, str(transparency.SHADERS / "stochastic_geometry.shader"), None, None,
+            {"frame_fields": {name: spec[0] for name, spec in frame_fields.items()}})
+        dtype = rc.ShaderSource(source, declarations=declarations).uniforms["frame"].dtype
+        oit.uniforms = NS(content=np.zeros(1, dtype=dtype), dtype=dtype, upload_changed=Mock())
+    else:
+        oit.uniforms = NS(content={}, upload_changed=Mock())
     oit.lighting_uniforms = NS(content={}, upload_changed=Mock())
     return oit
 
 
 def test_frame_values_need_no_camera_and_preserve_matrix_convention():
-    oit = frame_state()
+    oit = frame_state({"time": ("f32", 0.0)})
     view, projection = np.eye(4), np.diag([2, 3, 4, 1])
     view[3, 0] = 5
     result = oit.update_frame(view=view, projection=projection,
-        camera_position=[1, 2, 3], near=0.1, far=100, time=2.5)
+        camera_position=[1, 2, 3], near=0.1, far=100, frame={"time": 2.5})
     np.testing.assert_array_equal(result, view @ projection)
     assert result.dtype == np.float32
     assert oit.uniforms.content["time"] == 2.5
-    np.testing.assert_array_equal(oit.uniforms.content["camera_position"], [1, 2, 3, 1])
+    np.testing.assert_array_equal(oit.uniforms.content["camera_position"][0], [1, 2, 3, 1])
     oit.uniforms.upload_changed.assert_called_once()
     camera = NS(view=lambda: view, projection=Mock(return_value=projection),
         position=[1, 2, 3], near=0.1, far=100)
@@ -138,19 +146,56 @@ def test_frame_values_need_no_camera_and_preserve_matrix_convention():
 
 
 @pytest.mark.parametrize("overrides", [
-    {"time": np.nan}, {"time": np.inf}, {"time": 1e40}, {"time": 1j}, {"time": True},
+    {"frame": {"time": np.nan}}, {"frame": {"time": np.inf}}, {"frame": {"time": 1e40}},
+    {"frame": {"time": 1j}}, {"frame": {"time": True}}, {"frame": {"other": 1}},
     {"view": np.eye(3)}, {"projection": np.full((4, 4), np.nan)},
     {"camera_position": [0, 0]}, {"light_dir": [0, np.inf, 0]},
     {"near": 0}, {"near": 100}, {"far": np.inf},
 ])
 def test_invalid_frame_values_do_not_write_or_upload(overrides):
-    oit = frame_state()
+    oit = frame_state({"time": ("f32", 0.0)})
     values = dict(view=np.eye(4), projection=np.eye(4), camera_position=[0, 0, 0], near=0.1, far=100)
     values.update(overrides)
     with pytest.raises(ValueError):
         oit.update_frame(**values)
-    assert not oit.uniforms.content
+    assert not np.any(oit.uniforms.content.view(np.uint8))
     oit.uniforms.upload_changed.assert_not_called()
+
+
+def test_custom_frame_fields_share_a_uniform_layout_and_preserve_values():
+    spec = {"wind": ("vec3f", (0, 0, 0)), "tick": ("u32", 7)}
+    oit = frame_state(spec)
+    for name, (_, default) in spec.items():
+        oit.uniforms.content[name] = oit._frame_value(name, default)
+    assert oit.uniforms.dtype.names[-2:] == ("wind", "tick")
+    assert oit.uniforms.content["tick"] == 7
+    values = dict(view=np.eye(4), projection=np.eye(4), camera_position=[0, 0, 0], near=0.1, far=100)
+    oit.update_frame(**values, frame={"wind": (1.0, 2.0, 3.0), "tick": np.uint32(9)})
+    np.testing.assert_array_equal(oit.uniforms.content["wind"][0], [1, 2, 3])
+    assert oit.uniforms.content["tick"] == 9
+    oit.update_frame(**values, frame={"wind": (0.5, 0.0, 0.0)})
+    assert oit.uniforms.content["tick"] == 9
+
+
+@pytest.mark.parametrize("updates", [
+    {"wind": (1, 2)}, {"wind": (1, 2, np.nan)}, {"wind": (1e40, 2, 3)},
+    {"wind": (True, False, True)}, {"tick": -1}, {"tick": 1.5}, {"tick": 2**32},
+    {"no_such_field": 0},
+])
+def test_invalid_custom_frame_fields_leave_uniforms_unchanged(updates):
+    oit = frame_state({"wind": ("vec3f", (0, 0, 0)), "tick": ("u32", 0)})
+    values = dict(view=np.eye(4), projection=np.eye(4), camera_position=[0, 0, 0], near=0.1, far=100)
+    before = oit.uniforms.content.copy()
+    with pytest.raises(ValueError):
+        oit.update_frame(**values, frame=updates)
+    np.testing.assert_array_equal(oit.uniforms.content, before)
+    oit.uniforms.upload_changed.assert_not_called()
+
+
+def test_custom_frame_schema_rejects_reserved_names_and_malformed_specs():
+    for spec in ({"view": ("f32", 0)}, {"time": "f32"}, {"other-field": ("f32", 0)}):
+        with pytest.raises((TypeError, ValueError)):
+            transparency.TransparencyPass(materials=None, base_textures=None, vertices=None, frame_fields=spec)
 
 
 @pytest.mark.parametrize("method,args", [

@@ -15,7 +15,7 @@ def renderer(meshes, **kwargs):
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	noise = Texture((1, 1), format="r32float", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
 	RenderContext.device.queue.write_texture({"texture": noise.handle}, np.array([0.25], dtype=np.float32), {"bytes_per_row": 4}, (1, 1, 1))
-	return MaterialRenderer(meshes=meshes, blue_noise=noise, target_format="rgba8unorm", **kwargs)
+	return MaterialRenderer(meshes=meshes, blue_noise=noise, target_format="rgba8unorm", frame_fields={"time": ("f32", 0.0)}, **kwargs)
 
 
 def test_minimal_jinja_shader_requires_no_default_material_fields():

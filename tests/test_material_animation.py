@@ -66,12 +66,12 @@ def test_deformed_raster_and_deferred_shading_match_at_fixed_times(count, winner
 	renderers = [MaterialRenderer([DrawInstance(MaterialMesh(vertices,
 		DefaultMaterialShader(transparent=transparent, source=ANIMATED_SOURCE),
 		bounds=((0.4, 0, 0), (1.0, 0.8, 0.1))))], target_format="rgba8unorm",
-		sample_count=count, winner_count=winner_count, bilateral_filter=BilateralFilter(kernel_size=1)) for transparent in (False, True)]
+		sample_count=count, winner_count=winner_count, frame_fields={"time": ("f32", 0.0)}, bilateral_filter=BilateralFilter(kernel_size=1)) for transparent in (False, True)]
 	camera = Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 50)
 	output = Texture((96, 64), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	def render(renderer, seconds):
 		commands = RenderContext.commands()
-		renderer.record(commands, (96, 64), camera, output.color_attachment(), time=seconds)
+		renderer.record(commands, (96, 64), camera, output.color_attachment(), frame={"time": seconds})
 		RenderContext.submit(commands.finish())
 		raw = RenderContext.device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": 384}, (96, 64, 1))
 		return np.frombuffer(raw, dtype=np.uint8).reshape(64, 96, 4).copy()
@@ -87,7 +87,7 @@ def test_deformed_raster_and_deferred_shading_match_at_fixed_times(count, winner
 def test_ecs_animation_updates_frame_time_without_repacking_materials(monkeypatch):
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	world, _, meshes, _, _ = make_world()
-	renderer = MaterialRenderer(meshes=meshes, target_format="rgba8unorm")
+	renderer = MaterialRenderer(meshes=meshes, target_format="rgba8unorm", frame_fields={"time": ("f32", 0.0)})
 	adapter = EcsMaterialAdapter(renderer, world)
 	assert adapter.sync()
 	pack = Mock(wraps=renderer.library.pack)
@@ -98,7 +98,7 @@ def test_ecs_animation_updates_frame_time_without_repacking_materials(monkeypatc
 	for seconds in (0.0, 1.0):
 		assert not adapter.sync()
 		commands = RenderContext.commands()
-		renderer.record(commands, (96, 72), camera, output.color_attachment(), time=seconds)
+		renderer.record(commands, (96, 72), camera, output.color_attachment(), frame={"time": seconds})
 		RenderContext.submit(commands.finish())
 		assert renderer.transparency.uniforms.content["time"] == seconds
 	pack.assert_not_called()

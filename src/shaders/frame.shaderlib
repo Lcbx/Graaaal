@@ -6,13 +6,15 @@
 <Frame> clip: vec4f;
 // Legacy direct-material fade: start degrees, end degrees, enabled, reserved.
 <Frame> grazing: vec4f;
-<Frame> time: f32;
 // UV footprint compromise: 0=max derivative, .5=area, 1=min derivative.
 <Frame> noise_footprint_balance: f32;
 // Anchored blue: coarse target in pixels, fine shift subdivisions, reserved.
 <Frame> noise_anchor: vec4f;
+#for name, type_name in PARAMS.get("frame_fields", {}).items()
+{{ field("Frame", name, type_name) }}
+#endfor
 uniform<0, 0> frame: Frame;
 
-// Scene lighting changes independently of camera motion and frame time.
+// Scene lighting changes independently of camera motion and application frame fields.
 <Lighting> light_dir: vec4f;
 uniform<0, 1> lighting: Lighting;

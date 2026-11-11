@@ -163,7 +163,7 @@ def test_gpu_shared_and_inherited_materials_compose_and_update_without_recompili
 	instances, shared, opaque = make_instances()
 	noise = Texture((1, 1), format="r32float", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
 	RenderContext.device.queue.write_texture({"texture": noise.handle}, np.array([0.25], dtype=np.float32), {"bytes_per_row": 4}, (1, 1, 1))
-	renderer = MaterialRenderer(instances, blue_noise=noise, target_format="rgba8unorm", sample_count=count)
+	renderer = MaterialRenderer(instances, blue_noise=noise, target_format="rgba8unorm", frame_fields={"time": ("f32", 0.0)}, sample_count=count)
 	camera = Camera((0, 2.5, 7), (0, 0, 0), (0, 1, 0), 50, near=0.05, far=100)
 	output = Texture((96, 72), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	def render():
@@ -205,7 +205,7 @@ def test_example_shared_highlights_are_visible_and_default_replacement_is_local(
 	instances, shared, opaque = make_instances()
 	noise = Texture((1, 1), format="r32float", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
 	RenderContext.device.queue.write_texture({"texture": noise.handle}, np.array([0.25], dtype=np.float32), {"bytes_per_row": 4}, (1, 1, 1))
-	renderer = MaterialRenderer(instances, blue_noise=noise, target_format="rgba8unorm")
+	renderer = MaterialRenderer(instances, blue_noise=noise, target_format="rgba8unorm", frame_fields={"time": ("f32", 0.0)})
 	camera = Camera((0, 1.3, 9), (0, 1.3, 0), (0, 1, 0), 50, near=0.05, far=100)
 	output = Texture((256, 192), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	def render():

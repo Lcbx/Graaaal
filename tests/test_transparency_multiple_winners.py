@@ -53,7 +53,7 @@ def render(renderer, size=(96, 96)):
 	output = Texture(size, format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	commands = RenderContext.commands("two_winner_test")
 	renderer.record(commands, size, Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 55, near=0.01, far=100),
-		output.color_attachment(), time=0)
+		output.color_attachment())
 	RenderContext.submit(commands.finish())
 	return read(output, np.uint8)
 

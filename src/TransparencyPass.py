@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 from operator import index
 from pathlib import Path
+from collections.abc import Mapping
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -125,7 +126,7 @@ class TransparencyPass:
 		grazing_fade=None, sample_count=1, winner_count=2, noise_footprint_balance=0.0, noise_footprint_balancing=False,
 		force_single_contributor=False, winner_mix="average", reconstruction="fragment", reconstruction_passes=1, early_b_rejection=False,
 		noise_anchor_pixels=24.0, noise_anchor_subdivisions=4,
-		opaque_color=None, opaque_depth=None, material_source=None, material_library=None,
+		opaque_color=None, opaque_depth=None, material_source=None, material_library=None, frame_fields=None,
 		geometry_shader=None, shading_shader=None, compose_shader=None):
 		if (geometry_shader is None) != (shading_shader is None):
 			raise ValueError("Custom deformation requires matched geometry and shading shaders")
@@ -168,6 +169,18 @@ class TransparencyPass:
 		self._custom_shaders = (geometry_shader, shading_shader, compose_shader)
 		self._material_source = material_source
 		self._material_library = material_library
+		if frame_fields is None: frame_fields = {}
+		if not isinstance(frame_fields, Mapping):
+			raise TypeError("frame_fields must map names to (WGSL type, default) pairs")
+		reserved = {"view", "proj", "camera_position", "clip", "grazing", "noise_footprint_balance", "noise_anchor"}
+		self.frame_fields = {}
+		for name, spec in frame_fields.items():
+			if not isinstance(name, str) or not name.isascii() or not name.isidentifier() or name in reserved:
+				raise ValueError(f"Invalid or reserved frame field {name!r}")
+			if not isinstance(spec, (tuple, list)) or len(spec) != 2 or not isinstance(spec[0], str) or not spec[0].strip():
+				raise ValueError(f"Frame field {name!r} requires a WGSL type and default")
+			self.frame_fields[name] = (spec[0], spec[1])
+		self._frame_types = {name: spec[0] for name, spec in self.frame_fields.items()}
 		self._shader_sets = {}
 		self._geometry_shaders = {}
 		self._reconstruction_shaders = {}
@@ -176,6 +189,8 @@ class TransparencyPass:
 		self._winner_settings = None
 		self._activate_shaders(sample_count)
 		self.uniforms = self.shader.uniform_buffer("frame")
+		for name, (_, default) in self.frame_fields.items():
+			self.uniforms.content[name] = self._frame_value(name, default)
 		lighting_shader = next((shader for shader in (self.shader, self.compose_shader)
 			if "lighting" in shader.info.uniforms), None)
 		self.lighting_uniforms = lighting_shader.uniform_buffer("lighting") if lighting_shader else None
@@ -225,7 +240,7 @@ class TransparencyPass:
 				features=("NOISE_FOOTPRINT_BALANCE",) if self.noise_footprint_balancing else (),
 				params={"material_source": self._material_source, "sample_count": count,
 					"winner_count": min(self.winner_count, 2), "force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix,
-					"material_library": self._material_library})
+					"material_library": self._material_library, "frame_fields": self._frame_types})
 		return self._geometry_shaders[key]
 
 	@property
@@ -234,6 +249,8 @@ class TransparencyPass:
 		return self._geometry_shader(1)
 
 	def _frame_group(self, shader):
+		if "frame" in shader.info.uniforms and shader.info.uniforms["frame"].dtype != self.uniforms.dtype:
+			raise ValueError("Shader Frame uniform layout differs from the configured frame_fields")
 		resources = dict(frame=self.uniforms)
 		if "lighting" in shader.info.bindings: resources["lighting"] = self.lighting_uniforms
 		return shader.bind_group(0, **resources)
@@ -256,7 +273,7 @@ class TransparencyPass:
 		if key not in self._shader_sets:
 			geometry, shading, compose = self._custom_shaders
 			params = {"material_source": self._material_source, "sample_count": count,
-				"material_library": self._material_library,
+				"material_library": self._material_library, "frame_fields": self._frame_types,
 				"winner_count": min(self.winner_count, 2),
 				"force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix}
 			self._shader_sets[key] = (
@@ -265,7 +282,8 @@ class TransparencyPass:
 				compose or Shader(filepath=str(SHADERS / "stochastic_compose.shader"),
 					params={"srgb_surface": self.target_format.endswith("-srgb"), "sample_count": count,
 						"winner_count": min(self.winner_count, 2), "force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix,
-						"compute_reconstruction": self.reconstruction == "compute", "filter_input": self.reconstruction_passes > 1}),
+						"compute_reconstruction": self.reconstruction == "compute", "filter_input": self.reconstruction_passes > 1,
+						"frame_fields": self._frame_types}),
 			)
 		return self._shader_sets[key]
 
@@ -292,7 +310,8 @@ class TransparencyPass:
 			if key not in self._pair_shaders:
 				self._pair_shaders[key] = Shader(filepath=str(SHADERS / ("stochastic_reconstruct.shader" if self.reconstruction == "compute" else "stochastic_filter.shader")),
 					params={"sample_count": self.sample_count, "force_single_contributor": self.force_single_contributor,
-						"filter_input": True, "filter_pairs": True, "tiled_reconstruction": self.reconstruction == "compute"})
+						"filter_input": True, "filter_pairs": True, "tiled_reconstruction": self.reconstruction == "compute",
+						"frame_fields": self._frame_types})
 			self.pair_shader = self._pair_shaders[key]
 			if self.reconstruction == "compute":
 				self.pair_pipeline = ComputePipeline(self.pair_shader, entry="reconstruct", layout=self._pipeline_layout(self.pair_shader, "reconstruct"))
@@ -305,7 +324,8 @@ class TransparencyPass:
 		if key not in self._reconstruction_shaders:
 			self._reconstruction_shaders[key] = Shader(filepath=str(SHADERS / "stochastic_reconstruct.shader"),
 				params={"sample_count": self.sample_count, "force_single_contributor": self.force_single_contributor,
-					"tiled_reconstruction": True, "compute_reconstruction": True, "filter_input": self.reconstruction_passes > 1})
+					"tiled_reconstruction": True, "compute_reconstruction": True, "filter_input": self.reconstruction_passes > 1,
+					"frame_fields": self._frame_types})
 		self.reconstruct_shader = self._reconstruction_shaders[key]
 		self.reconstruct_pipeline = ComputePipeline(self.reconstruct_shader, entry="reconstruct",
 			layout=self._pipeline_layout(self.reconstruct_shader, "reconstruct"))
@@ -766,9 +786,28 @@ class TransparencyPass:
 			raise RuntimeError("Resize transparency targets before recording passes or updating frame uniforms")
 		return self.size
 
+	def _frame_value(self, name, value):
+		"""Check one custom uniform field before mutating the frame buffer."""
+		field_dtype = self.uniforms.dtype.fields[name][0]
+		dtype, shape = field_dtype.subdtype or (field_dtype, ())
+		try: supplied = np.asarray(value)
+		except (TypeError, ValueError) as exc: raise ValueError(f"Invalid frame field {name!r}") from exc
+		if supplied.shape != shape or supplied.dtype.kind not in "fiu" or (dtype.kind in "iu" and supplied.dtype.kind not in "iu"):
+			raise ValueError(f"Frame field {name!r} must have shape {shape} and numeric type {dtype}")
+		try:
+			with np.errstate(over="ignore", invalid="ignore"):
+				converted = supplied.astype(dtype)
+			if not np.all(np.isfinite(supplied)) or not np.all(np.isfinite(converted)):
+				raise ValueError()
+			if dtype.kind in "iu" and not np.all(supplied == converted):
+				raise ValueError()
+		except (TypeError, OverflowError, ValueError) as exc:
+			raise ValueError(f"Frame field {name!r} is out of range or non-finite") from exc
+		return converted
+
 	def update_frame(self, *, view: ArrayLike, projection: ArrayLike,
 		camera_position: ArrayLike, near: float, far: float,
-		light_dir: ArrayLike = (0.4, 0.8, 0.3), time: float = 0.0) -> NDArray[np.float32]:
+		light_dir: ArrayLike = (0.4, 0.8, 0.3), frame=None) -> NDArray[np.float32]:
 		"""Upload explicit camera values and return view @ projection for culling.
 
 		Matrices follow the existing row-vector convention. No camera class is
@@ -783,15 +822,15 @@ class TransparencyPass:
 			raise ValueError("Expected finite 4x4 view/projection matrices and vec3 camera/light values")
 		if not (np.isfinite(near) and np.isfinite(far) and 0 < near < far):
 			raise ValueError("Camera clip distances must satisfy 0 < near < far")
-		if isinstance(time, (bool, np.bool_)) or not isinstance(time, (int, float, np.integer, np.floating)):
-			raise ValueError("Frame time must be finite float32 seconds")
-		try: seconds = float(time)
-		except OverflowError: raise ValueError("Frame time must be finite float32 seconds") from None
-		if not np.isfinite(seconds) or abs(seconds) > float(np.finfo(np.float32).max):
-			raise ValueError("Frame time must be finite float32 seconds")
+		if frame is None: frame = {}
+		if not isinstance(frame, Mapping): raise ValueError("frame must be a mapping of field values")
+		unknown = set(frame) - self.frame_fields.keys()
+		if unknown: raise ValueError(f"Unknown frame fields: {sorted(map(str, unknown))}")
+		custom = {name: self._frame_value(name, value) for name, value in frame.items()}
 		values = dict(view=view, proj=projection,
-			camera_position=(*position, 1), clip=(near, far, self.effective_noise_scale, NOISE_MODES.index(self.noise_mode)), time=seconds).items()
-		for name, value in values: self.uniforms.content[name] = value
+			camera_position=(*position, 1), clip=(near, far, self.effective_noise_scale, NOISE_MODES.index(self.noise_mode)))
+		values.update(custom)
+		for name, value in values.items(): self.uniforms.content[name] = value
 		if "light_dir" in (getattr(getattr(self.uniforms.content, "dtype", None), "names", ()) or ()):
 			self.uniforms.content["light_dir"] = (*light, 0)
 		if self.lighting_uniforms is not None:
@@ -800,11 +839,11 @@ class TransparencyPass:
 		self.uniforms.upload_changed()
 		return view @ projection
 
-	def update_camera(self, camera, *, light_dir=(0.4, 0.8, 0.3), time=0.0):
+	def update_camera(self, camera, *, light_dir=(0.4, 0.8, 0.3), frame=None):
 		"""Convenience adapter for camera objects; update_frame accepts plain arrays."""
 		width, height = self._require_targets()
 		return self.update_frame(view=camera.view(), projection=camera.projection(width/height),
-			camera_position=camera.position, near=camera.near, far=camera.far, light_dir=light_dir, time=time)
+			camera_position=camera.position, near=camera.near, far=camera.far, light_dir=light_dir, frame=frame)
 
 	def opaque_pass(self, commands, *, clear=(0.035, 0.05, 0.08, 1), load=False):
 		"""Draw opaque geometry; load=True preserves existing color and depth."""

@@ -393,7 +393,7 @@ def test_gpu_anchored_selection_matches_one_field_at_native_msaa_positions(thres
 	width = height = 16
 	output = Texture((width, height), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT)
 	commands = RenderContext.commands()
-	renderer.record(commands, (width, height), camera, output.color_attachment(), time=0)
+	renderer.record(commands, (width, height), camera, output.color_attachment())
 	RenderContext.submit(commands.finish())
 	flags = RenderContext.device.queue.read_texture({"texture": renderer.transparency.winner_color.handle},
 		{"bytes_per_row": width*8, "rows_per_image": height}, (width, height, count))

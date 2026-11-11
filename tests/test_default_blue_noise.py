@@ -52,13 +52,13 @@ def test_default_texture_cache_does_not_keep_gpu_resources_alive():
 def test_material_renderers_share_default_and_respect_explicit_override(monkeypatch):
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	instances, _, _ = make_instances()
-	first = MaterialRenderer(instances, target_format="rgba8unorm")
-	second = MaterialRenderer(instances, target_format="rgba8unorm")
+	first = MaterialRenderer(instances, target_format="rgba8unorm", frame_fields={"time": ("f32", 0.0)})
+	second = MaterialRenderer(instances, target_format="rgba8unorm", frame_fields={"time": ("f32", 0.0)})
 	assert first.transparency.noise is second.transparency.noise
 	assert first.transparency.noise.size == (64, 64, 1)
 	custom = Texture((1, 1), format="r32float", usage=TextureUsage.TEXTURE_BINDING)
 	loader = Mock(side_effect=AssertionError("Explicit overrides must bypass the default loader"))
 	monkeypatch.setattr(textures, "get_default_blue_noise", loader)
-	third = MaterialRenderer(instances, blue_noise=custom, target_format="rgba8unorm")
+	third = MaterialRenderer(instances, blue_noise=custom, target_format="rgba8unorm", frame_fields={"time": ("f32", 0.0)})
 	assert third.transparency.noise is custom
 	loader.assert_not_called()
