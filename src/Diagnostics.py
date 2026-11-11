@@ -95,3 +95,58 @@ def setup_memory_monitor() -> Callable:
 
 	return print_report
 
+
+def get_draw_counts(renderer, passes=None) -> tuple[int, int]:
+	"""Return (drawable batches, submitted draw calls) without GPU visibility readback.
+
+	DrawBatches defaults to the "main" pass; pass ("prepass", "main") to count
+	both. MaterialRenderer defaults to all draws in record(), including fullscreen
+	composition, for a nonzero output size. Compute dispatches are excluded.
+	"""
+	from .DrawBatches import DrawBatches
+	from .MaterialRenderer import MaterialRenderer
+
+	if isinstance(renderer, MaterialRenderer):
+		draws = renderer.draws
+	elif isinstance(renderer, DrawBatches):
+		draws = renderer
+	else:
+		raise TypeError("Expected DrawBatches or MaterialRenderer")
+	batches = [batch for batch in draws.draw_batches if batch.mesh_id is not None]
+	if passes is not None or isinstance(renderer, DrawBatches):
+		passes = ("main",) if passes is None else (passes,) if isinstance(passes, str) else tuple(passes)
+		return len(batches), sum(name in draws.shaders[batch.shader_id].passes for batch in batches for name in passes)
+
+	oit = renderer.transparency
+	opaque = sum(batch.shader_id == 0 for batch in batches)
+	transparent = sum(batch.shader_id == 1 for batch in batches)
+	filtered = oit.bilateral_filter.kernel_size != 1
+	draw_calls = opaque + transparent * (1 + int(filtered) + oit.winner_count) + 1
+	if filtered and oit.debug_view in ("final", "reconstruction", "filter_support"):
+		if oit.reconstruction == "fragment":
+			draw_calls += (oit.reconstruction_passes - 1) * oit.sample_count
+	return len(batches), draw_calls
+
+
+def get_shader_sources(renderer) -> list[str]:
+	"""Return unique expanded WGSL sources of this renderer's registered shaders.
+
+	Includes its culling shader and, for MaterialRenderer, shading/composition
+	shaders. External passes such as a separately owned HZB are excluded.
+	"""
+	from .DrawBatches import DrawBatches
+	from .MaterialRenderer import MaterialRenderer
+
+	if isinstance(renderer, MaterialRenderer):
+		draws = renderer.draws
+	elif isinstance(renderer, DrawBatches):
+		draws = renderer
+	else:
+		raise TypeError("Expected DrawBatches or MaterialRenderer")
+	shaders = [draws._cull_shader]
+	for shader in draws.shaders.values():
+		shaders.extend(spec.pipeline.shader for spec in shader.passes.values())
+	if isinstance(renderer, MaterialRenderer):
+		oit = renderer.transparency
+		shaders.extend((oit.shading_shader, oit.compose_shader, oit.pair_shader, oit.reconstruct_shader))
+	return list(dict.fromkeys(shader.info.source for shader in shaders if shader is not None))
