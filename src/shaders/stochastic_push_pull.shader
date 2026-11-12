@@ -5,20 +5,20 @@
 <PyramidSettings> sizes: vec4u;
 <PyramidSettings> confidence: vec4f;
 uniform<2, 0> pyramid_settings: PyramidSettings;
-{{ binding('level_pair', 'texture_2d_array<f32>', 2, 1) }}
-{{ binding('level_depth', 'texture_2d_array<f32>', 2, 2) }}
-{{ binding('level_transmission', 'texture_2d_array<f32>', 2, 3) }}
-{{ binding('parent_mu', 'texture_2d_array<f32>', 2, 4) }}
-{{ binding('parent_depth', 'texture_2d_array<f32>', 2, 5) }}
-{{ binding('parent_transmission', 'texture_2d_array<f32>', 2, 6) }}
-{{ binding('output_pair', 'texture_storage_2d_array<rgba32float, write>', 3, 0) }}
-{{ binding('output_depth', 'texture_storage_2d_array<rgba32float, write>', 3, 1) }}
-{{ binding('output_transmission', 'texture_storage_2d_array<rgba16float, write>', 3, 2) }}
-{{ binding('output_mu', 'texture_storage_2d_array<rgba32float, write>', 3, 3) }}
+texture<2, 1> level_pair: texture_2d_array<f32>;
+texture<2, 2> level_depth: texture_2d_array<f32>;
+texture<2, 3> level_transmission: texture_2d_array<f32>;
+texture<2, 4> parent_mu: texture_2d_array<f32>;
+texture<2, 5> parent_depth: texture_2d_array<f32>;
+texture<2, 6> parent_transmission: texture_2d_array<f32>;
+texture<3, 0> output_pair: texture_storage_2d_array<rgba32float, write>;
+texture<3, 1> output_depth: texture_storage_2d_array<rgba32float, write>;
+texture<3, 2> output_transmission: texture_storage_2d_array<rgba16float, write>;
+texture<3, 3> output_mu: texture_storage_2d_array<rgba32float, write>;
 #if PARAMS.get("sample_count", 1) > 1
-{{ binding('output_result', 'texture_storage_2d_array<rgba16float, write>', 3, 4) }}
+texture<3, 4> output_result: texture_storage_2d_array<rgba16float, write>;
 #else
-{{ binding('output_result', 'texture_storage_2d<rgba16float, write>', 3, 4) }}
+texture<3, 4> output_result: texture_storage_2d<rgba16float, write>;
 #endif
 
 <PyramidSample> pair: vec4f;
@@ -27,10 +27,10 @@ uniform<2, 0> pyramid_settings: PyramidSettings;
 
 fn source_at(pixel: vec2i, sample: u32) -> PyramidSample {
 	if pyramid_settings.info.x == 0u {
-		let t = textureLoad(transmittance, pixel, i32(sample));
-		let opaque = textureLoad(opaque_depth, pixel, i32(sample));
-		let transparent = textureLoad(transparent_depth, pixel, i32(sample));
-		let guide = textureLoad(transparent_guide, pixel, i32(sample));
+		let t = sample_texture_load(transmittance, pixel, sample);
+		let opaque = sample_texture_load(opaque_depth, pixel, sample);
+		let transparent = sample_texture_load(transparent_depth, pixel, sample);
+		let guide = sample_texture_load(transparent_guide, pixel, sample);
 		return PyramidSample(vec4f(winner_at(pixel, sample).rgb, max(1.0-t.a, 0.0)),
 			vec4f(linear_depth(min(opaque, transparent), frame.clip.x, frame.clip.y), linear_depth(opaque, frame.clip.x, frame.clip.y), guide.yz), t);
 	}
@@ -134,10 +134,10 @@ fn push(@builtin(global_invocation_id) id: vec3u) {
 fn finish(@builtin(global_invocation_id) id: vec3u) {
 	if any(id.xy >= pyramid_settings.sizes.zw) { return; }
 	let pixel = vec2i(id.xy);
-	let t = textureLoad(transmittance, pixel, i32(id.z));
+	let t = sample_texture_load(transmittance, pixel, id.z);
 	var result = vec4f(0.0);
 	if 1.0-t.a > 1e-6 {
-		if textureLoad(transparent_guide, pixel, i32(id.z)).x == 1.0 || forced_at(pixel, id.z) {
+		if sample_texture_load(transparent_guide, pixel, id.z).x == 1.0 || forced_at(pixel, id.z) {
 			let own = winner_at(pixel, id.z);
 			result = vec4f((vec3f(1.0)-t.rgb)*own.rgb/max(own.a, 1e-6), 1.0);
 		} else {

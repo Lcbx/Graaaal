@@ -1,6 +1,6 @@
-{{ binding('src_depth', 'texture_2d<f32>', 0, 0) }}
-{{ binding('dst_depth', 'texture_storage_2d<r32float, write>', 0, 1) }}
-{{ binding('src_prepass', 'texture_depth_2d', 0, 2) }}
+texture<0, 0> src_depth: texture_2d<f32>;
+texture<0, 1> dst_depth: texture_storage_2d<r32float, write>;
+texture<0, 2> src_prepass: texture_depth_2d;
 
 @compute @workgroup_size(16, 16)
 fn reduce_depth(@builtin(global_invocation_id) id: vec3u) {

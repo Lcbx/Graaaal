@@ -194,7 +194,7 @@ accept a texture, texture view, or `RenderContext.screen()` attachment as
 validated when preparing a pipeline.
 
 Shader templates accept complete-line WGSL-like declarations for struct fields and
-uniform/storage bindings. These work in both `Shader(source=...)` and
+uniform/storage/texture bindings. These work in both `Shader(source=...)` and
 `Shader(filepath=...)`, including Jinja `#include`, `#if` and macros:
 
 ```wgsl
@@ -212,10 +212,40 @@ uniform<0, 0, read> frame: Frame;
 default; regular uniform buffers are still initialized to zero. Omit `read`
 for uniforms if preferred; storage bindings accept `read` or `read_write`.
 `Shader.uniform_buffer()` uses the declared struct to derive NumPy layouts.
-For textures, samplers or dynamic declarations, the existing Jinja2
+For samplers or dynamic declarations, the existing Jinja2
 `binding(name, type, group, binding, storage=..., access=...)` and
 `field(struct, name, type, ...)` callbacks remain available.
 Use `ShaderInterface` when supplying your own layouts.
+
+`texture<group, slot> name: type;` declares a texture with an ordinary WGSL
+type, including storage textures. `sample_texture<group, slot[, layered]>
+name: dtype;` selects a 2D texture using `PARAMS.get("sample_count", 1)`.
+`dtype` accepts `f32`, `i32`, `u32`, or `depth`. Above one sample, the type
+becomes multisampled; `layered` instead selects a 2D array with one layer
+per sample.
+
+`sample_texture_load(texture, pixel, sample[, layered=true])` loads a texel
+at integer pixel coordinates. It uses mip zero at one sample, the sample
+index for multisampled textures, or the sample layer and mip zero with
+`layered=true`. Match the layout used in the declaration:
+
+```wgsl
+texture<1, 0> source: texture_2d<f32>;
+sample_texture<1, 1> opaque_depth: depth;
+sample_texture<1, 2, layered> winner_color: f32;
+
+fn winner_at(pixel: vec2i, sample: u32) -> vec4f {
+	return sample_texture_load(winner_color, pixel, sample, layered=true);
+}
+```
+
+Read arguments accept WGSL template constructors and embedded Jinja expressions,
+such as `sample_texture_load(source, vec2i({{ PARAMS.x }}, 0), 0u)`.
+
+For explicit Jinja calls, import `sample_texture_type(dtype="f32", layered=false)`
+and `sample_texture_load(texture, pixel, sample, layered=false)` from
+`utils_texture.shaderlib` with context. Pass WGSL expressions to the load
+macro as strings. The shorthand imports these macros automatically.
 
 `ShaderInterface` provides explicit bindings, entries,
 vertex inputs, and `UniformInfo` NumPy offsets/strides. This supports padded

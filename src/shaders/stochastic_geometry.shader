@@ -10,26 +10,20 @@
 
 storage<1, 0, read> instances: array<MeshInstance>;
 storage<1, 1, read> visible_instances: array<u32>;
-#if PARAMS.get("sample_count", 1) > 1
-{{ binding('opaque_depth', 'texture_depth_multisampled_2d', 3, 0) }}
-#else
-{{ binding('opaque_depth', 'texture_depth_2d', 3, 0) }}
-#endif
-{{ binding('blue_noise', 'texture_2d<f32>', 3, 1) }}
-{{ binding('noise_hierarchy', 'texture_2d<f32>', 3, 2) }}
+sample_texture<3, 0> opaque_depth: depth;
+texture<3, 1> blue_noise: texture_2d<f32>;
+texture<3, 2> noise_hierarchy: texture_2d<f32>;
 #if PARAMS.get("exact_nearest", false)
+sample_texture<3, 8> nearest_ids: u32;
 #if PARAMS.get("sample_count", 1) > 1
-{{ binding('nearest_ids', 'texture_multisampled_2d<u32>', 3, 8) }}
-{{ binding('nearest_ids_extra', 'texture_multisampled_2d<u32>', 3, 9) }}
-#else
-{{ binding('nearest_ids', 'texture_2d<u32>', 3, 8) }}
+texture<3, 9> nearest_ids_extra: texture_multisampled_2d<u32>;
 #endif
 fn is_exact_nearest(input: VertexOutput, sample: u32) -> bool {
 #if PARAMS.get("sample_count", 1) > 1
-	let low = textureLoad(nearest_ids, vec2i(input.position.xy), i32(sample));
+	let low = sample_texture_load(nearest_ids, vec2i(input.position.xy), sample);
 	let ids = vec2u(low.x | (low.y << 16u), low.z | (low.w << 16u));
 #else
-	let ids = textureLoad(nearest_ids, vec2i(input.position.xy), 0).xy;
+	let ids = sample_texture_load(nearest_ids, vec2i(input.position.xy), sample).xy;
 #endif
 	return all(ids == vec2u(input.instance+1u, input.triangle));
 }
@@ -37,29 +31,16 @@ fn is_exact_nearest(input: VertexOutput, sample: u32) -> bool {
 #if PARAMS.get("winner_count", 1) > 1 or PARAMS.get("winner_mix", "average") == "fill"
 <WinnerSettings> info: vec4u;
 uniform<3, 3> winner_settings: WinnerSettings;
-#if PARAMS.get("sample_count", 1) > 1
-{{ binding('winner_guide', 'texture_multisampled_2d<f32>', 3, 4) }}
-#else
-{{ binding('winner_guide', 'texture_2d<f32>', 3, 4) }}
-#endif
+sample_texture<3, 4> winner_guide: f32;
 #endif
 
 #if PARAMS.get("winner_mix", "average") == "fill"
-#if PARAMS.get("sample_count", 1) > 1
-{{ binding('previous_winner', 'texture_2d_array<f32>', 3, 7) }}
-#else
-{{ binding('previous_winner', 'texture_2d<f32>', 3, 7) }}
-#endif
+sample_texture<3, 7, layered> previous_winner: f32;
 #endif
 
 #if PARAMS.get("force_single_contributor", false)
-#if PARAMS.get("sample_count", 1) > 1
-{{ binding('selection_transmittance', 'texture_multisampled_2d<f32>', 3, 5) }}
-{{ binding('contributor_count', 'texture_multisampled_2d<f32>', 3, 6) }}
-#else
-{{ binding('selection_transmittance', 'texture_2d<f32>', 3, 5) }}
-{{ binding('contributor_count', 'texture_2d<f32>', 3, 6) }}
-#endif
+sample_texture<3, 5> selection_transmittance: f32;
+sample_texture<3, 6> contributor_count: f32;
 <TransmittanceOutput> @location(0) transmission: vec4f;
 <TransmittanceOutput> @location(1) count: f32;
 #endif
@@ -199,7 +180,7 @@ fn transparent_depth(input: VertexOutput, @builtin(front_facing) front: bool, @b
 #if PARAMS.get("exact_nearest", false)
 	if is_exact_nearest(input, sample) { discard; }
 #endif
-	if input.position.z >= textureLoad(opaque_depth, vec2i(input.position.xy), i32(sample)) { discard; }
+	if input.position.z >= sample_texture_load(opaque_depth, vec2i(input.position.xy), sample) { discard; }
 	if !front && material.flags.y == 0u { discard; }
 	// Ignore fully transparent texels; retain every nonzero opacity, however low.
 	let p = max(alpha.x, max(alpha.y, alpha.z));
@@ -228,7 +209,7 @@ fn nearest_layer(input: VertexOutput, @builtin(front_facing) front: bool, @built
 	let alpha = raster_opacity(input.instance, material, input.uv, lod, input.world);
 	let p = max(alpha.x, max(alpha.y, alpha.z));
 	if p <= 0.0 || (!front && material.flags.y == 0u) { discard; }
-	if input.position.z >= textureLoad(opaque_depth, vec2i(input.position.xy), i32(sample)) { discard; }
+	if input.position.z >= sample_texture_load(opaque_depth, vec2i(input.position.xy), sample) { discard; }
 	let payload = visibility_payload(input, lod, front);
 #if PARAMS.get("sample_count", 1) > 1
 	return NearestOutput(vec4u(payload.x & 65535u, payload.x >> 16u, payload.y & 65535u, payload.y >> 16u), vec4f(alpha, p), vec4u(payload.z & 65535u, payload.z >> 16u, payload.w & 65535u, payload.w >> 16u));
@@ -279,11 +260,11 @@ fn select_winner(input: VertexOutput, @builtin(front_facing) front: bool, @built
 	// Reject deterministic failures before count/guide reads and noise work.
 	if p <= 0.0 { discard; }
 	if !front && material.flags.y == 0u { discard; }
-	if input.position.z >= textureLoad(opaque_depth, pixel, i32(sample)) { discard; }
+	if input.position.z >= sample_texture_load(opaque_depth, pixel, sample) { discard; }
 	var forced = false;
 #if PARAMS.get("force_single_contributor", false)
-	let acceptance = 1.0-textureLoad(selection_transmittance, pixel, i32(sample)).a;
-	forced = p > 0.0 && acceptance > 0.0 && textureLoad(contributor_count, pixel, i32(sample)).r == 1.0;
+	let acceptance = 1.0-sample_texture_load(selection_transmittance, pixel, sample).a;
+	forced = p > 0.0 && acceptance > 0.0 && sample_texture_load(contributor_count, pixel, sample).r == 1.0;
 #endif
 #if PARAMS.get("winner_count", 1) > 1 or PARAMS.get("winner_mix", "average") == "fill"
 #if not PARAMS.get("complemented_winners", false)
@@ -291,18 +272,14 @@ fn select_winner(input: VertexOutput, @builtin(front_facing) front: bool, @built
 #endif
 #if PARAMS.get("winner_mix", "average") == "fill"
 	if winner_settings.info.x != 0u {
-#if PARAMS.get("sample_count", 1) > 1
-		if textureLoad(previous_winner, pixel, i32(sample), 0).a > 0.0 { discard; }
-#else
-		if textureLoad(previous_winner, pixel, 0).a > 0.0 { discard; }
-#endif
+		if sample_texture_load(previous_winner, pixel, sample, layered=true).a > 0.0 { discard; }
 	}
 #endif
 	if winner_settings.info.x != 0u && forced { discard; }
 	// All material and noise derivatives have been evaluated before this discard.
 	// The 1x1 path does not produce a guide and sets info.y to zero.
 	if winner_settings.info.y != 0u {
-		if textureLoad(winner_guide, pixel, i32(sample)).x == 1.0 { discard; }
+		if sample_texture_load(winner_guide, pixel, sample).x == 1.0 { discard; }
 	}
 #endif
 	var u = 0.0;

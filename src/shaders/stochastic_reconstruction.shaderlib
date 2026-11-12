@@ -1,82 +1,46 @@
 #include "utils_depth.shaderlib"
 
 #include "frame.shaderlib"
-#if PARAMS.get("sample_count", 1) > 1
-{{ binding('main_color', 'texture_multisampled_2d<f32>', 1, 1) }}
-{{ binding('transmittance', 'texture_multisampled_2d<f32>', 1, 2) }}
-{{ binding('winner_color', 'texture_2d_array<f32>', 1, 3) }}
-{{ binding('opaque_depth', 'texture_depth_multisampled_2d', 1, 4) }}
-#else
-{{ binding('main_color', 'texture_2d<f32>', 1, 1) }}
-{{ binding('transmittance', 'texture_2d<f32>', 1, 2) }}
-{{ binding('winner_color', 'texture_2d<f32>', 1, 3) }}
-{{ binding('opaque_depth', 'texture_depth_2d', 1, 4) }}
-#endif
+sample_texture<1, 1> main_color: f32;
+sample_texture<1, 2> transmittance: f32;
+sample_texture<1, 3, layered> winner_color: f32;
+sample_texture<1, 4> opaque_depth: depth;
 <BilateralSettings> sigmas: vec4f;
 <BilateralSettings> kernel: vec4u;
 uniform<1, 5> bilateral: BilateralSettings;
 #if PARAMS.get("filter_input", false)
-#if PARAMS.get("sample_count", 1) > 1
-{{ binding('filter_input', 'texture_2d_array<f32>', 1, 12) }}
-#else
-{{ binding('filter_input', 'texture_2d<f32>', 1, 12) }}
+sample_texture<1, 12, layered> filter_input: f32;
 #endif
-#endif
-#if PARAMS.get("sample_count", 1) > 1
-{{ binding('transparent_depth', 'texture_depth_multisampled_2d', 1, 6) }}
-{{ binding('transparent_guide', 'texture_multisampled_2d<f32>', 1, 7) }}
-#else
-{{ binding('transparent_depth', 'texture_depth_2d', 1, 6) }}
-{{ binding('transparent_guide', 'texture_2d<f32>', 1, 7) }}
-#endif
+sample_texture<1, 6> transparent_depth: depth;
+sample_texture<1, 7> transparent_guide: f32;
 
 #if PARAMS.get("force_single_contributor", false)
-#if PARAMS.get("sample_count", 1) > 1
-{{ binding('contributor_count', 'texture_multisampled_2d<f32>', 1, 9) }}
-#else
-{{ binding('contributor_count', 'texture_2d<f32>', 1, 9) }}
-#endif
+sample_texture<1, 9> contributor_count: f32;
 #endif
 
 #if PARAMS.get("winner_count", 1) == 2 and PARAMS.get("winner_mix", "average") == "average"
-#if PARAMS.get("sample_count", 1) > 1
-{{ binding('first_color', 'texture_2d_array<f32>', 1, 8) }}
-#else
-{{ binding('first_color', 'texture_2d<f32>', 1, 8) }}
-#endif
+sample_texture<1, 8, layered> first_color: f32;
 #endif
 
 #if PARAMS.get("winner_mix", "average") == "fill"
-#if PARAMS.get("sample_count", 1) > 1
-{{ binding('winner_source', 'texture_2d_array<u32>', 1, 10) }}
-#else
-{{ binding('winner_source', 'texture_2d<u32>', 1, 10) }}
-#endif
+sample_texture<1, 10, layered> winner_source: u32;
 #endif
 
 fn winner_at(pixel: vec2i, sample: u32) -> vec4f {
-#if PARAMS.get("sample_count", 1) > 1
-	return textureLoad(winner_color, pixel, i32(sample), 0);
-#else
-	return textureLoad(winner_color, pixel, 0);
-#endif
+	return sample_texture_load(winner_color, pixel, sample, layered=true);
 }
 
 #if RECONSTRUCT_MODE is not defined or RECONSTRUCT_MODE != "profile"
 fn filter_input_at(pixel: vec2i, sample: u32) -> vec4f {
 #if PARAMS.get("filter_input", false)
-#if PARAMS.get("sample_count", 1) > 1
-	var value = textureLoad(filter_input, pixel, i32(sample), 0);
-#else
-	var value = textureLoad(filter_input, pixel, 0);
-#endif
+	var value = sample_texture_load(filter_input, pixel, sample, layered=true);
 #if PARAMS.get("exact_nearest", false) and PARAMS.get("initial_pairs", false)
-	value.a = max(1.0-textureLoad(transmittance, pixel, i32(sample)).a, 0.0);
+	value.a = max(1.0-sample_texture_load(transmittance, pixel, sample).a, 0.0);
 #endif
 	return value;
 #else
 #if PARAMS.get("exact_nearest", false)
-	return vec4f(winner_at(pixel, sample).rgb, max(1.0-textureLoad(transmittance, pixel, i32(sample)).a, 0.0));
+	return vec4f(winner_at(pixel, sample).rgb, max(1.0-sample_texture_load(transmittance, pixel, sample).a, 0.0));
 #else
 	return winner_at(pixel, sample);
 #endif
@@ -87,8 +51,8 @@ fn filter_input_at(pixel: vec2i, sample: u32) -> vec4f {
 
 fn forced_at(pixel: vec2i, sample: u32) -> bool {
 #if PARAMS.get("force_single_contributor", false)
-	return textureLoad(transmittance, pixel, i32(sample)).a < 1.0 &&
-		textureLoad(contributor_count, pixel, i32(sample)).r == 1.0 && winner_at(pixel, sample).a > 0.0;
+	return sample_texture_load(transmittance, pixel, sample).a < 1.0 &&
+		sample_texture_load(contributor_count, pixel, sample).r == 1.0 && winner_at(pixel, sample).a > 0.0;
 #else
 	return false;
 #endif
@@ -120,10 +84,10 @@ var<workgroup> cached_depths: array<vec2f, 256>;
 #endif
 
 fn load_filter_data(pixel: vec2i, sample: u32) -> FilterData {
-	let opaque = textureLoad(opaque_depth, pixel, i32(sample));
-	let transparent = textureLoad(transparent_depth, pixel, i32(sample));
-	return FilterData(textureLoad(transmittance, pixel, i32(sample)), filter_input_at(pixel, sample),
-		textureLoad(transparent_guide, pixel, i32(sample)),
+	let opaque = sample_texture_load(opaque_depth, pixel, sample);
+	let transparent = sample_texture_load(transparent_depth, pixel, sample);
+	return FilterData(sample_texture_load(transmittance, pixel, sample), filter_input_at(pixel, sample),
+		sample_texture_load(transparent_guide, pixel, sample),
 		vec2f(linear_depth(min(opaque, transparent), frame.clip.x, frame.clip.y),
 			linear_depth(opaque, frame.clip.x, frame.clip.y)));
 }
@@ -158,7 +122,7 @@ fn bilateral_weight(center: FilterData, neighbor: FilterData, offset: vec2i) -> 
 
 #if RECONSTRUCT_MODE is not defined or RECONSTRUCT_MODE in ("compose", "color")
 fn point_reconstruction(pixel: vec2i, sample: u32) -> vec4f {
-	let t = textureLoad(transmittance, pixel, i32(sample));
+	let t = sample_texture_load(transmittance, pixel, sample);
 	let acceptance = 1.0-t.a;
 	if acceptance <= 1e-6 { return vec4f(0.0); }
 	return vec4f((vec3f(1.0)-t.rgb)*winner_at(pixel, sample).rgb/max(acceptance, 1e-6), 1.0);
@@ -166,9 +130,9 @@ fn point_reconstruction(pixel: vec2i, sample: u32) -> vec4f {
 #endif
 
 fn needs_reconstruction(pixel: vec2i, sample: u32) -> bool {
-	if 1.0-textureLoad(transmittance, pixel, i32(sample)).a <= 1e-6 { return false; }
+	if 1.0-sample_texture_load(transmittance, pixel, sample).a <= 1e-6 { return false; }
 	if bilateral.kernel.y == 4u { return true; }
-	return textureLoad(transparent_guide, pixel, i32(sample)).x != 1.0 && !forced_at(pixel, sample);
+	return sample_texture_load(transparent_guide, pixel, sample).x != 1.0 && !forced_at(pixel, sample);
 }
 
 #if not PARAMS.get("compute_reconstruction", false) or PARAMS.get("tiled_reconstruction", false)
@@ -199,7 +163,7 @@ fn reduce_neighborhood(pixel: vec2i, sample: u32, origin: vec2i, side: u32) -> F
 
 #if RECONSTRUCT_MODE is not defined or RECONSTRUCT_MODE == "pair"
 fn reconstruct_pair(pixel: vec2i, sample: u32, origin: vec2i, side: u32) -> vec4f {
-	if 1.0-textureLoad(transmittance, pixel, i32(sample)).a <= 1e-6 { return vec4f(0.0); }
+	if 1.0-sample_texture_load(transmittance, pixel, sample).a <= 1e-6 { return vec4f(0.0); }
 	if !needs_reconstruction(pixel, sample) { return winner_at(pixel, sample); }
 	let reduced = reduce_neighborhood(pixel, sample, origin, side);
 	// Average the unnormalized pair. Apply opacity and normalize only at the end.
@@ -209,7 +173,7 @@ fn reconstruct_pair(pixel: vec2i, sample: u32, origin: vec2i, side: u32) -> vec4
 
 #if RECONSTRUCT_MODE is not defined or RECONSTRUCT_MODE in ("compose", "color")
 fn reconstruct_transparency(pixel: vec2i, sample: u32, origin: vec2i, side: u32) -> vec4f {
-	let t = textureLoad(transmittance, pixel, i32(sample));
+	let t = sample_texture_load(transmittance, pixel, sample);
 	if 1.0-t.a <= 1e-6 { return vec4f(0.0); }
 	if bilateral.kernel.x == 0u { return point_reconstruction(pixel, sample); }
 	if !needs_reconstruction(pixel, sample) {

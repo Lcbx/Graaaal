@@ -7,7 +7,7 @@
 
 uniform<0, 0> uniforms: Uniforms;
 
-{{ binding('shadow_map', 'texture_depth_2d', 1, 0) }}
+texture<1, 0> shadow_map: texture_depth_2d;
 
 {{ binding('shadow_sampler', 'sampler_comparison', 1, 1) }}
 

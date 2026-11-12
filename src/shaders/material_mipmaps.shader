@@ -3,9 +3,9 @@
 <MipParams> info: vec4u;
 <MipParams> cutoff: vec4f;
 uniform<0, 0> params: MipParams;
-{{ binding('source', 'texture_2d<f32>', 0, 1) }}
-{{ binding('linear_destination', 'texture_storage_2d<rgba32float, write>', 0, 2) }}
-{{ binding('encoded_destination', 'texture_storage_2d_array<rgba8unorm, write>', 0, 3) }}
+texture<0, 1> source: texture_2d<f32>;
+texture<0, 2> linear_destination: texture_storage_2d<rgba32float, write>;
+texture<0, 3> encoded_destination: texture_storage_2d_array<rgba8unorm, write>;
 
 <CoverageState> target_hits: atomic<u32>;
 <CoverageState> candidate_hits: atomic<u32>;

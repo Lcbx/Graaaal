@@ -151,3 +151,113 @@ def test_shorthand_repeated_includes_reuse_identical_fields():
 def test_shorthand_conflicting_defaults_are_rejected():
 	with pytest.raises(ValueError, match="Conflicting default"):
 		render("<Frame> a: f32 = 1;\n<Frame> a: f32 = 2;")
+
+
+@pytest.mark.parametrize("count", [1, 4])
+@pytest.mark.parametrize("dtype", ["f32", "i32", "u32", "depth"])
+@pytest.mark.parametrize("layered", [False, True])
+def test_sample_texture_macros_and_shorthand(count, dtype, layered):
+	options = {"sample_count": count, "dtype": dtype, "layered": layered}
+	explicit = render('''
+#from "utils_texture.shaderlib" import sample_texture_type, sample_texture_load with context
+{{ binding('image', sample_texture_type(PARAMS.dtype, layered=PARAMS.layered), 1, 2) }}
+fn load(pixel: vec2i, sample: u32) -> vec4f {
+	return vec4f({{ sample_texture_load('image', 'pixel', 'sample', layered=PARAMS.layered) }});
+}
+''', **options)
+	layout = ", layered" if layered else ""
+	shorthand = render(f'''
+sample_texture<1, 2{layout}> image: {dtype};
+fn load(pixel: vec2i, sample: u32) -> vec4f {{
+	return vec4f(sample_texture_load(image, pixel, sample, layered={str(layered).lower()}));
+}}
+''', **options)
+	prefix = "texture_depth_" if dtype == "depth" else "texture_"
+	expected_type = prefix+("multisampled_" if count > 1 and not layered else "")+"2d"
+	if count > 1 and layered: expected_type += "_array"
+	if dtype != "depth": expected_type += f"<{dtype}>"
+	expected_read = "textureLoad(image, pixel, "+("i32(sample)" if count > 1 else "0")+(", 0" if count > 1 and layered else "")+")"
+	for info in (explicit, shorthand):
+		assert info.bindings["image"].type_name == expected_type
+		assert (info.bindings["image"].group, info.bindings["image"].binding) == (1, 2)
+		assert expected_read in info.source
+		assert set(info.used_bindings(("load",))) == {"image"}
+		assert "fn texture_lod_from_gradients" not in info.source
+
+
+def test_texture_shorthand_supports_regular_and_storage_texture_types():
+	loader = Shader.__new__(Shader)
+	code, declarations = loader._render_source('''
+texture<1, 0> source: texture_2d<u32>; // source image
+texture<1, 1> target: texture_storage_2d<rgba16float, write>;
+''', None, None, None, None)
+	info = ShaderSource(code, declarations=declarations)
+	assert info.bindings["source"].type_name == "texture_2d<u32>"
+	assert info.bindings["target"].type_name == "texture_storage_2d<rgba16float, write>"
+	assert "// source image" in code
+
+
+def test_sample_texture_shorthand_handles_nested_multiline_expressions_and_conditions():
+	info = render('''
+#if PARAMS.enabled
+sample_texture<1, 2, layered> image: f32;
+#endif
+#if not PARAMS.enabled
+sample_texture<1, 3> unused: f32;
+#endif
+fn load(id: vec3u) -> vec4f {
+	return sample_texture_load(
+		image,
+		vec2i(clamp(id.xy, vec2u(0), vec2u(7))),
+		select(0u, id.z, id.z > 0u),
+		layered=true
+	).xyzw;
+}
+''', enabled=True, sample_count=4)
+	assert set(info.bindings) == {"image"}
+	assert "textureLoad(image, vec2i(clamp(id.xy, vec2u(0), vec2u(7))), i32(select(0u, id.z, id.z > 0u)), 0).xyzw" in info.source
+	assert set(info.used_bindings(("load",))) == {"image"}
+
+
+def test_sample_texture_shorthand_defaults_to_single_sample_and_preserves_comments():
+	loader = Shader.__new__(Shader)
+	code, declarations = loader._render_source('''
+sample_texture<1, 0> image: f32;
+// sample_texture_load(this is not a call
+/* sample_texture_load(neither is this */
+fn load() -> vec4f { return sample_texture_load(image, vec2i(0), 0u); }
+''', None, None, None, None)
+	info = ShaderSource(code, declarations=declarations)
+	assert info.bindings["image"].type_name == "texture_2d<f32>"
+	assert "return textureLoad(image, vec2i(0), 0);" in info.source
+	assert "// sample_texture_load(this is not a call" in code
+	assert "/* sample_texture_load(neither is this */" in code
+
+
+@pytest.mark.parametrize("source,match", [
+	("sample_texture<0, 0> image: f16;", "Invalid sample_texture type"),
+	("sample_texture<0, 0, write> image: f32;", "layout"),
+	("sample_texture<0, 0> image: f32", "Invalid WGSL shorthand"),
+	("texture<0, 0, write> image: texture_2d<f32>;", "access argument"),
+	("let x = sample_texture_load(image, pixel);", "requires texture"),
+	("let x = sample_texture_load(image, pixel, sample, layered=maybe);", "layered must be"),
+	("let x = sample_texture_load(image, pixel, sample;", "Unclosed"),
+	("let x = sample_texture_load(image, pixel], sample);", "Unbalanced"),
+])
+def test_invalid_texture_shorthand_is_rejected(source, match):
+	with pytest.raises(ValueError, match=match):
+		render(source)
+
+
+@pytest.mark.parametrize("count", [1, 4])
+@pytest.mark.parametrize("pixel,sample,expected_pixel,expected_sample", [
+	("vec2i({{ PARAMS.x }}, {{ PARAMS.y }})", "{{ PARAMS.sample }}u", "vec2i(2, 3)", "1u"),
+	("array<vec2i, 2>(vec2i(0), vec2i(1))[0]", "0u", "array<vec2i, 2>(vec2i(0), vec2i(1))[0]", "0u"),
+	("array<array<vec2i, 2>, 1>(array<vec2i, 2>(vec2i(0), vec2i(1)))[0][0]", "0u", "array<array<vec2i, 2>, 1>(array<vec2i, 2>(vec2i(0), vec2i(1)))[0][0]", "0u"),
+	("vec2i(select(0, 1, 0 < 1), select(0, 1, 2 > 1))", "0u", "vec2i(select(0, 1, 0 < 1), select(0, 1, 2 > 1))", "0u"),
+])
+def test_sample_texture_load_template_arguments(count, pixel, sample, expected_pixel, expected_sample):
+	info = render("sample_texture<0, 0> image: f32;\nfn load() -> vec4f { return sample_texture_load(image, "+pixel+", "+sample+"); }", sample_count=count, x=2, y=3, sample=1)
+	index = "i32("+expected_sample+")" if count > 1 else "0"
+	assert "textureLoad(image, "+expected_pixel+", "+index+")" in info.source
+	assert "{{" not in info.source

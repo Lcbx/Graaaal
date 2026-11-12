@@ -9,35 +9,28 @@
 <ShadingVertex> uv: vec4f;
 storage<2, 4, read> vertices: array<ShadingVertex>;
 storage<2, 5, read> shading_instances: array<MeshInstance>;
+sample_texture<1, 0> winners: u32;
 #if PARAMS.get("sample_count", 1) > 1
-{{ binding('winners', 'texture_multisampled_2d<u32>', 1, 0) }}
-{{ binding('winner_color', 'texture_storage_2d_array<rgba16float, write>', 1, 1) }}
-{{ binding('winners_extra', 'texture_multisampled_2d<u32>', 1, 2) }}
+texture<1, 1> winner_color: texture_storage_2d_array<rgba16float, write>;
 #else
-{{ binding('winners', 'texture_2d<u32>', 1, 0) }}
-{{ binding('winner_color', 'texture_storage_2d<rgba16float, write>', 1, 1) }}
+texture<1, 1> winner_color: texture_storage_2d<rgba16float, write>;
+#endif
+#if PARAMS.get("sample_count", 1) > 1
+texture<1, 2> winners_extra: texture_multisampled_2d<u32>;
 #endif
 
 #if PARAMS.get("force_single_contributor", false) or PARAMS.get("winner_mix", "average") == "fill"
-#if PARAMS.get("sample_count", 1) > 1
-{{ binding('shade_transmittance', 'texture_multisampled_2d<f32>', 1, 6) }}
-#else
-{{ binding('shade_transmittance', 'texture_2d<f32>', 1, 6) }}
-#endif
+sample_texture<1, 6> shade_transmittance: f32;
 #endif
 #if PARAMS.get("force_single_contributor", false)
-#if PARAMS.get("sample_count", 1) > 1
-{{ binding('contributor_count', 'texture_multisampled_2d<f32>', 1, 7) }}
-#else
-{{ binding('contributor_count', 'texture_2d<f32>', 1, 7) }}
-#endif
+sample_texture<1, 7> contributor_count: f32;
 #endif
 
 #if PARAMS.get("winner_mix", "average") == "fill"
 #if PARAMS.get("sample_count", 1) > 1
-{{ binding('winner_source', 'texture_storage_2d_array<r32uint, write>', 1, 8) }}
+texture<1, 8> winner_source: texture_storage_2d_array<r32uint, write>;
 #else
-{{ binding('winner_source', 'texture_storage_2d<r32uint, write>', 1, 8) }}
+texture<1, 8> winner_source: texture_storage_2d<r32uint, write>;
 #endif
 #endif
 
@@ -46,20 +39,15 @@ storage<2, 5, read> shading_instances: array<MeshInstance>;
 uniform<1, 5> winner_settings: WinnerSettings;
 #endif
 #if PARAMS.get("winner_count", 1) == 2 and PARAMS.get("winner_mix", "average") == "average"
-#if PARAMS.get("sample_count", 1) > 1
-{{ binding('first_color', 'texture_2d_array<f32>', 1, 3) }}
-{{ binding('winner_guide', 'texture_multisampled_2d<f32>', 1, 4) }}
-#else
-{{ binding('first_color', 'texture_2d<f32>', 1, 3) }}
-{{ binding('winner_guide', 'texture_2d<f32>', 1, 4) }}
-#endif
+sample_texture<1, 3, layered> first_color: f32;
+sample_texture<1, 4> winner_guide: f32;
 #endif
 
 #if PARAMS.get("complemented_winners", false)
 #if PARAMS.get("mix_only", false)
-{{ binding('first_payloads', 'texture_2d_array<u32>', 1, 9) }}
+texture<1, 9> first_payloads: texture_2d_array<u32>;
 #else
-{{ binding('first_payloads', 'texture_storage_2d_array<rgba32uint, write>', 1, 9) }}
+texture<1, 9> first_payloads: texture_storage_2d_array<rgba32uint, write>;
 #endif
 #endif
 
@@ -104,7 +92,7 @@ fn shade_payload(payload: vec4u, pixel: vec2i, sample: u32) -> vec4f {
 #if PARAMS.get("winner_mix", "average") == "fill"
 	// Each attempt uses the total-budget geometric sum, including attempt A.
 	// This remains stable near T=1 and avoids cancellation in (1-T)/(1-T^N).
-	let transmission = textureLoad(shade_transmittance, pixel, i32(sample)).a;
+	let transmission = sample_texture_load(shade_transmittance, pixel, sample).a;
 	var total = 0.0;
 	var prefix = 1.0;
 	var block_sum = 1.0;
@@ -123,7 +111,7 @@ fn shade_payload(payload: vec4u, pixel: vec2i, sample: u32) -> vec4f {
 #endif
 #if PARAMS.get("force_single_contributor", false)
 	if (payload.w & WINNER_FORCED_BIT) != 0u {
-		weight = 1.0-textureLoad(shade_transmittance, pixel, i32(sample)).a;
+		weight = 1.0-sample_texture_load(shade_transmittance, pixel, sample).a;
 	}
 #endif
 	return weight*vec4f(color, 1.0);
@@ -132,12 +120,12 @@ fn shade_payload(payload: vec4u, pixel: vec2i, sample: u32) -> vec4f {
 fn winner_payload(id: vec3u) -> vec4u {
 	let pixel = vec2i(id.xy);
 #if PARAMS.get("sample_count", 1) > 1
-	let low = textureLoad(winners, pixel, i32(id.z));
+	let low = sample_texture_load(winners, pixel, id.z);
 	let high = textureLoad(winners_extra, pixel, i32(id.z));
 	return vec4u(low.x | (low.y << 16u), low.z | (low.w << 16u),
 		high.x | (high.y << 16u), high.z | (high.w << 16u));
 #else
-	return textureLoad(winners, pixel, 0);
+	return sample_texture_load(winners, pixel, id.z);
 #endif
 }
 
@@ -193,20 +181,16 @@ fn shade_fill(@builtin(global_invocation_id) id: vec3u) {
 fn shade_mix(@builtin(global_invocation_id) id: vec3u) {
 	if any(id.xy >= textureDimensions(winners)) { return; }
 	let pixel = vec2i(id.xy);
-#if PARAMS.get("sample_count", 1) > 1
-	let first = textureLoad(first_color, pixel, i32(id.z), 0);
-#else
-	let first = textureLoad(first_color, pixel, 0);
-#endif
+	let first = sample_texture_load(first_color, pixel, id.z, layered=true);
 #if PARAMS.get("force_single_contributor", false)
-	if textureLoad(shade_transmittance, pixel, i32(id.z)).a < 1.0 &&
-		textureLoad(contributor_count, pixel, i32(id.z)).r == 1.0 && first.a > 0.0 {
+	if sample_texture_load(shade_transmittance, pixel, id.z).a < 1.0 &&
+		sample_texture_load(contributor_count, pixel, id.z).r == 1.0 && first.a > 0.0 {
 		store_winner(id, first);
 		return;
 	}
 #endif
 	if winner_settings.info.y != 0u {
-		if textureLoad(winner_guide, pixel, i32(id.z)).x == 1.0 {
+		if sample_texture_load(winner_guide, pixel, id.z).x == 1.0 {
 			store_winner(id, first);
 			return;
 		}

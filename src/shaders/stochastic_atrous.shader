@@ -4,21 +4,21 @@
 <PyramidSettings> info: vec4u;
 <PyramidSettings> confidence: vec4f;
 uniform<2, 0> pyramid_settings: PyramidSettings;
-{{ binding('cascade_pair', 'texture_2d_array<f32>', 2, 1) }}
-{{ binding('cascade_result', 'texture_2d_array<f32>', 2, 2) }}
-{{ binding('output_pair', 'texture_storage_2d_array<rgba32float, write>', 3, 0) }}
-{{ binding('output_result', 'texture_storage_2d_array<rgba32float, write>', 3, 1) }}
+texture<2, 1> cascade_pair: texture_2d_array<f32>;
+texture<2, 2> cascade_result: texture_2d_array<f32>;
+texture<3, 0> output_pair: texture_storage_2d_array<rgba32float, write>;
+texture<3, 1> output_result: texture_storage_2d_array<rgba32float, write>;
 
 fn pair_at(pixel: vec2i, sample: u32) -> vec4f {
 	if pyramid_settings.info.x == 0u {
-		return vec4f(winner_at(pixel, sample).rgb, max(1.0-textureLoad(transmittance, pixel, i32(sample)).a, 0.0));
+		return vec4f(winner_at(pixel, sample).rgb, max(1.0-sample_texture_load(transmittance, pixel, sample).a, 0.0));
 	}
 	return textureLoad(cascade_pair, pixel, i32(sample), 0);
 }
 
 fn opaque_reciprocal(pixel: vec2i, sample: u32) -> f32 {
 	let p = clamp(pixel, vec2i(0), vec2i(textureDimensions(opaque_depth))-vec2i(1));
-	return 1.0/linear_depth(textureLoad(opaque_depth, p, i32(sample)), frame.clip.x, frame.clip.y);
+	return 1.0/linear_depth(sample_texture_load(opaque_depth, p, sample), frame.clip.x, frame.clip.y);
 }
 
 fn opaque_slope(pixel: vec2i, sample: u32) -> vec2f {
@@ -30,16 +30,16 @@ fn opaque_slope(pixel: vec2i, sample: u32) -> vec2f {
 }
 
 fn cascade_edge(pixel: vec2i, q: vec2i, sample: u32) -> f32 {
-	let tp = textureLoad(transmittance, pixel, i32(sample));
-	let tq = textureLoad(transmittance, q, i32(sample));
+	let tp = sample_texture_load(transmittance, pixel, sample);
+	let tq = sample_texture_load(transmittance, q, sample);
 	let ap = max(1.0-tp.a, 0.0);
 	let aq = max(1.0-tq.a, 0.0);
 	if ap <= 0.0 || aq <= 0.0 { return 0.0; }
 	let delta = vec2f(q-pixel);
-	let zp = linear_depth(textureLoad(transparent_depth, pixel, i32(sample)), frame.clip.x, frame.clip.y);
-	let zq = linear_depth(textureLoad(transparent_depth, q, i32(sample)), frame.clip.x, frame.clip.y);
-	let gp = textureLoad(transparent_guide, pixel, i32(sample)).yz;
-	let gq = textureLoad(transparent_guide, q, i32(sample)).yz;
+	let zp = linear_depth(sample_texture_load(transparent_depth, pixel, sample), frame.clip.x, frame.clip.y);
+	let zq = linear_depth(sample_texture_load(transparent_depth, q, sample), frame.clip.x, frame.clip.y);
+	let gp = sample_texture_load(transparent_guide, pixel, sample).yz;
+	let gq = sample_texture_load(transparent_guide, q, sample).yz;
 	let predicted_q = 1.0/max(1.0/zp+dot(gp, delta), 1e-6);
 	let predicted_p = 1.0/max(1.0/zq-dot(gq, delta), 1e-6);
 	let dz = max(abs(zq-predicted_q), abs(zp-predicted_p))/max(min(zp, zq)*bilateral.sigmas.y, bilateral.sigmas.w);
@@ -83,20 +83,20 @@ fn cascade(@builtin(global_invocation_id) id: vec3u) {
 
 // The final HDR output has a different format from the accumulation textures.
 #if PARAMS.get("sample_count", 1) > 1
-{{ binding('final_color', 'texture_storage_2d_array<rgba16float, write>', 3, 2) }}
+texture<3, 2> final_color: texture_storage_2d_array<rgba16float, write>;
 #else
-{{ binding('final_color', 'texture_storage_2d<rgba16float, write>', 3, 2) }}
+texture<3, 2> final_color: texture_storage_2d<rgba16float, write>;
 #endif
 
 @compute @workgroup_size(8, 8)
 fn finish(@builtin(global_invocation_id) id: vec3u) {
 	let pixel = vec2i(id.xy);
 	if any(id.xy >= textureDimensions(transmittance)) { return; }
-	let t = textureLoad(transmittance, pixel, i32(id.z));
+	let t = sample_texture_load(transmittance, pixel, id.z);
 	var result = vec4f(0.0);
 	if 1.0-t.a > 1e-6 {
 		var mu = textureLoad(cascade_result, pixel, i32(id.z), 0).rgb;
-		if textureLoad(transparent_guide, pixel, i32(id.z)).x == 1.0 || forced_at(pixel, id.z) {
+		if sample_texture_load(transparent_guide, pixel, id.z).x == 1.0 || forced_at(pixel, id.z) {
 			let own = winner_at(pixel, id.z);
 			mu = own.rgb/max(own.a, 1e-12);
 		}

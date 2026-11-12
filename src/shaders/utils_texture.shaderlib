@@ -1,3 +1,17 @@
+#macro sample_texture_type(dtype="f32", layered=false)
+{%- set ms = PARAMS.get("sample_count", 1) > 1 -%}
+{%- if dtype == "depth" -%}
+texture_depth_{{ "multisampled_" if ms and not layered else "" }}2d{{ "_array" if ms and layered else "" }}
+{%- else -%}
+texture_{{ "multisampled_" if ms and not layered else "" }}2d{{ "_array" if ms and layered else "" }}<{{ dtype }}>
+{%- endif -%}
+#endmacro
+
+#macro sample_texture_load(texture, pixel, sample, layered=false)
+{%- set ms = PARAMS.get("sample_count", 1) > 1 -%}
+textureLoad({{ texture }}, {{ pixel }}, {{ "i32(" ~ sample ~ ")" if ms else "0" }}{{ ", 0" if ms and layered else "" }})
+{%- endmacro %}
+
 // Isotropic mip footprint from screen-space UV derivatives, in base texels.
 fn texture_lod_from_gradients(dx: vec2f, dy: vec2f, dimensions: vec2f) -> f32 {
 	let x = dx*dimensions;

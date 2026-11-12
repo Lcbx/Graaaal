@@ -2,9 +2,9 @@
 #include "stochastic_reconstruction.shaderlib"
 
 #if PARAMS.get("sample_count", 1) > 1
-{{ binding('filter_output', 'texture_storage_2d_array<rgba16float, write>', 2, 0) }}
+texture<2, 0> filter_output: texture_storage_2d_array<rgba16float, write>;
 #else
-{{ binding('filter_output', 'texture_storage_2d<rgba16float, write>', 2, 0) }}
+texture<2, 0> filter_output: texture_storage_2d<rgba16float, write>;
 #endif
 
 var<workgroup> needs_cache: atomic<u32>;
@@ -27,7 +27,7 @@ fn reconstruct(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocati
 	if local == 0u { atomicStore(&needs_cache, 0u); }
 	workgroupBarrier();
 	if valid {
-		if 1.0-textureLoad(transmittance, pixel, i32(id.z)).a > 1e-6 {
+		if 1.0-sample_texture_load(transmittance, pixel, id.z).a > 1e-6 {
 			atomicOr(&needs_cache, 1u);
 			if needs_reconstruction(pixel, id.z) { atomicOr(&needs_cache, 2u); }
 		}
@@ -62,7 +62,7 @@ fn reconstruct(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocati
 		workgroupBarrier();
 	}
 	if !valid { return; }
-	if 1.0-textureLoad(transmittance, pixel, i32(id.z)).a <= 1e-6 {
+	if 1.0-sample_texture_load(transmittance, pixel, id.z).a <= 1e-6 {
 #if PARAMS.get("filter_pairs", false)
 		store_filtered(pixel, id.z, vec4f(0.0));
 #endif

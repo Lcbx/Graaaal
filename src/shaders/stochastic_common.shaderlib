@@ -13,7 +13,7 @@ const WINNER_FORCED_BIT: u32 = 0x00010000u;
 <MaterialVertex> uv: vec2f;
 storage<2, 0, read> metadata: array<vec4u>;
 storage<2, 1, read> materials: array<Material>;
-{{ binding('base_textures', 'texture_2d_array<f32>', 2, 2) }}
+texture<2, 2> base_textures: texture_2d_array<f32>;
 {{ binding('material_sampler', 'sampler', 2, 3) }}
 
 fn base_color(material: Material, uv: vec2f, lod: f32) -> vec4f {

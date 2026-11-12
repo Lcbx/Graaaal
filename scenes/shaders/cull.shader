@@ -45,7 +45,7 @@ storage<0, 6, read_write> prepass_visible_instances: array<u32>;
 storage<0, 7, read> lod_distances: array<f32>;
 
 uniform<1, 0> camera_params: CameraUniforms;
-{{ binding('hzb_texture', 'texture_2d<f32>', 1, 1) }}
+texture<1, 1> hzb_texture: texture_2d<f32>;
 storage<1, 2, read_write> main_draw_cmd: array<DrawIndexedIndirect>;
 storage<1, 3, read_write> main_visible_instances: array<u32>;
 

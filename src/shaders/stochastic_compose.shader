@@ -5,21 +5,12 @@
 #endif
 
 #if PARAMS.get("compute_reconstruction", false)
-#if PARAMS.get("sample_count", 1) > 1
-{{ binding('reconstructed', 'texture_2d_array<f32>', 1, 11) }}
-#else
-{{ binding('reconstructed', 'texture_2d<f32>', 1, 11) }}
-#endif
+sample_texture<1, 11, layered> reconstructed: f32;
 #endif
 
 #if PARAMS.get("exact_nearest", false)
-#if PARAMS.get("sample_count", 1) > 1
-{{ binding('nearest_alpha', 'texture_multisampled_2d<f32>', 1, 13) }}
-{{ binding('nearest_color', 'texture_2d_array<f32>', 1, 14) }}
-#else
-{{ binding('nearest_alpha', 'texture_2d<f32>', 1, 13) }}
-{{ binding('nearest_color', 'texture_2d<f32>', 1, 14) }}
-#endif
+sample_texture<1, 13> nearest_alpha: f32;
+sample_texture<1, 14, layered> nearest_color: f32;
 #endif
 
 @vertex
@@ -38,23 +29,19 @@ fn present_linear(color: vec3f) -> vec4f {
 
 fn compose_sample(pixel: vec2i, sample: u32) -> vec3f {
 	let dimensions = vec2i(textureDimensions(transmittance));
-	let t = textureLoad(transmittance, pixel, i32(sample));
+	let t = sample_texture_load(transmittance, pixel, sample);
 #if PARAMS.get("exact_nearest", false)
 	if bilateral.kernel.y == 11u { return vec3f(t.a); }
-	if bilateral.kernel.y == 10u { return vec3f(select(0.0, 1.0, textureLoad(nearest_alpha, pixel, i32(sample)).a > 0.0)); }
+	if bilateral.kernel.y == 10u { return vec3f(select(0.0, 1.0, sample_texture_load(nearest_alpha, pixel, sample).a > 0.0)); }
 	if bilateral.kernel.y == 9u {
-#if PARAMS.get("sample_count", 1) > 1
-		let color = textureLoad(nearest_color, pixel, i32(sample), 0).rgb;
-#else
-		let color = textureLoad(nearest_color, pixel, 0).rgb;
-#endif
-		return textureLoad(nearest_alpha, pixel, i32(sample)).rgb*color;
+		let color = sample_texture_load(nearest_color, pixel, sample, layered=true).rgb;
+		return sample_texture_load(nearest_alpha, pixel, sample).rgb*color;
 	}
 #endif
 	// Display T_scalar directly, with no exposure curve or reconstruction.
 	if bilateral.kernel.y == 1u {
 #if PARAMS.get("exact_nearest", false)
-		return vec3f(t.a*(1.0-textureLoad(nearest_alpha, pixel, i32(sample)).a));
+		return vec3f(t.a*(1.0-sample_texture_load(nearest_alpha, pixel, sample).a));
 #else
 		return vec3f(t.a);
 #endif
@@ -67,22 +54,14 @@ fn compose_sample(pixel: vec2i, sample: u32) -> vec3f {
 		let mixed = winner_at(pixel, sample);
 		if bilateral.kernel.y == 7u && forced_at(pixel, sample) { return vec3f(1.0); }
 #if PARAMS.get("winner_mix", "average") == "fill"
-#if PARAMS.get("sample_count", 1) > 1
-		let source = textureLoad(winner_source, pixel, i32(sample), 0).r;
-#else
-		let source = textureLoad(winner_source, pixel, 0).r;
-#endif
+		let source = sample_texture_load(winner_source, pixel, sample, layered=true).r;
 		if bilateral.kernel.y == 7u { return vec3f(select(0.0, 1.0, source != 0u)); }
 		let wanted = select(1u, 2u, bilateral.kernel.y == 6u);
 		return select(vec3f(0.0), debug_color(mixed), source == wanted);
 #else
 		if bilateral.kernel.y == 7u { return vec3f(mixed.a); }
 #if PARAMS.get("winner_count", 1) == 2
-#if PARAMS.get("sample_count", 1) > 1
-		let first = textureLoad(first_color, pixel, i32(sample), 0);
-#else
-		let first = textureLoad(first_color, pixel, 0);
-#endif
+		let first = sample_texture_load(first_color, pixel, sample, layered=true);
 		if forced_at(pixel, sample) { return debug_color(first); }
 		return debug_color(select(first, 2.0*mixed-first, bilateral.kernel.y == 6u));
 #else
@@ -90,17 +69,13 @@ fn compose_sample(pixel: vec2i, sample: u32) -> vec3f {
 #endif
 #endif
 	}
-	let main = textureLoad(main_color, pixel, i32(sample)).rgb;
+	let main = sample_texture_load(main_color, pixel, sample).rgb;
 	var filtered: vec4f;
 #if PARAMS.get("compute_reconstruction", false)
 	if 1.0-t.a <= 1e-6 {
 		filtered = vec4f(0.0);
 	} else if bilateral.kernel.x != 0u {
-#if PARAMS.get("sample_count", 1) > 1
-		filtered = textureLoad(reconstructed, pixel, i32(sample), 0);
-#else
-		filtered = textureLoad(reconstructed, pixel, 0);
-#endif
+		filtered = sample_texture_load(reconstructed, pixel, sample, layered=true);
 	} else {
 		filtered = point_reconstruction(pixel, sample);
 	}
@@ -113,12 +88,8 @@ fn compose_sample(pixel: vec2i, sample: u32) -> vec3f {
 	// presentation surface does not already perform the sRGB conversion.
 	var hdr = select(main*t.rgb + transparent, transparent, bilateral.kernel.y == 3u);
 #if PARAMS.get("exact_nearest", false)
-	let a1 = textureLoad(nearest_alpha, pixel, i32(sample)).rgb;
-#if PARAMS.get("sample_count", 1) > 1
-	let c1 = textureLoad(nearest_color, pixel, i32(sample), 0).rgb;
-#else
-	let c1 = textureLoad(nearest_color, pixel, 0).rgb;
-#endif
+	let a1 = sample_texture_load(nearest_alpha, pixel, sample).rgb;
+	let c1 = sample_texture_load(nearest_color, pixel, sample, layered=true).rgb;
 	hdr = a1*c1+(vec3f(1.0)-a1)*hdr;
 #endif
 	hdr = max(hdr, vec3f(0.0));
