@@ -5,13 +5,14 @@ from types import SimpleNamespace
 import pytest
 import glfw
 
-from scenes.transparency_example import BilateralFilter, FilterSettings, SETTINGS
+from numpyecs.TransparencyPass import BilateralFilter
+from scenes.transparency_settings import FilterSettings, SETTINGS
 from scenes import transparency_example as scene
 
 
 def make_renderer(**overrides):
 	values = dict(bilateral_filter=BilateralFilter(), winner_count=1, winner_mix="average",
-		force_single_contributor=False, debug_view="final")
+		force_single_contributor=False, debug_view="final", reconstruction="fragment")
 	values.update(overrides)
 	renderer = SimpleNamespace(**values)
 	renderer.set_bilateral_filter = lambda value: setattr(renderer, "bilateral_filter", value)

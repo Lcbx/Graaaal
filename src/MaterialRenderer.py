@@ -163,6 +163,12 @@ class MaterialRenderer:
 	def set_winner_mix(self, mode):
 		if self.transparency.set_winner_mix(mode): self._register_passes()
 
+	def set_winner_coupling(self, mode):
+		if self.transparency.set_winner_coupling(mode): self._register_passes()
+
+	def set_confidence_filter(self, options):
+		return self.transparency.set_confidence_filter(options)
+
 	def set_reconstruction(self, mode):
 		if self.transparency.set_reconstruction(mode): self._register_passes()
 

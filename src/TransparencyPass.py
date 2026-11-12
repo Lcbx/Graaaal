@@ -77,6 +77,22 @@ class BilateralFilter:
 				raise ValueError(f"Bilateral {name} must be finite and positive")
 
 
+@dataclass(frozen=True)
+class ConfidenceFilter:
+	"""Retained-support budget and cascade/pyramid scale counts."""
+	target_winners: float = 4.0
+	levels: int = 3
+	cascade_passes: int = 4
+
+	def __post_init__(self):
+		if not np.isfinite(self.target_winners) or not 0 < self.target_winners <= np.finfo(np.float32).max:
+			raise ValueError("target_winners must be finite and positive")
+		if type(self.levels) is not int or self.levels not in (2, 3):
+			raise ValueError("Confidence pyramid levels must be 2 or 3")
+		if type(self.cascade_passes) is not int or not 1 <= self.cascade_passes <= 4:
+			raise ValueError("Confidence cascade_passes must be 1 through 4")
+
+
 @dataclass
 class GeometryPasses:
 	"""Register render_shader with DrawBatches; use guide as a pass override.
@@ -110,6 +126,7 @@ class TransparencyTargets:
 	reconstruction_color: Texture | None = None
 	reconstruction_pair: Texture | None = None
 	reconstruction_pair_scratch: Texture | None = None
+	winner_first_payload: Texture | None = None
 
 
 class TransparencyPass:
@@ -122,9 +139,9 @@ class TransparencyPass:
 	the documented winner/metadata ABI. Animation data preparation is caller-owned.
 	"""
 	def __init__(self, *, materials, base_textures, vertices, blue_noise=None, blue_noise_second=None,
-		material_sampler=None, bilateral_filter=None, target_format=None, noise_scale=1.0, noise_mode="anchored_blue",
-		grazing_fade=None, sample_count=1, winner_count=2, noise_footprint_balance=0.0, noise_footprint_balancing=False,
-		force_single_contributor=False, winner_mix="average", reconstruction="fragment", reconstruction_passes=1, early_b_rejection=False,
+		material_sampler=None, bilateral_filter=None, target_format=None, noise_scale=1.0, noise_mode="uv_blue_lerp",
+		grazing_fade=None, sample_count=1, winner_count=2, noise_footprint_balance=1.0, noise_footprint_balancing=True,
+		force_single_contributor=False, winner_mix="average", winner_coupling="complement", reconstruction="fragment", reconstruction_passes=1, confidence_filter=None, early_b_rejection=False,
 		noise_anchor_pixels=24.0, noise_anchor_subdivisions=4,
 		opaque_color=None, opaque_depth=None, material_source=None, material_library=None, frame_fields=None,
 		geometry_shader=None, shading_shader=None, compose_shader=None):
@@ -134,14 +151,16 @@ class TransparencyPass:
 			raise ValueError("Transparency sample_count must be 1 or 4")
 		self._validate_count(winner_count, "winner_count")
 		self._validate_count(reconstruction_passes, "reconstruction_passes")
+		if winner_coupling not in ("complement", "independent"): raise ValueError("winner_coupling must be complement or independent")
+		if confidence_filter is not None and not isinstance(confidence_filter, ConfidenceFilter): raise TypeError("Expected ConfidenceFilter")
 		if winner_count > 2 and winner_mix != "fill": raise ValueError("winner_count above two requires fill mixing")
 		if type(early_b_rejection) is not bool: raise ValueError("early_b_rejection must be boolean")
 		if early_b_rejection:
 			if winner_mix != "fill" or winner_count < 2: raise ValueError("Early B rejection requires multiple-winner fill")
 			RenderContext.require_features(("depth32float-stencil8",))
-		if reconstruction not in ("fragment", "compute"):
-			raise ValueError("reconstruction must be fragment or compute")
-		if (reconstruction == "compute" or reconstruction_passes > 1) and any(s is not None for s in (geometry_shader, shading_shader, compose_shader)):
+		if reconstruction not in ("fragment", "compute", "push_pull", "atrous"):
+			raise ValueError("reconstruction must be fragment, compute, push_pull or atrous")
+		if (reconstruction != "fragment" or reconstruction_passes > 1) and any(s is not None for s in (geometry_shader, shading_shader, compose_shader)):
 			raise ValueError("Compute reconstruction requires the default shader set; material hooks remain supported")
 		if winner_mix not in ("average", "fill"): raise ValueError("winner_mix must be average or fill")
 		if winner_mix == "fill" and noise_mode not in FILL_NOISE_MODES:
@@ -161,7 +180,9 @@ class TransparencyPass:
 		self.sample_count = sample_count
 		self.winner_count = winner_count
 		self.winner_mix = winner_mix
+		self.winner_coupling = winner_coupling
 		self.reconstruction = reconstruction
+		self.confidence_filter = confidence_filter or ConfidenceFilter()
 		self.reconstruction_passes = reconstruction_passes
 		self.early_b_rejection = early_b_rejection
 		self.force_single_contributor = force_single_contributor
@@ -185,6 +206,8 @@ class TransparencyPass:
 		self._geometry_shaders = {}
 		self._reconstruction_shaders = {}
 		self._pair_shaders = {}
+		self._mix_shaders = {}
+		self.pyramid = []
 		self._layout_cache, self._pipeline_layouts = {}, {}
 		self._winner_settings = None
 		self._activate_shaders(sample_count)
@@ -236,14 +259,14 @@ class TransparencyPass:
 			self.set_opaque_inputs(opaque_color, opaque_depth)
 
 	def _geometry_shader(self, count):
-		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix)
+		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix, self.complemented_winners)
 		if key not in self._geometry_shaders:
 			self._geometry_shaders[key] = self._custom_shaders[0] or Shader(
 				filepath=str(SHADERS / "stochastic_geometry.shader"),
 				features=("NOISE_FOOTPRINT_BALANCE",) if self.noise_footprint_balancing else (),
 				params={"material_source": self._material_source, "sample_count": count,
 					"winner_count": min(self.winner_count, 2), "force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix,
-					"material_library": self._material_library, "frame_fields": self._frame_types})
+					"material_library": self._material_library, "frame_fields": self._frame_types, "complemented_winners": self.complemented_winners})
 		return self._geometry_shaders[key]
 
 	@property
@@ -268,24 +291,25 @@ class TransparencyPass:
 		key = (shader, entries)
 		if key not in self._pipeline_layouts:
 			from .material_layout import material_pipeline_layout
-			self._pipeline_layouts[key] = material_pipeline_layout(shader, entries, self._layout_cache)
+			unfilterable = ("level_pair", "level_depth", "level_transmission", "parent_mu", "parent_depth", "parent_transmission", "cascade_pair", "cascade_result") if shader is getattr(self, "pyramid_shader", None) else ()
+			self._pipeline_layouts[key] = material_pipeline_layout(shader, entries, self._layout_cache, unfilterable)
 		return self._pipeline_layouts[key]
 
 	def _shader_set(self, count):
-		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix, self.reconstruction, self.reconstruction_passes > 1)
+		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix, self.reconstruction, self.reconstruction_passes > 1, self.complemented_winners)
 		if key not in self._shader_sets:
 			geometry, shading, compose = self._custom_shaders
 			params = {"material_source": self._material_source, "sample_count": count,
 				"material_library": self._material_library, "frame_fields": self._frame_types,
 				"winner_count": min(self.winner_count, 2),
-				"force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix}
+				"force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix, "complemented_winners": self.complemented_winners}
 			self._shader_sets[key] = (
 				self._geometry_shader(count),
 				shading or Shader(filepath=str(SHADERS / "stochastic_shade.shader"), params=params),
 				compose or Shader(filepath=str(SHADERS / "stochastic_compose.shader"),
 					params={"srgb_surface": self.target_format.endswith("-srgb"), "sample_count": count,
 						"winner_count": min(self.winner_count, 2), "force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix,
-						"compute_reconstruction": self.reconstruction == "compute", "filter_input": self.reconstruction_passes > 1,
+						"compute_reconstruction": self.reconstruction != "fragment", "filter_input": self.reconstruction_passes > 1 and self.reconstruction not in ("push_pull", "atrous"),
 						"frame_fields": self._frame_types}),
 			)
 		return self._shader_sets[key]
@@ -300,14 +324,32 @@ class TransparencyPass:
 		else: self._winner_settings = None
 
 	def _create_mix_pipeline(self):
+		self.mixing_shader = self.shading_shader
 		if self.winner_count == 1: return None
 		entry = "shade_fill" if self.winner_mix == "fill" else "shade_mix"
-		return ComputePipeline(self.shading_shader, entry=entry,
-			layout=self._pipeline_layout(self.shading_shader, entry))
+		if self.complemented_winners:
+			if self.shading_shader not in self._mix_shaders:
+				self._mix_shaders[self.shading_shader] = Shader(filepath=str(SHADERS / "stochastic_shade.shader"), params={"material_source": self._material_source, "sample_count": self.sample_count, "material_library": self._material_library, "frame_fields": self._frame_types, "winner_count": 2, "force_single_contributor": self.force_single_contributor, "winner_mix": "average", "complemented_winners": True, "mix_only": True})
+			self.mixing_shader = self._mix_shaders[self.shading_shader]
+		return ComputePipeline(self.mixing_shader, entry=entry, layout=self._pipeline_layout(self.mixing_shader, entry))
 
 	def _create_reconstruction_pipeline(self):
 		self.reconstruct_shader = self.reconstruct_pipeline = self.reconstruct_frame = None
 		self.pair_shader = self.pair_pipeline = self.pair_frame = None
+		self.pyramid_shader = None
+		self.pyramid_frame = self.pyramid_inputs = self.pyramid_dummy = None
+		self.pyramid_pipelines = {}
+		self.pyramid, self.pyramid_stages = [], []
+		if self.reconstruction in ("push_pull", "atrous"):
+			key = (self.sample_count, self.force_single_contributor, self.reconstruction)
+			if key not in self._reconstruction_shaders:
+				filename = "stochastic_atrous.shader" if self.reconstruction == "atrous" else "stochastic_push_pull.shader"
+				self._reconstruction_shaders[key] = Shader(filepath=str(SHADERS / filename), params={"sample_count": self.sample_count, "force_single_contributor": self.force_single_contributor, "frame_fields": self._frame_types})
+			self.pyramid_shader = self._reconstruction_shaders[key]
+			entries = ("cascade", "finish") if self.reconstruction == "atrous" else ("pull", "push", "finish")
+			self.pyramid_pipelines = {entry: ComputePipeline(self.pyramid_shader, entry=entry, layout=self._pipeline_layout(self.pyramid_shader, entry)) for entry in entries}
+			self.pyramid_frame = self._frame_group(self.pyramid_shader)
+			return
 		if self.reconstruction_passes > 1:
 			key = (self.sample_count, self.force_single_contributor, self.reconstruction)
 			if key not in self._pair_shaders:
@@ -346,8 +388,8 @@ class TransparencyPass:
 		return True
 
 	def set_reconstruction(self, mode):
-		"""Choose the original fragment filter or experimental tiled compute."""
-		if mode not in ("fragment", "compute"): raise ValueError("reconstruction must be fragment or compute")
+		"""Choose a-trous, push-pull or fixed fragment/compute bilateral filtering."""
+		if mode not in ("fragment", "compute", "push_pull", "atrous"): raise ValueError("reconstruction must be fragment, compute, push_pull or atrous")
 		if mode == self.reconstruction: return False
 		if any(shader is not None for shader in self._custom_shaders):
 			raise ValueError("Runtime reconstruction switching requires the default shader set")
@@ -357,7 +399,7 @@ class TransparencyPass:
 		return True
 
 	def _ensure_second_noise(self):
-		if self.winner_count == 1 or self.noise_second is not None: return
+		if self.winner_count == 1 or self.complemented_winners or self.noise_second is not None: return
 		if self._default_noise:
 			from .TextureProcessing import get_default_blue_noise
 			self.noise_second = get_default_blue_noise(stream=1)
@@ -365,6 +407,36 @@ class TransparencyPass:
 			# Explicit single-channel overrides keep their source; stream hashing
 			# selects a different phase. Supply blue_noise_second for a separate tile.
 			self.noise_second = self.noise
+
+	@property
+	def complemented_winners(self):
+		return self.winner_count == 2 and self.winner_mix == "average" and self.winner_coupling == "complement"
+
+	def set_winner_coupling(self, mode):
+		if mode not in ("complement", "independent"): raise ValueError("winner_coupling must be complement or independent")
+		if mode == self.winner_coupling: return False
+		if any(shader is not None for shader in self._custom_shaders): raise ValueError("Winner coupling requires the default shaders")
+		self.winner_coupling = mode
+		self._ensure_second_noise()
+		self._activate_shaders(self.sample_count)
+		self._rebuild_geometry()
+		self.set_noise_mode(self.noise_mode)
+		return True
+
+	def set_confidence_filter(self, options):
+		if not isinstance(options, ConfidenceFilter): raise TypeError("Expected ConfidenceFilter")
+		if options == self.confidence_filter: return False
+		previous = self.confidence_filter
+		self.confidence_filter = options
+		if self.reconstruction in ("push_pull", "atrous") and self.size is not None:
+			if options.levels != previous.levels or options.cascade_passes != previous.cascade_passes:
+				self._setup_pyramid(self.compose_resources.resources)
+			else:
+				for _, inputs, _, _ in self.pyramid_stages:
+					settings = inputs.resources["pyramid_settings"]
+					settings.content["confidence"] = (options.target_winners, 0, 0, 0)
+					settings.upload_changed()
+		return True
 
 	def set_winner_count(self, count):
 		"""Any positive fill draw count, or one/two averaged draws."""
@@ -396,6 +468,7 @@ class TransparencyPass:
 		if mode == "fill" and not self._default_noise_pair:
 			raise ValueError("Fill requires the audited default noise sources")
 		self.winner_mix = mode
+		self._ensure_second_noise()
 		if mode == "average": self.early_b_rejection = False
 		self._activate_shaders(self.sample_count)
 		self._rebuild_geometry()
@@ -527,8 +600,8 @@ class TransparencyPass:
 		bindings = geometry.render_shader['transmittance'].bindings
 		for stream in range(self.winner_count):
 			name = self.selection_name(stream)
-			noise = self.noise if stream == 0 else self.noise_second
-			hierarchy = self._noise_hierarchy if stream == 0 else self._noise_hierarchy_second
+			noise = self.noise if stream == 0 or self.complemented_winners else self.noise_second
+			hierarchy = self._noise_hierarchy if stream == 0 or self.complemented_winners else self._noise_hierarchy_second
 			resources = dict(opaque_depth=self.depth, blue_noise=noise,
 				noise_hierarchy=hierarchy if hierarchy is not None else noise)
 			if self._winner_settings is not None:
@@ -588,7 +661,7 @@ class TransparencyPass:
 		self.uniforms.upload_changed()
 
 	def set_noise_footprint_balancing(self, enabled):
-		"""Compile/cache the optional UV compromise feature; disabled by default."""
+		"""Compile/cache the UV footprint feature; enabled by default."""
 		if type(enabled) is not bool: raise ValueError("Noise footprint balancing must be boolean")
 		if enabled == self.noise_footprint_balancing: return False
 		if any(shader is not None for shader in self._custom_shaders):
@@ -625,7 +698,7 @@ class TransparencyPass:
 			if self.size is not None:
 				for geometry in self._transparent_geometries:
 					self._bind_targets(geometry)
-		if mode in ("uv_blue_correlated", "triplanar_correlated") and self.winner_count > 1 and self._noise_hierarchy_second is None:
+		if mode in ("uv_blue_correlated", "triplanar_correlated") and self.winner_count > 1 and not self.complemented_winners and self._noise_hierarchy_second is None:
 			from .TextureProcessing import build_correlated_noise_hierarchy
 			self._noise_hierarchy_second = build_correlated_noise_hierarchy(self.noise_second)
 			if self.size is not None:
@@ -686,14 +759,15 @@ class TransparencyPass:
 		if self.winner_count == 2 and self.winner_mix == "average": formats["winner_first"] = "rgba16float"
 		if self.winner_mix == "fill": formats["winner_source"] = "r32uint"
 		if self.force_single_contributor: formats["contributor_count"] = "r16float"
-		if self.reconstruction == "compute": formats["reconstruction_color"] = "rgba16float"
-		if self.reconstruction_passes > 1: formats["reconstruction_pair"] = "rgba16float"
-		if self.reconstruction_passes > 2: formats["reconstruction_pair_scratch"] = "rgba16float"
+		if self.reconstruction != "fragment": formats["reconstruction_color"] = "rgba16float"
+		if self.reconstruction not in ("push_pull", "atrous") and self.reconstruction_passes > 1: formats["reconstruction_pair"] = "rgba16float"
+		if self.reconstruction not in ("push_pull", "atrous") and self.reconstruction_passes > 2: formats["reconstruction_pair_scratch"] = "rgba16float"
 		if self.early_b_rejection: formats["selection_depth"] = "depth32float-stencil8"
+		if self.complemented_winners: formats["winner_first_payload"] = "rgba32uint"
 		if targets is not None:
 			for name, format in formats.items():
 				texture = getattr(targets, name)
-				shaded = name in ("winner_color", "winner_first", "winner_source", "reconstruction_color", "reconstruction_pair", "reconstruction_pair_scratch")
+				shaded = name in ("winner_color", "winner_first", "winner_source", "winner_first_payload", "reconstruction_color", "reconstruction_pair", "reconstruction_pair_scratch")
 				usage = TextureUsage.TEXTURE_BINDING | (TextureUsage.STORAGE_BINDING if shaded else TextureUsage.RENDER_ATTACHMENT)
 				if name.startswith("reconstruction_pair"): usage |= TextureUsage.RENDER_ATTACHMENT
 				count = 1 if shaded else self.sample_count
@@ -706,7 +780,7 @@ class TransparencyPass:
 				if inputs and name in ("main_color", "depth"):
 					values[name] = inputs[0 if name == "main_color" else 1]
 				else:
-					shaded = name in ("winner_color", "winner_first", "winner_source", "reconstruction_color", "reconstruction_pair", "reconstruction_pair_scratch")
+					shaded = name in ("winner_color", "winner_first", "winner_source", "winner_first_payload", "reconstruction_color", "reconstruction_pair", "reconstruction_pair_scratch")
 					usage = TextureUsage.TEXTURE_BINDING | (TextureUsage.STORAGE_BINDING if shaded else TextureUsage.RENDER_ATTACHMENT)
 					if name.startswith("reconstruction_pair"): usage |= TextureUsage.RENDER_ATTACHMENT
 					count = 1 if shaded else self.sample_count
@@ -718,9 +792,10 @@ class TransparencyPass:
 		self.winner_first = targets.winner_first if self.winner_count == 2 and self.winner_mix == "average" else None
 		self.contributor_count = targets.contributor_count if self.force_single_contributor else None
 		self.winner_source = targets.winner_source if self.winner_mix == "fill" else None
-		self.reconstruction_color = targets.reconstruction_color if self.reconstruction == "compute" else None
-		self.reconstruction_pair = targets.reconstruction_pair if self.reconstruction_passes > 1 else None
-		self.reconstruction_pair_scratch = targets.reconstruction_pair_scratch if self.reconstruction_passes > 2 else None
+		self.reconstruction_color = targets.reconstruction_color if self.reconstruction != "fragment" else None
+		self.reconstruction_pair = targets.reconstruction_pair if self.reconstruction not in ("push_pull", "atrous") and self.reconstruction_passes > 1 else None
+		self.reconstruction_pair_scratch = targets.reconstruction_pair_scratch if self.reconstruction not in ("push_pull", "atrous") and self.reconstruction_passes > 2 else None
+		self.winner_first_payload = targets.winner_first_payload if self.complemented_winners else None
 		self._targets = targets
 		for geometry in self._transparent_geometries:
 			self._bind_targets(geometry)
@@ -729,6 +804,7 @@ class TransparencyPass:
 		shade_resources = dict(winners=self.winner,
 			winner_color=shaded_view(self.winner_first if self.winner_first is not None else self.winner_color))
 		if self.sample_count > 1: shade_resources["winners_extra"] = self.winner_extra
+		if self.complemented_winners: shade_resources["first_payloads"] = self.winner_first_payload.view(dimension="2d-array")
 		if self.winner_count == 2 and self.winner_mix == "average":
 			shade_resources.update(first_color=shaded_view(self.winner_color), winner_guide=self.transparent_guide,
 				winner_settings=self._winner_settings[1])
@@ -739,7 +815,7 @@ class TransparencyPass:
 		self.shade_targets = self.shading_shader.bind_group(1, **shade_resources)
 		self.mix_targets = None
 		if self.winner_count == 2 and self.winner_mix == "average":
-			self.mix_targets = self.shading_shader.bind_group(1, **dict(shade_resources,
+			self.mix_targets = self.mixing_shader.bind_group(1, **dict(shade_resources,
 				winner_color=shaded_view(self.winner_color), first_color=shaded_view(self.winner_first)))
 		self.fill_targets = []
 		if self.winner_mix == "fill":
@@ -756,7 +832,7 @@ class TransparencyPass:
 		if self.winner_mix == "fill": compose_resources["winner_source"] = shaded_view(self.winner_source)
 		if self.force_single_contributor: compose_resources["contributor_count"] = self.contributor_count
 		self.pair_inputs, self.pair_outputs, self.pair_attachments = [], [], []
-		if self.reconstruction_passes > 1:
+		if self.reconstruction not in ("push_pull", "atrous") and self.reconstruction_passes > 1:
 			pairs = [self.reconstruction_pair] + ([self.reconstruction_pair_scratch] if self.reconstruction_passes > 2 else [])
 			for texture in [self.winner_color, *pairs]:
 				resources = dict(compose_resources, filter_input=shaded_view(texture))
@@ -773,6 +849,10 @@ class TransparencyPass:
 				if name in self.reconstruct_shader.info.bindings})
 			self.reconstruct_output = self.reconstruct_shader.bind_group(2, filter_output=shaded_view(self.reconstruction_color))
 			compose_resources["reconstructed"] = shaded_view(self.reconstruction_color)
+		if self.reconstruction in ("push_pull", "atrous"):
+			compose_resources["reconstructed"] = shaded_view(self.reconstruction_color)
+			self._setup_pyramid(compose_resources)
+		else: self.pyramid, self.pyramid_stages = [], []
 		compose_group = self.compose_shader.info.bindings["main_color"].group
 		if compose_group == 0:
 			compose_resources.update(self.compose_frame.resources)
@@ -783,6 +863,61 @@ class TransparencyPass:
 		# resize/switch rather than keeping many full-resolution target sets alive.
 		for layout in self._layout_cache.values(): layout.clear_cache()
 		return True
+
+	def _setup_pyramid(self, resources):
+		"""Create per-level storage and immutable dispatch bindings."""
+		if self.reconstruction == "atrous":
+			return self._setup_atrous(resources)
+		width, height = self.transmittance.size[:2]
+		shader = self.pyramid_shader
+		self.pyramid_inputs = shader.bind_group(1, **{name: value for name, value in resources.items() if name in shader.info.bindings})
+		usage = TextureUsage.TEXTURE_BINDING | TextureUsage.STORAGE_BINDING
+		self.pyramid_dummy = Texture((1, 1, self.sample_count), format="rgba32float", usage=usage)
+		self.pyramid = []
+		for level in range(1, self.confidence_filter.levels+1):
+			size = ((width+(1<<level)-1)>>level, (height+(1<<level)-1)>>level, self.sample_count)
+			self.pyramid.append({name: Texture(size, format="rgba16float" if name == "transmission" else "rgba32float", usage=usage) for name in ("pair", "depth", "transmission", "mu")})
+		self.pyramid_stages = []
+		def stage(entry, level, source, parent, output, dimensions):
+			settings = shader.uniform_buffer("pyramid_settings")
+			source_size = (width, height) if level == 0 else self.pyramid[level-1]["pair"].size[:2]
+			settings.content["info"] = (level, int(parent is None), 0, 0)
+			settings.content["sizes"] = (*source_size, *dimensions)
+			settings.content["confidence"] = (self.confidence_filter.target_winners, 0, 0, 0)
+			settings.upload()
+			sampled = dict(level_pair=source["pair"], level_depth=source["depth"], level_transmission=source["transmission"], parent_mu=parent["mu"] if parent else self.pyramid_dummy, parent_depth=parent["depth"] if parent else self.pyramid_dummy, parent_transmission=parent["transmission"] if parent else self.pyramid_dummy)
+			inputs = shader.bind_group(2, pyramid_settings=settings, **{name: texture.view(dimension="2d-array") for name, texture in sampled.items()})
+			outputs = {"pull": ("pair", "depth", "transmission"), "push": ("mu",), "finish": ("result",)}[entry]
+			output_group = shader.bind_group(3, **{f"output_{name}": output[name].view(dimension="2d-array") if name != "result" or self.sample_count > 1 else output[name] for name in outputs})
+			self.pyramid_stages.append((entry, inputs, output_group, dimensions))
+		dummy = dict.fromkeys(("pair", "depth", "transmission"), self.pyramid_dummy)
+		for level, output in enumerate(self.pyramid):
+			stage("pull", level, self.pyramid[level-1] if level else dummy, None, output, output["pair"].size[:2])
+		for level in range(len(self.pyramid), 0, -1):
+			output = self.pyramid[level-1]
+			stage("push", level, output, self.pyramid[level] if level < len(self.pyramid) else None, output, output["pair"].size[:2])
+		stage("finish", 0, dummy, self.pyramid[0], dict(result=self.reconstruction_color), (width, height))
+		for layout in self._layout_cache.values(): layout.clear_cache()
+
+	def _setup_atrous(self, resources):
+		width, height = self.transmittance.size[:2]
+		shader = self.pyramid_shader
+		self.pyramid_inputs = shader.bind_group(1, **{name: value for name, value in resources.items() if name in shader.info.bindings})
+		usage = TextureUsage.TEXTURE_BINDING | TextureUsage.STORAGE_BINDING
+		self.pyramid = [{name: Texture((width, height, self.sample_count), format="rgba32float", usage=usage) for name in ("pair", "result")} for _ in range(2)]
+		self.pyramid_stages = []
+		for level in range(self.confidence_filter.cascade_passes+1):
+			final = level == self.confidence_filter.cascade_passes
+			settings = shader.uniform_buffer("pyramid_settings")
+			settings.content["info"] = (level, self.confidence_filter.cascade_passes, 0, 0)
+			settings.content["confidence"] = (self.confidence_filter.target_winners, 0, 0, 0)
+			settings.upload()
+			source = self.pyramid[(level-1)%2]
+			inputs = shader.bind_group(2, pyramid_settings=settings, cascade_pair=source["pair"].view(dimension="2d-array"), cascade_result=source["result"].view(dimension="2d-array"))
+			entry = "finish" if final else "cascade"
+			outputs = dict(final_color=self.reconstruction_color.view(dimension="2d-array") if self.sample_count > 1 else self.reconstruction_color) if final else {f"output_{name}": texture.view(dimension="2d-array") for name, texture in self.pyramid[level%2].items()}
+			self.pyramid_stages.append((entry, inputs, shader.bind_group(3, **outputs), (width, height)))
+		for layout in self._layout_cache.values(): layout.clear_cache()
 
 	def _require_targets(self) -> tuple[int, int]:
 		if self.size is None:
@@ -918,7 +1053,13 @@ class TransparencyPass:
 		"""Reconstruct into a caller-provided ColorAttachment; does not submit."""
 		self._require_targets()
 		if output.format != self.target_format: raise ValueError("Output format must match the configured transparency target_format")
-		if self.reconstruction_passes > 1 and self.bilateral_filter.kernel_size != 1 and self.debug_view in ("final", "reconstruction", "filter_support"):
+		if self.reconstruction in ("push_pull", "atrous") and self.bilateral_filter.kernel_size != 1 and self.debug_view in ("final", "reconstruction", "filter_support"):
+			for entry, inputs, output_group, dimensions in self.pyramid_stages:
+				with commands.compute_pass(label=f"5a_pyramid_{entry}") as compute:
+					compute.set_pipeline(self.pyramid_pipelines[entry])
+					for bindings in (self.pyramid_frame, self.pyramid_inputs, inputs, output_group): compute.set_bind_group(bindings)
+					compute.dispatch((dimensions[0]+7)//8, (dimensions[1]+7)//8, self.sample_count)
+		if self.reconstruction not in ("push_pull", "atrous") and self.reconstruction_passes > 1 and self.bilateral_filter.kernel_size != 1 and self.debug_view in ("final", "reconstruction", "filter_support"):
 			width, height = self.size
 			for stage in range(self.reconstruction_passes-1):
 				source = 0 if stage == 0 else 1+(stage-1)%len(self.pair_attachments)

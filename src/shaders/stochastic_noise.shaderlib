@@ -1,6 +1,12 @@
 // Object-space, pixel-scale hashed thresholds for arbitrary triangle meshes.
 // Scale discretization and uniform CDF correction follow Wyman & McGuire,
 // Hashed Alpha Testing (I3D 2017), section 5.4. No UV/card topology is assumed.
+fn noise_primitive_seed(seed: u32, primitive: u32) -> u32 {
+	// Mix the surface domain first: h(surface) ^ h(primitive) cancels equal
+	// IDs and aliases swapped pairs. Keep the primitive in a separate role.
+	return hash_u32(hash_u32(seed ^ 0x9e3779b9u) ^ primitive);
+}
+
 fn noise_stream_seed(seed: u32, stream: u32) -> u32 {
 	// Preserve the original stream exactly. Addition would alias adjacent IDs.
 	if stream == 0u { return seed; }

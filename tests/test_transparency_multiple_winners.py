@@ -31,11 +31,15 @@ def factory(monkeypatch, request):
 		return Texture(*args, usage=usage, **kwargs)
 	monkeypatch.setattr(transparency, "Texture", readable)
 	def make(*, sample_count=1, kernel=3, alpha=0.5, layers=1, **options):
+		options.setdefault("reconstruction", "fragment")
+		options.setdefault("winner_coupling", "independent")
+		options.setdefault("noise_mode", "anchored_blue")
 		shader = DefaultMaterialShader(transparent=True, source='''
-            fn shade(material: Material, p: Params, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
-                return p.emission;
-            }
-        ''')
+#extends "default_material.shader"
+#block lighting
+	return p.emission;
+#endblock
+''')
 		vertices = np.zeros(6, dtype=VERTEX_DTYPE)
 		vertices["position"] = [(-10, -10, 0), (10, -10, 0), (10, 10, 0), (-10, -10, 0), (10, 10, 0), (-10, 10, 0)]
 		vertices["normal"] = (0, 0, 1)

@@ -192,11 +192,11 @@ def test_gpu_shared_and_inherited_materials_compose_and_update_without_recompili
 	renderer.set_sample_count(5-count)
 	assert np.ptp(render()[..., :3]) > 100
 	baseline = renderer.transparency.shader
-	renderer.set_noise_footprint_balancing(True)
+	renderer.set_noise_footprint_balancing(False)
 	assert renderer.transparency.shader is not baseline
 	assert renderer.draws.shaders[1]["main"].pipeline is renderer.geometry[1].render_shader["main"].pipeline
 	assert np.ptp(render()[..., :3]) > 100
-	renderer.set_noise_footprint_balancing(False)
+	renderer.set_noise_footprint_balancing(True)
 	assert renderer.transparency.shader is baseline
 
 
@@ -252,8 +252,12 @@ def test_material_record_preserves_external_opaque_color_and_occlusion(count, lo
 	if local_opaque:
 		opaque = DefaultMaterialShader(default_material={"base_color": (0, 0, 0, 1), "emission": (0, 1, 0), "metallic": 1})
 		items.append(DrawInstance(MaterialMesh(vertices, opaque), position=(0, 0, 1)))
+	# The deliberately constant threshold over-accepts a single stochastic stream.
+	# Keep that case on the validity-normalized path; complementary/forced cases
+	# have exact coverage here and also check the default confidence reconstruction.
+	reconstruction = "fragment" if winner_count == 1 and not force else "push_pull"
 	renderer = MaterialRenderer(items, blue_noise=noise, target_format="rgba8unorm", sample_count=count,
-		opaque_color=color, opaque_depth=depth, winner_count=winner_count, force_single_contributor=force)
+		opaque_color=color, opaque_depth=depth, winner_count=winner_count, force_single_contributor=force, reconstruction=reconstruction)
 	# Another renderer supplies blue HDR color and a left-half foreground occluder.
 	shader = Shader(source='''
         <Output> @location(0) color: vec4f;

@@ -18,7 +18,7 @@ python main.py scenes/msaa_example.py
 | `direct_draw_example.py` | Direct instanced drawing and shadows. Scrolling adjusts the view. |
 | `prototype.py` | ImGui actor/health panels backed by ECS data; combat resolution remains a placeholder. |
 | `transparency_example.py` | Stochastic transparency using `resources/small_scene.glb`; controls below. |
-| `material_example.py` | Shared dictionary materials, instance overrides, rim lighting, and an embedded WGSL shader with animated vertex displacement. Controls adjust stripes, displacement amplitude/speed, and pause animation. M: MSAA; D: replace default; Space: orbit. |
+| `material_example.py` | Shared dictionary materials, instance overrides, rim lighting, and an embedded WGSL shader with animated vertex displacement. Controls adjust stripes, displacement amplitude/speed, and pause animation. M: MSAA; D: replace default; F: transparency settings; Space: orbit. |
 | `msaa_example.py` | Rotating triangle with resize handling. Number keys: 1 disables MSAA; 4 selects 4x MSAA (default). |
 
 All six expose `run_scene()` and can be imported without creating a window or
@@ -47,26 +47,36 @@ import paths start with `scenes.` when running from the repository root.
 | `draw_batches_example` | `Transform`, `Velocity`, `MeshRef` define components; `movement_system(world, dt)` updates motion; `update_instances(world, data)` packs drawing columns. Other scene systems use state initialized by `run_scene()`. |
 | `direct_draw_example` | `CubeInstances.update()` refreshes `.content` only when component versions or query membership change. |
 | `prototype` | `create_world()` returns sample actors; `actor_statuses(world, query)` returns `ActorStatus` records; `.health_fraction` clamps UI health; `ActorCache.update()` refreshes displayed values on change. |
-| `transparency_example` | `init_scene(...)` builds GPU resources; `render_frame()` records/submits a frame using scene state; `FilterSettings.set_value/reset` edits/restores reconstruction controls. |
+| `transparency_example` | `init_scene(...)` builds GPU resources; `render_frame()` records/submits a frame using scene state. |
+| `transparency_settings` | `FilterSettings(renderer, visible=True, position=(12, 12))` provides shared ImGui controls for a `TransparencyPass` or `MaterialRenderer`; register `.handle_key` and render `.draw`. |
 | `material_example` | `sphere_vertices()`, `make_instances()`, and `make_world()` build CPU geometry/material/ECS inputs without opening a device. |
 | `msaa_example` | `run_scene()` contains the minimal window, resize and sample-count switching loop. |
 
 ## Transparency controls
 
-The settings window is visible at startup. **Winner draws** accepts a positive
+The settings window is visible at startup in `transparency_example`; press **F**
+to open it in `material_example`. Both use `transparency_settings.py`.
+**Winner draws** accepts a positive
 integer, independently of MSAA. Average mode supports one or two (default);
 Fill accepts any positive count. Extra attempts reduce missing winners but add
 selection/shading work and do not supersample edges.
 Diagnostic views include each stream and the valid-stream fraction. See the
-[two-winner plan and findings](../src/transparency_multiple_winners.md).
+[two-winner plan and findings](../src/transparency_multiple_winners_implementation.md).
 The diagnostic dropdown and **D** shortcut follow the active technique. A/B
 views appear only for two-draw Average mode; Fill labels its binary mask
 **winner_validity**. Single-draw mode hides stream/count views, disabled forcing
 hides **forced**, and 1x1 hides **filter_support**. A view that becomes unavailable
 returns to **final** when editing settings.
-**Filter implementation** selects the default Fragment path or experimental
-Compute reconstruction. They share the same bilateral estimator. See the
-[profiling report](../src/transparency_reconstruction.md) for measurements.
+**Winner pairing** selects complemented thresholds (default) or independent
+sources for two-draw averaging. Fill always uses independent retries.
+**Filter implementation** selects the default A-trous cascade, Confidence pyramid,
+or either fixed bilateral implementation. The cascade's **Support budget D**
+defaults to four; increase it to smooth faint layers more broadly. **Cascade
+passes** selects one to four (default), reaching radii of 1/3/7/15 pixels.
+Its **retained_support** view shows final D / budget. The pyramid retains
+**Target expected winners**, **Pyramid levels** and its **confidence** view.
+See the
+[profiling report](../src/transparency_reconstruction_implementation.md) for measurements.
 **Force single contributor** deterministically accepts exactly one visible
 contributor at its opacity, including fractional MASK edges; it adds a small
 count target and is off by default. **Winner mix** offers experimental hole
@@ -74,10 +84,11 @@ filling with default-source Object hash or Anchored blue noise. Select two draws
 then Fill, before raising the count further. Reduce to two before returning to Average.
 Other noise modes retain averaging. The **forced** view marks deterministic
 samples; weighted color views show color with its weight removed.
-**Reconstruction passes** stacks the selected kernel, filtering weighted pairs
+In bilateral modes, **Reconstruction passes** stacks the selected kernel, filtering weighted pairs
 and applying opacity once at the end. Two 3x3 passes reach up to 5x5 support;
 four reach 9x9, with different weights from a single large kernel. A 1x1 kernel
-bypasses all stages. The FPS/frame-time overlay remains visible when settings hide.
+bypasses all stages. Confidence modes instead have an **Enable reconstruction** toggle.
+The FPS/frame-time overlay remains visible when settings hide.
 Drag values or Ctrl+click to type;
 hover controls for units and tuning guidance. ImGui captures input while editing
 widgets, so those actions do not also move the camera or trigger scene shortcuts.

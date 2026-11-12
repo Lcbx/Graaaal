@@ -142,14 +142,15 @@ def run(size=(1280, 720), frames=30, warmup=5, configs=None, zoom=1.0, rounds=4,
 			for mode in implementations:
 				records = measurements[(name, mode)]
 				gpu = [r["gpu_pass_ms"] for r in records if r["gpu_pass_ms"] is not None]
-				passes = {k: float(np.median([m.get(k, 0) for m in gpu])) for k in sorted(set().union(*(m.keys() for m in gpu)))} if gpu else None
+				pass_medians = {k: float(np.median([m.get(k, 0) for m in gpu])) for k in sorted(set().union(*(m.keys() for m in gpu)))} if gpu else None
 				image = images[(name, mode)]
 				baseline = images.get((name, "fragment"), image)
 				stats = distribution([r["gpu_frame_ms"] for r in records if r["gpu_frame_ms"] is not None])
 				rows.append(dict(config=name, reconstruction=mode, winners=winners, msaa=samples, kernel=kernel,
 					reconstruction_passes=passes,
+					winner_coupling=oit.winner_coupling, same_estimator_as_fragment=mode in ("fragment", "compute"),
 					force=force, winner_mix=mix, early_b_rejection=early, gpu_frame_ms=stats,
-					gpu_frame_ms_median=stats["median"] if stats else None, gpu_pass_ms_median=passes,
+					gpu_frame_ms_median=stats["median"] if stats else None, gpu_pass_ms_median=pass_medians,
 					gpu_pass_sum_ms_median=float(np.median([sum(m.values()) for m in gpu])) if gpu else None,
 					synchronized_wall_ms=distribution([r["wall_ms"] for r in records]),
 					classification=classes[(name, mode)], measurements=records,
@@ -172,7 +173,7 @@ def main():
 	parser.add_argument("--zoom", type=float, default=1.0, help="Divide the initial camera distance by this factor")
 	parser.add_argument("--configs", nargs="+")
 	parser.add_argument("--rounds", type=int, default=4)
-	parser.add_argument("--implementations", nargs="+", choices=("fragment", "compute"), default=["fragment", "compute"])
+	parser.add_argument("--implementations", nargs="+", choices=("fragment", "compute", "push_pull", "atrous"), default=["fragment", "compute"])
 	parser.add_argument("--seed", type=int, default=11012)
 	parser.add_argument("--stencil", action="store_true", help="Include optional fill B stencil-gating comparisons")
 	parser.add_argument("--output", type=Path, required=True)

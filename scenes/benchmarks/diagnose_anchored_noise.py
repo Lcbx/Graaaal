@@ -36,10 +36,12 @@ class NoiseProbe:
                 if id.x >= arrayLength(&probes) { return; }
                 let p = probes[id.x];
                 var seed = hash_u32(p.info.x);
+                let complemented = p.pixel.z != 0.0;
+                if complemented { seed = noise_primitive_seed(seed, bitcast<u32>(p.pixel.w)); }
                 if p.info.w != 0u && p.info.y != 7u {
                     seed = hash_u32(seed ^ hash_u32(p.info.w-1u + 0x68bc21ebu));
                 }
-                seed = noise_stream_seed(seed, p.info.z);
+                if !complemented { seed = noise_stream_seed(seed, p.info.z); }
                 if p.info.y == 7u {
                     values[id.x] = anchored_blue_threshold(noise, p.pixel.xy, p.local.xyz,
                         p.dx.xyz, p.dy.xyz, p.local.w, seed, p.dx.w, p.dy.w);
@@ -48,22 +50,25 @@ class NoiseProbe:
                         p.dx.xyz, p.dy.xyz, vec3f(0.0, 0.0, 1.0), p.local.xy, p.dx.xy, p.dy.xy,
                         p.local.w, seed, p.info.y);
                 }
+                if complemented && p.info.z != 0u { values[id.x] = 1.0-values[id.x]; }
             }
         ''')
 		self.pipeline = ComputePipeline(self.shader)
 		self.dtype = np.dtype([(name, "f4", 4) for name in ("local", "dx", "dy", "pixel")]+[("info", "u4", 4)])
 
-	def evaluate(self, local, pixel, dx, dy, *, pixels=1.0, anchor_pixels=24.0, subdivisions=4, seed=17, mode=7, stream=0, sample=None):
+	def evaluate(self, local, pixel, dx, dy, *, pixels=1.0, anchor_pixels=24.0, subdivisions=4, seed=17, mode=7, stream=0, sample=None, complement=False, primitive=0):
 		data = np.zeros(len(local), dtype=self.dtype)
 		data["local"][:, :3], data["local"][:, 3] = local, pixels
 		data["dx"][:, :3], data["dx"][:, 3] = dx, anchor_pixels
 		data["dy"][:, :3], data["dy"][:, 3] = dy, subdivisions
 		data["pixel"][:, :2] = pixel
+		data["pixel"][:, 2] = complement
+		data["pixel"][:, 3] = np.asarray(primitive, np.uint32).view(np.float32)
 		data["info"][:, :2] = (seed, mode)
 		data["info"][:, 2] = stream
 		if sample is not None: data["info"][:, 3] = np.asarray(sample)+1
-		if stream and self.noise_second is None: self.noise_second = get_default_blue_noise(stream=1)
-		noise = self.noise if stream == 0 else self.noise_second
+		if stream and not complement and self.noise_second is None: self.noise_second = get_default_blue_noise(stream=1)
+		noise = self.noise if stream == 0 or complement else self.noise_second
 		if mode in (4, 6) and stream not in self.hierarchies:
 			self.hierarchies[stream] = build_correlated_noise_hierarchy(noise)
 		source = GpuBuffer(data, BufferUsage.STORAGE)

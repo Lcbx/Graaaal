@@ -205,10 +205,13 @@ fn select_winner(input: VertexOutput, @builtin(front_facing) front: bool, @built
 	let info = metadata[input.instance];
 	let material = get_material(input.instance);
 	let alpha = raster_opacity(input.instance, material, input.uv, lod, input.world);
-	// Derivatives precede every discard. The same local field follows the mesh
-	// through camera motion and instance transforms, without triangle reseeding.
+	// Derivatives precede every discard. The local field follows the mesh
+	// through camera motion and instance transforms.
 	// Opposite physical sides use separate seeds on two-sided/closed surfaces.
 	var seed = hash_u32(info.z ^ select(0xa511e9b3u, 0u, front));
+#if PARAMS.get("complemented_winners", false)
+	seed = noise_primitive_seed(seed, input.triangle);
+#endif
 	let mode = u32(frame.clip.w);
 #if PARAMS.get("sample_count", 1) > 1
 	// Anchored blue reads one spatial field at the native sample positions.
@@ -230,7 +233,9 @@ fn select_winner(input: VertexOutput, @builtin(front_facing) front: bool, @built
 	forced = p > 0.0 && acceptance > 0.0 && textureLoad(contributor_count, pixel, i32(sample)).r == 1.0;
 #endif
 #if PARAMS.get("winner_count", 1) > 1 or PARAMS.get("winner_mix", "average") == "fill"
+#if not PARAMS.get("complemented_winners", false)
 	seed = noise_stream_seed(seed, winner_settings.info.x);
+#endif
 #if PARAMS.get("winner_mix", "average") == "fill"
 	if winner_settings.info.x != 0u {
 #if PARAMS.get("sample_count", 1) > 1
@@ -262,7 +267,11 @@ fn select_winner(input: VertexOutput, @builtin(front_facing) front: bool, @built
 #endif
 		}
 	}
-	if !forced && u >= p { discard; }
+#if PARAMS.get("complemented_winners", false)
+	// Complement last, preserving the remapped marginal and the common phase.
+	if winner_settings.info.x != 0u { u = 1.0-u; }
+#endif
+	if !forced && p < 1.0 && u >= p { discard; }
 	// Zero instance is the empty sentinel. Hardware depth writes keep all four
 	// payload components consistent with the nearest accepted triangle.
 	let payload = vec4u(input.instance + 1u, input.triangle,

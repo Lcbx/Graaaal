@@ -1,8 +1,173 @@
 # Transparency profiling and compute reconstruction
 
-## Status
+## Current library defaults
 
-The original fragment reconstruction remains the default. A tiled compute
+At the user's request, `TransparencyPass` now defaults to UV blue CDF lerp,
+footprint balancing enabled at 1.0, and one 3x3 fragment bilateral reconstruction
+pass. Complemented two-winner averaging remains the winner default.
+MaterialRenderer inherits these options. The transparency scene's explicit
+anchored-blue/a-trous choices remain separate from the library defaults.
+Measurements below preserve their recorded settings.
+
+Validation after changing defaults: **916 passed in 210.51 seconds**. Statistical
+fixtures and confidence-specific readbacks explicitly select their required
+technique; feature-toggle tests now disable balancing first and restore it.
+
+## Unnormalised a-trous replacement
+
+Implemented `reconstruction="atrous"` as the new default; `push_pull` remains
+selectable for comparison. Four full-resolution passes use dilation 1/2/4/8,
+with scaled center-one binomial taps. Numerator and deterministic acceptance
+are propagated together with no weight renormalization. Each pixel selects
+output levels using D = filtered acceptance * 4**pass and deterministic
+smoothstep gates; propagation never stops. The final pass consumes all remaining
+output weight. Two reusable FP32 pair/result sets avoid optional read-write
+storage texture features and storage-buffer size limits. Only final presentation
+uses half-float. Exact/forced bypasses and 1x1 remain supported.
+
+`ConfidenceFilter.target_winners` is the retained support budget D in this mode,
+default four (about nine nominal independent effective samples for an unrestricted
+broad tent). It is not an empirical ESS guarantee for correlated blue noise.
+`cascade_passes=1..4` controls maximum radius 1/3/7/15. The full-resolution guide
+uses reciprocal-depth plane correction for transparent and opaque depths,
+factor-three logarithmic acceptance tolerance, and separate chromatic transmission
+weighting. The opaque plane uses conservative one-sided slopes at discontinuities.
+No tolerance relaxation crosses silhouettes. Content-depth moments are not added;
+gradually chaining across similar-depth surfaces remains possible.
+
+The shared settings expose cascade passes, support budget and a retained-support
+view (final D / budget). Spatial sigma is hidden for this fixed binomial kernel.
+CPU/GPU checks cover every cascade length at native 1x/4x MSAA, exact propagated
+sums, deterministic output-level blending, odd image boundaries, budget updates,
+clearing/resize, depth-edge separation, and translated isolated winners. The
+isolated response is compared against an analytic unit-peak tent, not a fitted
+noise model.
+
+Validation completed: full regression **915 passed in 212.13 seconds**; the final
+rejected-mass case and the complete cascade set then passed **16 tests**.
+Both examples started successfully; nine live material frames exercised F,
+native 4x MSAA, cascade/pyramid/bilateral switching, cascade pass count and cleanup.
+
+The [RMSE sweep](../scenes/benchmarks/results/transparency_atrous_quality.json)
+and [plot](../scenes/benchmarks/results/transparency_atrous_quality.png) cover
+90 cases at 256x256. The same-seed
+[pyramid comparison](../scenes/benchmarks/results/transparency_atrous_pyramid_comparison.json)
+uses the corrected domain-separated seeds. At alpha 0.1 and budget four,
+cascade/pyramid RMSE is 0.02151/0.02672 (two layers), 0.03995/0.04674 (four),
+and 0.04943/0.07306 (eight). Budget units differ between the algorithms, so
+these are tuning comparisons, not equal-support or equal-time comparisons.
+The curves still have plateaus as output selection moves between scales.
+
+The sweep also includes a 64-seed eight-layer audit at alpha 0.1, forcing the
+final footprint to match its measured variance with its D. Excluding the outer
+16 pixels, empirical effective count / D has 10th/50th/90th percentiles of
+2.24/2.66/3.14; no measured interior pixel falls below D. This is a finite-sample
+observation for this stack and noise source, not a universal independence bound.
+
+[Whole-frame timings](../scenes/benchmarks/results/transparency_atrous_timings.json),
+RTX 5060 Ti/Vulkan, 720p, 40 measured frames across four randomized rounds:
+
+| MSAA | Bilateral 3x3 | Push-pull | A-trous (4 passes) |
+| --- | --- | --- | --- |
+| 1x | 0.598 ms | 0.848 ms | 1.003 ms |
+| 4x | 1.358 ms | 2.683 ms | 3.754 ms |
+
+This FP32 implementation increases cost and memory: its four full-resolution
+pair/result textures use 64 bytes per pixel per hardware sample. Reduced
+precision/packing is not part of this validation. Static RMSE and impulse tests
+do not establish a camera-motion quality verdict.
+
+## Complemented winners and confidence push-pull
+
+Review follow-up: replaced the symmetric surface/triangle XOR hash with an
+ordered, domain-separated primitive seed shared by selection and the diagnostic
+probe. Equal-ID and swapped-ID pairs no longer deterministically alias; A/B
+still share the same base seed before B's final complement. Native raster
+regressions cover both reported pairs with matching local/UV coordinates, UV
+and anchored noise, 1x/4x MSAA, per-stream layer probabilities and reconstructed
+mean color. The original shader reproduces the zero rear-win failure. After the
+fix, **157** noise/multi-winner/confidence tests pass; all **8** collision cases
+also pass the final reconstructed-color assertions. Measurements below predate
+this seed correction.
+
+Implemented complemented two-draw averaging as the default, applying B = 1 - A
+after every remap with the same surface/primitive seed and tile. Independent
+pairing remains selectable; conditional fill always retains independent retries.
+A's full payload is saved in an RGBA32UI array texture; exact payload matches
+reuse A's shade, including barycentrics and texture LOD. Using a texture avoids
+large storage-buffer binding limits at high resolutions and 4x MSAA.
+
+The default reconstruction is now a three-level confidence pyramid, with two
+levels also selectable and an expected-winner budget of four. Pull stages sum
+the averaged color numerator and deterministic A_s denominator with identical
+edge weights. Push stages blend local 3x3 estimates with broader estimates using
+clamped expected support / budget. Transparent depth is slope-corrected; opaque
+depth and RGBA transmittance remain separate constraints. Winner identity never
+guides reconstruction. Exact/forced winners retain their bypass. Presentation,
+opacity multiplication and hardware-sample resolution happen once.
+
+The pyramid stores only downsampled levels, with float32 sums/guides/estimates
+and half-float transmittance; it needs no full-resolution pair buffers. Changing
+the budget updates uniforms without reallocating textures. Resizing, level
+changes and reconstruction switches release old target bindings. Shader modules
+are cached by sample count and force setting. A 1x1 kernel still bypasses
+reconstruction. The original fragment/compute bilateral paths and their stacked
+passes remain selectable. Settings expose pairing, implementation, budget,
+levels and the local confidence diagnostic. No temporal accumulation was added.
+
+### Quality measurements
+
+[Diagnostic JSON](../scenes/benchmarks/results/confidence_transparency_2026-11-12.json)
+and [RMSE plot](../scenes/benchmarks/results/confidence_transparency_2026-11-12.png)
+contain 90 actual GPU cases: 2/4/8 flat contrasting layers, alpha 0.05/0.1/0.15,
+five budgets, complemented/independent pairing, against sorted front-to-back
+color. At complemented pairing, increasing the budget from one to four reduces
+RMSE in all nine cases. At alpha 0.1, RMSE is 0.0563 -> 0.0260 for two layers,
+0.0869 -> 0.0460 for four and 0.1037 -> 0.0728 for eight. A budget of 16 lowers
+the eight-layer result further to 0.0351. Maximum absolute channel mean error
+at budget four is 0.00153. These are fixed-camera accuracy checks, not a visual
+motion-quality verdict, and broad filtering trades spatial detail for noise.
+
+The same diagnostic compares error variance and low-frequency power against a
+transposed second tile. Complementing eliminates the single-layer p=0.5 error
+and reduces total variance elsewhere tested, but anchored blue has about
+12-25% more low-frequency error at the sampled non-half opacities. The user
+explicitly accepted that tradeoff for fewer raw holes and requested the default.
+Complemented streams are not used for conditional fill, which requires
+independence. Optional stack-depth channels and commutative faint-fragment
+routing are outside this change.
+
+### Cost and validation
+
+Actual tree, RTX 5060 Ti / Vulkan, 1280x720, 40 measured frames per case over
+four randomized rounds, five warmups per block, complemented two-draw averaging:
+
+| MSAA | Fragment 3x3 | Tiled compute 3x3 | Confidence pyramid |
+| --- | --- | --- | --- |
+| 1x | 0.606 ms | 0.638 ms | 0.855 ms |
+| 4x | 1.366 ms | 1.457 ms | 2.686 ms |
+
+These are whole-frame GPU medians, recorded in the
+[timing JSON](../scenes/benchmarks/results/transparency_confidence_720p_2026-11-12.json).
+The pyramid improves support for faint layers but is currently a quality/cost
+choice, not a performance improvement. Fragment/compute output parity stays
+within one byte; pyramid images intentionally differ because their estimator
+and support differ.
+
+Focused native GPU checks cover complementary marginals/minimum overlap,
+single-shade reuse, deterministic denominators, an independent NumPy push-pull
+reference, odd image boundaries, depth discontinuities, exact/force bypasses,
+1x/4x MSAA, animated material/frame uniforms, clear/resize, runtime switching,
+external opaque inputs and UI. Older fixed-kernel tests explicitly request that
+implementation; stale scene batch names and material-template test setup were
+updated for the user's recent refactoring. Full regression: **892 passed in
+202.12 seconds**. After the final shader-cache reuse adjustment, all **30**
+confidence/complement checks passed again. Direct example startup completed
+**12 frames** with its default reconstruction and real ImGui settings.
+
+## Earlier fixed-kernel implementation
+
+A tiled compute
 prototype is available through `reconstruction="compute"` or
 `set_reconstruction("compute")` on `TransparencyPass` and `MaterialRenderer`.
 The example exposes **Filter implementation**. It preserves the bilateral

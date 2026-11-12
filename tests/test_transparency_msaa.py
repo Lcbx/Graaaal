@@ -80,7 +80,7 @@ def test_msaa_resolves_coverage_in_linear_hdr_and_preserves_live_batches(monkeyp
 		return original_build(*args, **kwargs)
 	monkeypatch.setattr(scene.HiZCuller, "record", record_hiz)
 	monkeypatch.setattr(scene.hzb, "build", build_hzb)
-	registered = scene.transparent.data.shaders[0]
+	registered = scene.transparent_batches.data.shaders[0]
 	scene.camera.position, scene.camera.target = scene.Vec3(0, 0, 3), scene.Vec3(0, 0, 0)
 	oit.set_noise_mode("triplanar_correlated")
 	oit.set_noise_scale(1.5)
@@ -97,8 +97,8 @@ def test_msaa_resolves_coverage_in_linear_hdr_and_preserves_live_batches(monkeyp
 		assert oit.uniforms.content["noise_footprint_balance"] == 0.5
 		assert oit.effective_noise_scale == 1.5/(count**0.5)
 		assert oit.uniforms.content["clip"][..., 2] == oit.effective_noise_scale
-		assert scene.transparent.data.shaders[0] is registered
-		assert scene.transparent.passes.render_shader is registered
+		assert scene.transparent_batches.data.shaders[0] is registered
+		assert scene.transparent_batches.passes.render_shader is registered
 		assert oit._noise_hierarchy is hierarchy
 		assert oit.noise_mode == "triplanar_correlated"
 		oit.set_bilateral_filter(replace(oit.bilateral_filter, kernel_size=kernel))

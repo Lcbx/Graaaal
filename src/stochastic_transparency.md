@@ -7,10 +7,13 @@ materials, camera values, targets, and command submission. The
 [engine guide](../README.md#composable-transparency) documents its resource API;
 the [interactive scene](../scenes/transparency_example.py) shows complete recording.
 
-`TransparencyPass` and the example default to `noise_mode="anchored_blue"`,
-`winner_count=2` and `winner_mix="average"`. MaterialRenderer inherits these
-defaults. Explicit settings override them; low-level custom shader sets require
-`winner_count=1`.
+`TransparencyPass` defaults to `noise_mode="uv_blue_lerp"`,
+`winner_count=2`, `winner_mix="average"`, `winner_coupling="complement"` and
+`reconstruction="fragment"`, with one 3x3 pass. UV footprint balancing is enabled
+at strength 1.0. MaterialRenderer inherits these defaults. The transparency
+example explicitly selects anchored blue and a-trous. Explicit settings override
+library defaults; low-level custom shader sets require
+`winner_count=1, reconstruction="fragment"`.
 
 ## Useful APIs
 
@@ -28,7 +31,9 @@ RenderContext before constructing GPU resources.
 | `set_opaque_inputs(color, depth)` | Uses caller-owned opaque textures; pass `None, None` to restore internal targets. |
 | `set_sample_count`, `set_noise_mode`, `set_noise_scale`, `set_debug_view` | Update live sampling and diagnostic settings. |
 | `set_winner_count(N)`, `set_winner_mix(mode)` | Positive uint32 draw count and `"average"`/`"fill"` mode; averaging supports 1 or 2. Default: 2 in average mode. |
-| `set_reconstruction("fragment" or "compute")` | Select original filtering or experimental shared-memory compute; fragment remains default. |
+| `set_winner_coupling("complement" or "independent")` | Pair two averaged selections with one complemented tile (default), or independent sources. Fill always uses independent retries. |
+| `set_reconstruction("atrous", "push_pull", "fragment" or "compute")` | Select the cascade, confidence pyramid, or fixed bilateral implementation (fragment is default). |
+| `ConfidenceFilter`, `set_confidence_filter` | Set budget (default 4), cascade passes (1–4, default 4), and pyramid levels (2 or 3, default 3). |
 | `set_reconstruction_passes(N)` | Stack a positive uint32 number of bilateral passes; default 1. A 1x1 kernel bypasses all passes. |
 | `set_early_b_rejection(bool)` | Experimental per-sample stencil rejection for fill B; default off and requires `depth32float-stencil8`. |
 | `BilateralFilter`, `set_bilateral_filter` | Configure reconstruction footprint and tolerances. |
@@ -58,7 +63,7 @@ With an existing `TransparencyPass` named `transparency`, for example:
 transparency.set_noise_mode("anchored_blue")
 transparency.set_winner_mix("fill")
 transparency.set_winner_count(4)
-transparency.set_reconstruction_passes(2)
+transparency.set_confidence_filter(ConfidenceFilter(target_winners=8, cascade_passes=4))
 ```
 
 `winner_mix="average"` supports one or two draws; `"fill"` supports any positive
@@ -66,9 +71,22 @@ uint32 draw count with `object_hash` or `anchored_blue` and the default noise
 sources. Switch back to at most two draws before selecting average mode.
 `set_early_b_rejection(True)` optionally requires the
 `depth32float-stencil8` GPU feature for fill mode.
-`set_reconstruction("fragment"|"compute")` chooses the implementation; the
-fragment path is the default. `set_reconstruction_passes(N)` stacks N filters;
-a 1x1 kernel bypasses them.
+`set_reconstruction("atrous"|"push_pull"|"fragment"|"compute")` chooses the implementation.
+The optional a-trous cascade expands the footprint where retained acceptance
+support is low. `ConfidenceFilter.target_winners` sets its support budget D;
+higher values give broader smoothing. D is not a measured effective sample count.
+`cascade_passes=1..4` sets maximum radii of 1/3/7/15 pixels. The comparison
+pyramid uses `levels=2` or `3`. Both use the depth/transmittance tolerances in
+`BilateralFilter`; spatial sigma applies to the pyramid and bilateral filters.
+Its 1x1 kernel disables reconstruction; other kernel sizes enable the confidence
+filters' 3x3 gathers. `reconstruction_passes` applies only to fixed bilateral modes.
+
+Complemented averaging uses the same final remapped threshold and phase for
+both selections. Set `winner_coupling="independent"` to compare independent
+sources. `blue_noise_second` is used by independent pairing and fill, and is not
+sampled by complemented pairing. Winner validity diagnostics still show actual
+accepted fractions; `filter_support` shows final retained D / budget for the
+cascade, or local confidence for the pyramid.
 
 ## Geometry and targets
 
@@ -98,8 +116,12 @@ attachments (`winner`, `winner_extra`); `winner_color` is a four-layer,
 single-sample `rgba16float` texture. Externally owned opaque attachments must
 match the selected sample count. In fill mode, caller-owned targets also require
 `winner_source` (`r32uint`, one layer per sample). Multiple reconstruction
-passes require `reconstruction_pair`, and more than two require
+bilateral passes require `reconstruction_pair`, and more than two require
 `reconstruction_pair_scratch` (`rgba16float`).
+Complemented two-draw averaging additionally requires `winner_first_payload`
+(`rgba32uint`, sampled/storage, one layer per sample, including an array layer
+at 1x). Push-pull and compute require `reconstruction_color` (`rgba16float`,
+sampled/storage, layered only at 4x); internal confidence-filter textures are pass-owned.
 
 For custom material shading or geometry deformation, use `material_source`, a
 matching `geometry_shader`/`shading_shader` pair, or the extra resource arguments
@@ -112,9 +134,9 @@ explicitly implemented for additional draws and the selected MSAA ABI.
 
 | Name | Use |
 | --- | --- |
-| `anchored_blue` (default) | Pixel-lattice anchored noise without material UVs |
+| `anchored_blue` | Pixel-lattice anchored noise without material UVs |
 | `object_hash` | Object-space hash; useful with overlapping or missing UVs |
-| `uv_blue_lerp`, `uv_blue_pick` | UV blue-noise variants |
+| `uv_blue_lerp` (default), `uv_blue_pick` | UV blue-noise variants |
 | `uv_bayer` | Diagnostic ordered-noise comparison |
 | `uv_blue_correlated` | UV correlated hierarchy |
 | `triplanar_blue`, `triplanar_correlated` | Object-space triplanar variants |
@@ -122,8 +144,8 @@ explicitly implemented for additional draws and the selected MSAA ABI.
 `set_noise_scale(pixels)` adjusts the positive, finite 1x noise-cell target;
 4x MSAA uses half that target. `set_noise_anchor(pixels=24, subdivisions=4)`
 configures anchored-blue grain. `set_noise_footprint_balancing(True)` enables
-an optional UV-only shader feature, and `set_noise_footprint_balance(a)` sets
-its 0–1 derivative balance (default 0). Other modes ignore this control.
+a UV-only shader feature (enabled by default), and `set_noise_footprint_balance(a)` sets
+its 0–1 derivative balance (default 1). Other modes ignore this control.
 Distinct overlapping instances should use distinct stable surface IDs.
 
 `GrazingFade(enabled=True, start_angle=83, end_angle=86)` fades transparent

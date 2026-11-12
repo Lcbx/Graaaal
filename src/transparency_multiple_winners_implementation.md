@@ -2,10 +2,17 @@
 
 ## Current defaults
 
-The example and `TransparencyPass` now start with anchored blue noise and two
-averaged winners. `MaterialRenderer` inherits those defaults. Explicit one-winner
+`TransparencyPass` now starts with UV CDF blue noise, footprint balancing at 1.0,
+one 3x3 fragment bilateral pass and two averaged winners. `MaterialRenderer`
+inherits those defaults; the transparency example explicitly selects anchored
+blue and a-trous. Explicit one-winner
 and alternate-noise configurations remain supported; historical measurements
 below retain their original recorded settings.
+
+Two-draw averaging now defaults to complemented thresholds from one tile;
+conditional fill retains independent streams. Confidence push-pull is the
+comparison reconstruction. Implementation, measurements and the accepted spectral
+tradeoff are recorded in the [confidence report](transparency_reconstruction_implementation.md#complemented-winners-and-confidence-push-pull).
 
 ## 2026-11-11: arbitrary fill budgets and repeated reconstruction
 

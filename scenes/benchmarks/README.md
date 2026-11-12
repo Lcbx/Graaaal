@@ -7,6 +7,16 @@ artifacts referenced by the reports are not included in this archive.
 
 ## Reproduction
 
+`python -m scenes.benchmarks.diagnose_confidence_transparency --size 256 --output results/confidence.json`
+compares complemented/independent threshold error and 2/4/8 sorted faint layers
+at several confidence budgets. It writes JSON and a PNG; plotting requires
+Matplotlib. `--reconstruction atrous` (default) or `push_pull` selects the filter;
+`--support-seeds 64` adds a fixed-final-footprint variance audit for the cascade.
+The audit reports empirical variance reduction relative to D; it does not assert
+independence of spatial blue noise. `profile_transparency.py --implementations fragment compute push_pull atrous`
+compares renderer timings. A-trous and push-pull use different footprints from
+the bilateral modes; their output differences are comparisons, not parity checks.
+
 The table lists main entry points and selected reusable helpers, not every
 function. `main()` parses command-line arguments; the CPU helpers need no window.
 

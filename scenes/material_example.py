@@ -2,6 +2,7 @@
 
 Run: python main.py scenes/material_example.py [--frames 120]
 M toggles MSAA; Space toggles orbit; D replaces the opaque shader's default.
+F shows/hides transparency settings.
 The bottom-left pair shares a dictionary; the bottom-right transparent sphere
 adds rim lighting through a Jinja child template. No transparency code is copied.
 The top-middle sphere uses time-driven displacement in the Jinja material below.
@@ -18,6 +19,7 @@ from numpyecs.MaterialRenderer import MaterialMesh, DrawInstance, MaterialRender
 from numpyecs.Math import Camera, Vec3
 from numpyecs.RenderContext import RenderContext
 from numpyecs.TransparencyData import VERTEX_DTYPE
+from scenes.transparency_settings import FilterSettings
 
 
 STRIPED_SHADER = '''
@@ -104,10 +106,11 @@ def run_scene():
 	from numpyecs.ImGui import ImGui
 	from imgui_bundle import imgui
 
-	RenderContext.init_window(1100, 760, "Materials | M: MSAA | D: default | Space: orbit",
+	RenderContext.init_window(1100, 760, "Materials | M: MSAA | D: default | F: transparency | Space: orbit",
 		required_gpu_features=["indirect-first-instance"])
 	world, entities, meshes, shared, opaque = make_world()
 	renderer = MaterialRenderer(meshes=meshes, frame_fields={"time": ("f32", 0.0)})
+	settings = FilterSettings(renderer, visible=False, position=(370, 12))
 	adapter = EcsMaterialAdapter(renderer, world)
 	overrides = world.get(MaterialInstance)[entities].overrides
 	striped = meshes[-1].shader.default_material
@@ -182,9 +185,11 @@ def run_scene():
 				if changed:
 					striped[name] = value
 					adapter.touch_materials(striped)
-			imgui.text_wrapped("D changes only the top-left default. Top-right has an explicit green material. Bottom-right adds inherited rim lighting. M: MSAA; Space: orbit.")
+			imgui.text_wrapped("D changes only the top-left default. Top-right has an explicit green material. Bottom-right adds inherited rim lighting. M: MSAA; F: transparency settings; Space: orbit.")
 		finally: imgui.end()
+		settings.draw()
 	RenderContext.subscribe_event("char", on_char)
+	RenderContext.subscribe_event("key", settings.handle_key)
 	try:
 		with ImGui() as gui:
 			while RenderContext.window_loop():
@@ -200,6 +205,7 @@ def run_scene():
 				gui.render(draw_controls)
 	finally:
 		RenderContext.event_handlers["char"].remove(on_char)
+		RenderContext.event_handlers["key"].remove(settings.handle_key)
 
 
 if __name__ == "__main__":

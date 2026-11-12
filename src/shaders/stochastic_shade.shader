@@ -55,6 +55,14 @@ uniform<1, 5> winner_settings: WinnerSettings;
 #endif
 #endif
 
+#if PARAMS.get("complemented_winners", false)
+#if PARAMS.get("mix_only", false)
+{{ binding('first_payloads', 'texture_2d_array<u32>', 1, 9) }}
+#else
+{{ binding('first_payloads', 'texture_storage_2d_array<rgba32uint, write>', 1, 9) }}
+#endif
+#endif
+
 fn shade_payload(payload: vec4u, pixel: vec2i, sample: u32) -> vec4f {
 	// Empty pixels are zero samples, including pixels where all low-alpha
 	// fragments lost the stochastic test. Never leave last frame's value here.
@@ -141,16 +149,21 @@ fn store_winner(id: vec3u, color: vec4f) {
 #endif
 }
 
+#if not PARAMS.get("mix_only", false)
 @compute @workgroup_size(8, 8)
 fn shade_winner(@builtin(global_invocation_id) id: vec3u) {
 	if any(id.xy >= textureDimensions(winners)) { return; }
 	let payload = winner_payload(id);
+#if PARAMS.get("complemented_winners", false)
+	textureStore(first_payloads, vec2i(id.xy), i32(id.z), payload);
+#endif
 	let shaded = shade_payload(payload, vec2i(id.xy), id.z);
 	store_winner(id, shaded);
 #if PARAMS.get("winner_mix", "average") == "fill"
 	store_source(id, select(0u, 1u, shaded.a > 0.0));
 #endif
 }
+#endif
 
 #if PARAMS.get("winner_mix", "average") == "fill"
 fn store_source(id: vec3u, source: u32) {
@@ -175,7 +188,7 @@ fn shade_fill(@builtin(global_invocation_id) id: vec3u) {
 }
 #endif
 
-#if PARAMS.get("winner_count", 1) == 2 and PARAMS.get("winner_mix", "average") == "average"
+#if PARAMS.get("winner_count", 1) == 2 and PARAMS.get("winner_mix", "average") == "average" and (not PARAMS.get("complemented_winners", false) or PARAMS.get("mix_only", false))
 @compute @workgroup_size(8, 8)
 fn shade_mix(@builtin(global_invocation_id) id: vec3u) {
 	if any(id.xy >= textureDimensions(winners)) { return; }
@@ -199,6 +212,14 @@ fn shade_mix(@builtin(global_invocation_id) id: vec3u) {
 		}
 	}
 	// Pool unnormalized colors and validity; do not normalize each stream.
+#if PARAMS.get("complemented_winners", false)
+	let payload = winner_payload(id);
+	let previous = textureLoad(first_payloads, pixel, i32(id.z), 0);
+	if payload.x != 0u && all(payload == previous) {
+		store_winner(id, first);
+		return;
+	}
+#endif
 	store_winner(id, 0.5*(first+shade_payload(winner_payload(id), pixel, id.z)));
 }
 #endif

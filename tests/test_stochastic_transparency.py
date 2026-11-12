@@ -242,6 +242,7 @@ def make_layers():
 @pytest.fixture(params=[3, 5, 9])
 def gpu_scene(monkeypatch, request):
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
+	monkeypatch.setattr(scene, "TransparencyPass", partial(scene.TransparencyPass, noise_footprint_balancing=False, noise_footprint_balance=0.0))
 	monkeypatch.setattr(scene, "load_transparency_scene", lambda path: make_layers())
 	monkeypatch.setattr(scene, "TEXTURE_SIZE", 1)
 	# Read-back usage is confined to tests; normal rendering needs none of it.
@@ -251,7 +252,7 @@ def gpu_scene(monkeypatch, request):
 	output = Texture((64, 64), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	monkeypatch.setattr(RenderContext, "screen", lambda **kwargs: output.color_attachment())
 	# These read-backs inspect one selection payload and its unaveraged color.
-	monkeypatch.setattr(scene, "init_scene", partial(scene.init_scene, winner_count=1, noise_mode="uv_blue_lerp"))
+	monkeypatch.setattr(scene, "init_scene", partial(scene.init_scene, winner_count=1, noise_mode="uv_blue_lerp", reconstruction="fragment"))
 	scene.init_scene(bilateral_filter=scene.BilateralFilter(kernel_size=request.param))
 	renderer = scene
 	renderer.camera.position = scene.Vec3(0, 0, 3)
@@ -279,7 +280,7 @@ def test_gpu_transmittance_selection_occlusion_order_and_empty_samples(gpu_scene
 	np.testing.assert_allclose(t, 0.75*0.5, atol=0.001)
 	payload = read_texture(renderer.transparency.winner, np.uint32, 4)
 	color = read_texture(renderer.transparency.winner_color, np.float16, 4)
-	stable_ids = renderer.transparent.metadata.content[:, 2]
+	stable_ids = renderer.transparent_batches.metadata.content[:, 2]
 	occupied = payload[:, :, 0] != 0
 	winners = stable_ids[payload[:, :, 0][occupied]-1]
 	assert set(winners) == {0, 1}  # sheet 2 is behind opaque depth
@@ -288,7 +289,7 @@ def test_gpu_transmittance_selection_occlusion_order_and_empty_samples(gpu_scene
 	assert np.count_nonzero(color[~occupied]) == 0
 	image = read_texture(output, np.uint8, 4)
 	assert np.isfinite(color).all() and image[:, :, :3].max() > 0
-	renderer.transparent.data.draw_batches.reverse()
+	renderer.transparent_batches.data.draw_batches.reverse()
 	render_frame(renderer)
 	np.testing.assert_array_equal(read_texture(renderer.transparency.winner, np.uint32, 4), payload)
 	np.testing.assert_array_equal(read_texture(output, np.uint8, 4), image)
@@ -318,13 +319,13 @@ def test_transparent_draws_are_skipped_in_opaque_depth_prepass(gpu_scene):
 	renderer, _ = gpu_scene
 	render_frame(renderer)
 	render = Mock()
-	renderer.transparent.draw(render, "prepass")
+	renderer.transparent_batches.draw(render, "prepass")
 	render.draw_indexed_indirect.assert_not_called()
 	render.set_pipeline.assert_not_called()
 	# The separate transmittance stage still renders the transparent geometry.
-	renderer.transparent.draw(render, "transmittance")
-	assert render.draw_indexed_indirect.call_count == len(renderer.transparent.data.draw_batches)
-	assert not renderer.transparent.passes.render_shader["transmittance"].pipeline.depth_write
+	renderer.transparent_batches.draw(render, "transmittance")
+	assert render.draw_indexed_indirect.call_count == len(renderer.transparent_batches.data.draw_batches)
+	assert not renderer.transparent_batches.passes.render_shader["transmittance"].pipeline.depth_write
 
 
 def test_gpu_zero_full_rgb_and_low_opacity(gpu_scene):
@@ -792,7 +793,7 @@ def test_gpu_curved_mesh_noise_tracks_pan_and_rigid_object_transforms(gpu_scene,
 	angle = 0.73
 	rotation = np.array([[np.cos(angle), 0, np.sin(angle)], [0, 1, 0], [-np.sin(angle), 0, np.cos(angle)]])
 	translation = np.array([4, -2, 1])
-	for geometry in (renderer.opaque, renderer.transparent):
+	for geometry in (renderer.opaque_batches, renderer.transparent_batches):
 		geometry.data.write_instance_fields(iPosition=translation,
 			iRotation=scene.pack_quaternion([0, np.sin(angle/2), 0, np.cos(angle/2)]),
 			iScale=scene.pack_scale([2, 2, 2]))
@@ -956,7 +957,7 @@ def test_gpu_grazing_fade_angles_front_back_and_all_passes_agree(gpu_scene, monk
 		np.full((64, 64), 0.6, dtype=np.float32), {"bytes_per_row": 256}, (64, 64, 1))
 	for angle, expected in ((0, 0.8), (65, 0.8), (77.5, 0.4), (85, 0), (88, 0), (102.5, 0.4), (180, 0.8)):
 		radians = np.deg2rad(angle)
-		renderer.transparent.data.write_instance_fields(iPosition=(0, 0, 0.6),
+		renderer.transparent_batches.data.write_instance_fields(iPosition=(0, 0, 0.6),
 			iRotation=scene.pack_quaternion([0, np.sin(radians/2), 0, np.cos(radians/2)]))
 		renderer.transparency.set_grazing_fade(scene.GrazingFade(enabled=False, start_angle=70, end_angle=85))
 		render_frame(renderer)
@@ -986,7 +987,7 @@ def test_gpu_grazing_fade_angles_front_back_and_all_passes_agree(gpu_scene, monk
 			np.testing.assert_array_equal(read_texture(renderer.transparency.transparent_depth, np.float32, 1), 1)
 	# Perspective rays vary across a plane: its centre stays face-on while the
 	# edges fade. Compare the complete probability image to independent angles.
-	renderer.transparent.data.write_instance_fields(iPosition=(0, 0, 0.6),
+	renderer.transparent_batches.data.write_instance_fields(iPosition=(0, 0, 0.6),
 		iRotation=scene.pack_quaternion([0, 0, 0, 1]))
 	renderer.camera.perspective = True
 	renderer.camera.fovy_deg = 55
@@ -1029,7 +1030,7 @@ def test_gpu_relative_depth_edges_and_transmittance_tolerance(monkeypatch, edge)
 		monkeypatch.setattr(scene, "load_transparency_scene", lambda path: (primitives, materials, images, vertices))
 		options = scene.BilateralFilter(kernel_size=5, spatial_sigma=2,
 			transmittance_sigma=1 if edge == "transmittance" and step else (1/24)**0.5)
-		scene.init_scene(bilateral_filter=options)
+		scene.init_scene(bilateral_filter=options, reconstruction="fragment")
 		renderer = scene
 		renderer.camera.position = scene.Vec3(0, 0, 3*scale)
 		renderer.camera.target = scene.Vec3(0, 0, 0)
@@ -1068,7 +1069,7 @@ def test_wide_filter_reduces_canopy_boundary_grain(monkeypatch):
 	output = Texture((320, 240), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	monkeypatch.setattr(RenderContext, "screen", lambda **kwargs: output.color_attachment())
 	scene.init_scene(bilateral_filter=scene.BilateralFilter(kernel_size=9, spatial_sigma=3,
-		depth_sigma=0.02, transmittance_sigma=(1/24)**0.5))
+		depth_sigma=0.02, transmittance_sigma=(1/24)**0.5), reconstruction="fragment")
 	renderer = scene
 	distance = renderer.radius*1.4
 	renderer.camera.position = scene.Vec3(renderer.center+distance*np.array([np.cos(0.65), 0.5, np.sin(0.65)]))
@@ -1104,8 +1105,8 @@ def test_wide_filter_reduces_canopy_boundary_grain(monkeypatch):
 def test_gpu_hiz_culls_opaque_occlusion_and_preserves_cutout_holes(gpu_scene):
 	renderer, _ = gpu_scene
 	# Keep the transparent bounds inside the opaque backdrop's screen coverage.
-	renderer.transparent.data.write_instance_fields(iScale=scene.pack_scale([0.05, 0.05, 1]))
-	view = renderer.transparent.visibility._view
+	renderer.transparent_batches.data.write_instance_fields(iScale=scene.pack_scale([0.05, 0.05, 1]))
+	view = renderer.transparent_batches.visibility._view
 	for name in ("prepass_draw_cmd", "main_draw_cmd"):
 		buffer = view.buffers[name]
 		view.buffers[name] = scene.GpuBuffer(buffer.content.copy(), buffer.usage | scene.BufferUsage.COPY_SRC)
@@ -1114,7 +1115,7 @@ def test_gpu_hiz_culls_opaque_occlusion_and_preserves_cutout_holes(gpu_scene):
 	def instance_counts(name):
 		buffer = view.buffers[name]
 		raw = RenderContext.device.queue.read_buffer(buffer.handle)
-		return np.frombuffer(raw, dtype=buffer.dtype)["instance_count"][:len(renderer.transparent.data.draw_batches)]
+		return np.frombuffer(raw, dtype=buffer.dtype)["instance_count"][:len(renderer.transparent_batches.data.draw_batches)]
 
 	render_frame(renderer)
 	np.testing.assert_array_equal(instance_counts("prepass_draw_cmd"), [1, 1, 1])

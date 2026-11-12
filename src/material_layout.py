@@ -10,7 +10,7 @@ def _key(value):
 	return value
 
 
-def _entry(shader, info, visibility):
+def _entry(shader, info, visibility, unfilterable=()):
 	entry = dict(binding=info.binding, visibility=visibility)
 	if info.storage == "uniform":
 		entry["buffer"] = dict(type="uniform", min_binding_size=shader.info.uniforms[info.name].dtype.itemsize)
@@ -30,13 +30,13 @@ def _entry(shader, info, visibility):
 			entry["storage_texture"] = dict(format=format, access={"write": "write-only", "read": "read-only", "read_write": "read-write"}[access], view_dimension=dimension)
 		else:
 			sample_type = "depth" if depth else {"u32": "uint", "i32": "sint", "f32": "float"}[arguments]
-			if sample_type == "float" and (multisampled or info.name in ("blue_noise", "noise_hierarchy")):
+			if sample_type == "float" and (multisampled or info.name in ("blue_noise", "noise_hierarchy") or info.name in unfilterable):
 				sample_type = "unfilterable-float"
 			entry["texture"] = dict(sample_type=sample_type, view_dimension=dimension, multisampled=bool(multisampled))
 	return entry
 
 
-def material_pipeline_layout(shader, entries, cache):
+def material_pipeline_layout(shader, entries, cache, unfilterable=()):
 	"""Share stable groups; limit pass texture bindings to the chosen entry points."""
 	active = shader.info.used_bindings(entries)
 	stable = shader.info.used_bindings(tuple(shader.info.entry_points))
@@ -46,7 +46,7 @@ def material_pipeline_layout(shader, entries, cache):
 	visibility = stages.COMPUTE if any(shader.info.entry_points[name].stage == "compute" for name in entries if name) else stages.VERTEX | stages.FRAGMENT
 	groups = []
 	for group in range(max((info.group for info in bindings.values()), default=-1)+1):
-		descriptors = [_entry(shader, info, stages.VERTEX | stages.FRAGMENT | stages.COMPUTE if group == 0 else visibility)
+		descriptors = [_entry(shader, info, stages.VERTEX | stages.FRAGMENT | stages.COMPUTE if group == 0 else visibility, unfilterable)
 			for info in sorted(bindings.values(), key=lambda info: info.binding) if info.group == group]
 		key = _key(descriptors)
 		if key not in cache: cache[key] = BindGroupLayout(descriptors)
