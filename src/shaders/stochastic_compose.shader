@@ -47,7 +47,11 @@ fn compose_sample(pixel: vec2i, sample: u32) -> vec3f {
 #endif
 	}
 	if bilateral.kernel.y == 2u {
+#if PARAMS.get("banded_tail", false) and PARAMS.get("banded_proxy", false)
+		return clamp(vec3f(0.5)+0.5*winner_at(pixel, sample).rgb, vec3f(0.0), vec3f(1.0));
+#else
 		return debug_color(winner_at(pixel, sample));
+#endif
 	}
 	if bilateral.kernel.y == 8u { return vec3f(select(0.0, 1.0, forced_at(pixel, sample))); }
 	if bilateral.kernel.y >= 5u {
@@ -72,6 +76,14 @@ fn compose_sample(pixel: vec2i, sample: u32) -> vec3f {
 	let main = sample_texture_load(main_color, pixel, sample).rgb;
 	var filtered: vec4f;
 #if PARAMS.get("compute_reconstruction", false)
+#if PARAMS.get("banded_tail", false)
+#if PARAMS.get("banded_mixed", false)
+	filtered = sample_texture_load(reconstructed, pixel, 0u, layered=true);
+	filtered = vec4f((vec3f(1.0)-t.rgb)*filtered.rgb, filtered.a);
+#else
+	filtered = sample_texture_load(reconstructed, pixel, sample, layered=true);
+#endif
+#else
 	if 1.0-t.a <= 1e-6 {
 		filtered = vec4f(0.0);
 	} else if bilateral.kernel.x != 0u {
@@ -79,6 +91,7 @@ fn compose_sample(pixel: vec2i, sample: u32) -> vec3f {
 	} else {
 		filtered = point_reconstruction(pixel, sample);
 	}
+#endif
 #else
 	filtered = reconstruct_transparency(pixel, sample, vec2i(0), 0u);
 #endif
@@ -104,7 +117,11 @@ fn compose(@builtin(position) position: vec4f) -> @location(0) vec4f {
 		color += compose_sample(vec2i(position.xy), sample);
 	}
 	color /= {{PARAMS.get("sample_count", 1)}}.0;
-	if bilateral.kernel.y != 1u && bilateral.kernel.y != 4u && bilateral.kernel.y != 7u && bilateral.kernel.y != 8u && bilateral.kernel.y != 10u && bilateral.kernel.y != 11u {
+	var tone_map = bilateral.kernel.y != 1u && bilateral.kernel.y != 4u && bilateral.kernel.y != 7u && bilateral.kernel.y != 8u && bilateral.kernel.y != 10u && bilateral.kernel.y != 11u;
+#if PARAMS.get("banded_tail", false) and PARAMS.get("banded_proxy", false)
+	tone_map = tone_map && bilateral.kernel.y != 2u;
+#endif
+	if tone_map {
 		color /= vec3f(1.0)+color;
 	}
 	return present_linear(color);

@@ -8,6 +8,16 @@ import pytest
 from numpyecs import RenderContext as rc
 
 
+def test_read_only_depth_descriptor_omits_load_store_operations():
+	view = object()
+	descriptor = rc.DepthAttachment(view, "depth32float", read_only=True).descriptor()
+	assert descriptor["depth_read_only"]
+	assert descriptor["depth_load_op"] is None and descriptor["depth_store_op"] is None
+	writable = rc.DepthAttachment(view, "depth32float", clear=1).descriptor()
+	assert writable["depth_load_op"] == "clear" and writable["depth_store_op"] == "store"
+	assert writable["depth_clear_value"] == 1
+
+
 def test_binding_traversal_does_not_call_functions_named_like_struct_fields():
 	loader = rc.Shader.__new__(rc.Shader)
 	code, declarations = loader._render_source('''

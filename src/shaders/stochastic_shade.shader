@@ -137,6 +137,53 @@ fn store_winner(id: vec3u, color: vec4f) {
 #endif
 }
 
+#if PARAMS.get("banded_tail", false)
+#include "banded_sampling.shaderlib"
+<BandCount> total: u32;
+<BandCount> running: u32;
+storage<1, 11, read> band_counts: array<BandCount>;
+texture<1, 10> band_payloads: texture_2d_array<u32>;
+#if PARAMS.get("banded_proxy", false)
+sample_texture<1, 12> band_proxy: f32;
+#endif
+
+@compute @workgroup_size(8, 8)
+fn shade_bands(@builtin(global_invocation_id) id: vec3u) {
+	let size = textureDimensions(winner_color);
+#if PARAMS.get("banded_subset", false)
+	let origin = id.xy*2u;
+	if any(origin >= size) { return; }
+	let selected = band_selected_pixel(id.xy);
+	for (var y = 0u; y < 2u; y += 1u) {
+		for (var x = 0u; x < 2u; x += 1u) {
+			let q = origin+vec2u(x, y);
+			if all(q < size) && any(q != selected) { store_winner(vec3u(q, id.z), vec4f(0.0)); }
+		}
+	}
+	if any(selected >= size) { return; }
+	let actual_id = vec3u(selected, id.z);
+	let payload_pixel = vec2i(id.xy);
+#else
+	if any(id.xy >= size) { return; }
+	let actual_id = id;
+	let payload_pixel = vec2i(id.xy);
+#endif
+	let pixel = vec2i(actual_id.xy);
+	let a = textureLoad(band_payloads, payload_pixel, i32(id.z*2u), 0);
+	let b = textureLoad(band_payloads, payload_pixel, i32(id.z*2u+1u), 0);
+	let ca = shade_payload(a, pixel, id.z);
+	var cb = ca;
+	if any(a != b) { cb = shade_payload(b, pixel, id.z); }
+	let index = (actual_id.y*size.x+actual_id.x)*{{PARAMS.get("sample_count", 1)}}u+id.z;
+	let s = f32(band_counts[index].total)/65536.0;
+	let den = min(1.0, s);
+	var residual = 0.5*(ca.rgb+cb.rgb);
+#if PARAMS.get("banded_proxy", false)
+	residual -= sample_texture_load(band_proxy, pixel, id.z).rgb/max(1.0, s);
+#endif
+	store_winner(actual_id, vec4f(select(vec3f(0.0), residual, den > 0.0), den));
+}
+#else
 #if not PARAMS.get("mix_only", false)
 @compute @workgroup_size(8, 8)
 fn shade_winner(@builtin(global_invocation_id) id: vec3u) {
@@ -206,4 +253,5 @@ fn shade_mix(@builtin(global_invocation_id) id: vec3u) {
 #endif
 	store_winner(id, 0.5*(first+shade_payload(winner_payload(id), pixel, id.z)));
 }
+#endif
 #endif

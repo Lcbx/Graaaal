@@ -45,8 +45,18 @@ def material_pipeline_layout(shader, entries, cache, unfilterable=()):
 	stages = wgpu.ShaderStage
 	visibility = stages.COMPUTE if any(shader.info.entry_points[name].stage == "compute" for name in entries if name) else stages.VERTEX | stages.FRAGMENT
 	groups = []
+	def resource_visibility(info):
+		if info.group == 0: return stages.VERTEX | stages.FRAGMENT | stages.COMPUTE
+		if info.group < 3: return visibility
+		# Per-pass resources need only the stages that actually reference them.
+		# In particular fragment atomics must not request vertex writable storage.
+		result = 0
+		for name in entries:
+			if name and info.name in shader.info.used_bindings((name,)):
+				result |= {"vertex": stages.VERTEX, "fragment": stages.FRAGMENT, "compute": stages.COMPUTE}[shader.info.entry_points[name].stage]
+		return result
 	for group in range(max((info.group for info in bindings.values()), default=-1)+1):
-		descriptors = [_entry(shader, info, stages.VERTEX | stages.FRAGMENT | stages.COMPUTE if group == 0 else visibility, unfilterable)
+		descriptors = [_entry(shader, info, resource_visibility(info), unfilterable)
 			for info in sorted(bindings.values(), key=lambda info: info.binding) if info.group == group]
 		key = _key(descriptors)
 		if key not in cache: cache[key] = BindGroupLayout(descriptors)

@@ -14,6 +14,13 @@ class DefaultMaterialShader(MaterialShader):
 			source=source, filepath=filepath,
 			default_material={} if default_material is None else default_material)
 
+	def is_blended(self, material=None, overrides=None):
+		"""Route alpha_mode=2 to transparency; OPAQUE and MASK write opaque depth."""
+		mode = self.default_material.get("alpha_mode", self.parameters["alpha_mode"].default)
+		if material is not None: mode = material.get("alpha_mode", mode)
+		if overrides is not None: mode = overrides.get("alpha_mode", mode)
+		return mode == 2
+
 	def validate_resolved(self, values):
 		if not 0 <= np.float32(values["grazing_start"]) < np.float32(values["grazing_end"]) <= 90:
 			raise ValueError("Grazing angles must satisfy 0 <= start < end <= 90")

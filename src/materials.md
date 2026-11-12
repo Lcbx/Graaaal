@@ -280,10 +280,19 @@ grazing_fade, grazing_start and grazing_end. Tint and opacity_multiplier have
 instance scope by default. Built-in scopes may change while retaining their
 types. These requirements and semantic checks belong to DefaultMaterialShader.
 
-Its alpha modes are 0 OPAQUE, 1 MASK, and 2 BLEND. Transparent routing defaults
-to BLEND; opaque routing defaults to OPAQUE. MASK uses sharpened coverage on the
-transparent path. Grazing fade defaults off at 70/85 degrees, independently of
+Its alpha modes are 0 OPAQUE, 1 MASK, and 2 BLEND. Transparent-capable shaders
+default to BLEND; opaque shaders default to OPAQUE. `DefaultMaterialShader`
+routes each binding by its resolved `alpha_mode`: OPAQUE/MASK write opaque
+depth; MASK uses deterministic texture-alpha cutoff at native MSAA sample
+locations. BLEND defaults to exact nearest plus banded tails with one Kawase
+down/up pair and 1x tail estimation. Grazing fade defaults off at 70/85 degrees, independently of
 the legacy TransparencyPass frame override.
+
+`MaterialShader.is_blended(material, overrides)` selects a binding's route;
+generic shaders use their `transparent` flag. Custom policies may override this
+method. `MaterialLibrary.material_values(binding)` returns read-only shared
+values from its last `pack()`, including retained cached values. MaterialRenderer
+uses those values with instance overrides so routing matches uploaded parameters.
 
 Texture selection uses texture_layer in a renderer-owned texture array, supplied
 through base_textures. A white array is supplied when omitted. Camera and

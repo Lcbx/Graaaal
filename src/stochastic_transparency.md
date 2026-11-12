@@ -7,13 +7,18 @@ materials, camera values, targets, and command submission. The
 [engine guide](../README.md#composable-transparency) documents its resource API;
 the [interactive scene](../scenes/transparency_example.py) shows complete recording.
 
-`TransparencyPass` defaults to `noise_mode="uv_blue_lerp"`,
-`winner_count=2`, `winner_mix="average"`, `winner_coupling="complement"` and
-`reconstruction="fragment"`, with one 3x3 pass. UV footprint balancing is enabled
-at strength 1.0. MaterialRenderer inherits these defaults. The transparency
-example explicitly selects anchored blue and a-trous. Explicit settings override
-library defaults; low-level custom shader sets require
-`winner_count=1, reconstruction="fragment"`.
+`TransparencyPass`, `MaterialRenderer` and the examples default to
+`tail_allocation="banded", kawase_passes=1`: exact nearest capture, two
+complementary banded winners and one Kawase down/up pair.
+Tail estimation uses 1x; scene MSAA applies to opaque/MASK geometry, transmission
+and the exact nearest layer. Subset shading is off. MASK materials use fixed
+alpha-cutoff discard and opaque depth; only BLEND uses stochastic transparency.
+
+Choose `tail_allocation="stochastic"` for the earlier winner/filter options.
+That mode's defaults are UV CDF noise with footprint balancing at 1.0, two
+complemented averaged winners and one 3x3 fragment bilateral pass.
+Low-level custom shader sets require `tail_allocation="stochastic", winner_count=1,
+reconstruction="fragment"`.
 
 ## Useful APIs
 
@@ -29,11 +34,11 @@ RenderContext before constructing GPU resources.
 | `opaque_pass`, `guide_pass`, `transmittance_pass`, `selection_pass` | Open raster passes on caller-owned commands; issue draws inside each scope. |
 | `shade_winner(commands, geometry)`, `compose(commands, output)` | Record deferred shading and composition; `output` is a matching `ColorAttachment`. Neither submits work. |
 | `set_opaque_inputs(color, depth)` | Uses caller-owned opaque textures; pass `None, None` to restore internal targets. |
-| `exact_nearest=True`, `set_exact_nearest(bool)` | Opt-in deterministic nearest transparent layer; remaining fragments use the selected stochastic technique. Default off. |
+| `exact_nearest=True`, `set_exact_nearest(bool)` | Deterministic nearest transparent layer; enabled and required in default banded mode, optional in stochastic mode. |
 | `set_sample_count`, `set_noise_mode`, `set_noise_scale`, `set_debug_view` | Update live sampling and diagnostic settings. |
 | `set_winner_count(N)`, `set_winner_mix(mode)` | Positive uint32 draw count and `"average"`/`"fill"` mode; averaging supports 1 or 2. Default: 2 in average mode. |
 | `set_winner_coupling("complement" or "independent")` | Pair two averaged selections with one complemented tile (default), or independent sources. Fill always uses independent retries. |
-| `set_reconstruction("atrous", "push_pull", "fragment" or "compute")` | Select the cascade, confidence pyramid, or fixed bilateral implementation (fragment is default). |
+| `set_reconstruction("atrous", "push_pull", "fragment" or "compute")` | Select reconstruction after choosing stochastic allocation; banded uses Kawase. |
 | `ConfidenceFilter`, `set_confidence_filter` | Set budget (default 4), cascade passes (1–4, default 4), and pyramid levels (2 or 3, default 3). |
 | `set_reconstruction_passes(N)` | Stack a positive uint32 number of bilateral passes; default 1. A 1x1 kernel bypasses all passes. |
 | `set_early_b_rejection(bool)` | Experimental per-sample stencil rejection for fill B; default off and requires `depth32float-stencil8`. |
@@ -41,8 +46,108 @@ RenderContext before constructing GPU resources.
 | `GrazingFade`, `set_grazing_fade` | Configure angular opacity fade; default enabled from 83 to 86 degrees. |
 | `TransparencyTargets` | Describes caller-owned color, depth, guide, transmittance and winner textures. |
 
+## Exact nearest with banded tail and dual Kawase
+
+Set `tail_allocation="banded", kawase_passes=1` on `TransparencyPass` or
+`MaterialRenderer`. This selects exact nearest capture, a complementary pair of
+banded tail winners, and dual Kawase reconstruction. These are the defaults.
+
+```python
+renderer = MaterialRenderer(items)
+renderer.set_kawase_passes(3)
+renderer.set_tail_allocation("stochastic")  # returns to fragment reconstruction
+```
+
+The banded mode defaults to `banded_proxy=True`, `banded_subset=False`,
+`banded_tail_msaa=False`. The proxy uses the texture albedo already fetched for
+opacity. Its full-resolution contribution is restored after blurring signed
+residuals, reducing color halos where albedo approximates the shaded color.
+Custom materials and lighting remain supported; the proxy need not equal them.
+
+```python
+renderer.set_banded_options(proxy=True, subset=True, tail_msaa=False)
+renderer.set_kawase_passes(3)
+```
+
+`subset=True` selects one fixed pixel in every 2x2 block for allocation/lighting
+and stores zero residual/confidence at the other pixels. It increases noise;
+compare a wider blur. Alpha derivatives still execute before the allocation
+discard. `tail_msaa=False` runs statistics, allocation, lighting and blur at 1x,
+while physical transmission and exact nearest remain at the scene MSAA count.
+At 4x this adds a separate `tail_statistics_pass()` before allocation. Direct
+recorders must draw `"tail_statistics"` into it when `mixed_tail` is true.
+`tail_sample_count` gives the estimator's sample count.
+
+This mixed mode approximates subpixel tail coverage: opaque depth uses native
+sample zero; fragments matching any native nearest ID are excluded to avoid
+false contributions at internal triangle boundaries. Tail-only features missing
+from the 1x raster can be lost. Subset sampling remains opt-in. The settings UI
+has no tail-MSAA toggle; the programmatic `tail_msaa=True` variant remains
+available for comparisons and workloads that need subpixel tail detail.
+
+`kawase_passes` is an integer from 0 through 8: each level records one downsample
+and one upsample, stopping when the smallest level reaches 1x1. Zero uses the
+unblurred tail. All settings preserve the sharp exact nearest contribution.
+The tail's numerator (signed residual when enabled) and allocation denominator are blurred together;
+division and RGB opacity application occur after blurring, before composition
+under the nearest layer. There is no depth/opacity edge stopping in this blur,
+so increasing its radius can mix colors across tail boundaries.
+
+`set_tail_allocation("banded")` enables exact nearest and resets incompatible
+settings to two complemented averaged winners, no force acceptance or stencil,
+and one reconstruction stage. Those settings cannot be changed while banding
+is active. Switch back to `"stochastic"` to use the other techniques; exact
+nearest stays enabled. `set_kawase_passes()` changes blur depth live without
+re-registering geometry. `MaterialRenderer.record()` handles the passes.
+
+For direct recording, after opaque rendering and camera/target setup:
+
+```python
+with transparency.nearest_pass(commands) as render:
+	batches.draw(render, visibility, "main", pass_override=geometry.nearest)
+transparency.shade_nearest(commands, geometry)
+with transparency.transmittance_pass(commands) as render:
+	batches.draw(render, visibility, "transmittance")
+if transparency.mixed_tail:
+	with transparency.tail_statistics_pass(commands) as render:
+		batches.draw(render, visibility, "tail_statistics")
+with transparency.banded_pass(commands) as render:
+	batches.draw(render, visibility, "bands")
+transparency.shade_winner(commands, geometry)  # shades both tail winners
+transparency.compose(commands, output)
+```
+
+Record transmission exactly once before allocation. Do not record the guide or
+per-stream selection passes in this mode. Counters and payloads clear as part
+of `transmittance_pass()`. Caller-supplied `TransparencyTargets` can set `winner`
+and `selection_depth` to `None`; band counters, array payloads and blur levels
+are managed internally. Native 1x/4x, external opaque inputs and material hooks
+including vertex animation are supported; custom low-level shader sets are not.
+
+Banding shares one screen-space noise field across the tail. `noise_scale`
+controls its size (halved when tail estimation itself uses 4x MSAA); surface noise mode, UV balance, bilateral
+settings and confidence budgets do not affect this path. Diagnostics are
+`final`, `transmittance`, `winner` (raw numerator, or signed residual when proxy
+is enabled; zero residual displays as neutral grey),
+`reconstruction`, `nearest`, `nearest_mask`, and `tail_transmittance`.
+
+This is the guide's unordered WebGPU atomic fallback. Band assignment may
+change between frames in overlap regions. Tail colors approach a p-weighted
+mixture, which differs from depth-ordered over for thick tails. Probabilities
+use 1/65536 fixed-point quantization; extremely faint tail fragments can round
+to zero width. Totals must remain below 2^32 units (65536 full-opacity tail
+fragments per sample), and target dimensions must fit the device's storage
+buffer binding limit. Exact nearest capture retains every nonzero opacity.
+
+For caller-owned targets in mixed mode, `winner_color` and
+`reconstruction_color` have `tail_sample_count` layers; nearest-color storage
+keeps `sample_count` layers. In mixed mode `reconstruction_color.rgb` holds tail
+mean color, with physical per-sample opacity applied during composition. With
+matched sample counts it holds the premultiplied tail contribution.
+
 ## Recording and settings
 
+For classic stochastic allocation, choose `tail_allocation="stochastic"` first.
 Call `resize(size)` before updating frame/camera data or recording passes.
 All stages record into the caller's `CommandContext`; the application submits.
 Render transparent geometry into `guide_pass`, `transmittance_pass` and
@@ -61,6 +166,7 @@ when the reconstruction kernel is 1x1.
 With an existing `TransparencyPass` named `transparency`, for example:
 
 ```python
+transparency.set_tail_allocation("stochastic")
 transparency.set_noise_mode("anchored_blue")
 transparency.set_winner_mix("fill")
 transparency.set_winner_count(4)
@@ -189,8 +295,13 @@ Distinct overlapping instances should use distinct stable surface IDs.
 `GrazingFade(enabled=True, start_angle=83, end_angle=86)` fades transparent
 opacity near a silhouette. Pass it to the constructor as `grazing_fade=` or
 call `set_grazing_fade(...)`. Require `0 <= start_angle < end_angle <= 90`.
-MASK and BLEND geometry can share the transparent passes; OPAQUE geometry uses
-the opaque pass. No temporal accumulation is performed.
+BLEND uses transparent passes. OPAQUE and MASK use the opaque pass; MASK discards
+when texture/base-color alpha is below `alpha_cutoff`, writes depth for accepted
+samples, and ignores stochastic noise, grazing fade and tail reconstruction.
+UVs are interpolated at native MSAA sample locations, so cutoff coverage and
+opaque depth agree per sample. Pixel-center Hi-Z culling is bypassed at 4x.
+For direct geometry registration, pass `transparent=False` for OPAQUE/MASK and
+`True` for BLEND. No temporal accumulation is performed.
 
 ## Reconstruction and diagnostics
 

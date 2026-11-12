@@ -65,7 +65,7 @@ def test_msaa_resolves_coverage_in_linear_hdr_and_preserves_live_batches(monkeyp
 			usage |= TextureUsage.COPY_SRC
 		return Texture(*args, usage=usage, **kwargs)
 	monkeypatch.setattr(transparency, "Texture", readable_texture)
-	scene.init_scene(sample_count=initial_count, bilateral_filter=scene.BilateralFilter(kernel_size=1))
+	scene.init_scene(sample_count=initial_count, bilateral_filter=scene.BilateralFilter(kernel_size=1), tail_allocation="stochastic")
 	oit = scene.transparency
 	assert (oit.noise_mode, oit.winner_count, oit.winner_mix) == ("anchored_blue", 2, "average")
 	hiz_calls = []

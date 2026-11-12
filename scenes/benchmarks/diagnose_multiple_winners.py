@@ -95,7 +95,7 @@ def benchmark(size=256, frames=30, *, noise_mode="uv_blue_lerp", improvements=Fa
 	mesh = MaterialMesh(v, shader)
 	items = [DrawInstance(mesh, material={"base_color": (1, 1, 1, 0.1), "emission": color},
 		position=(0, 0, -0.3*i), surface_id=17+i) for i, color in enumerate(((1, 0, 0), (0, 0, 1)))]
-	renderer = MaterialRenderer(items, target_format="rgba8unorm", noise_mode=noise_mode)
+	renderer = MaterialRenderer(items, target_format="rgba8unorm", noise_mode=noise_mode, tail_allocation="stochastic")
 	camera = Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 55, near=0.01, far=100)
 	output = Texture((size, size), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	device = RenderContext.device

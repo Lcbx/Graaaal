@@ -31,6 +31,12 @@ def factory(monkeypatch, request):
 		return Texture(*args, usage=usage, **kwargs)
 	monkeypatch.setattr(transparency, "Texture", readable)
 	def make(*, sample_count=1, kernel=3, alpha=0.5, layers=1, **options):
+		options.setdefault("tail_allocation", "stochastic")
+		if options.get("tail_allocation") == "banded":
+			# These existing checks describe raw complementary winners, not residuals.
+			options.setdefault("banded_proxy", False)
+			options.setdefault("banded_subset", False)
+			options.setdefault("banded_tail_msaa", True)
 		options.setdefault("reconstruction", "fragment")
 		options.setdefault("winner_coupling", "independent")
 		options.setdefault("noise_mode", "anchored_blue")
@@ -361,8 +367,10 @@ def test_force_rgb_grazing_mask_and_empty_frames(factory, mix):
 	hdr = alpha_rgb*np.array([0.4, 0.6, 0.8])+(1-alpha_rgb)*np.array([0.035, 0.05, 0.08])
 	np.testing.assert_allclose(linear, hdr/(1+hdr), atol=0.004)
 	renderer.instances[0].material.update(alpha_mode=1, base_color=(1, 1, 1, 1), grazing_fade=False)
-	render(renderer)
-	np.testing.assert_array_equal(read(renderer.transparency.winner_color)[..., 3], 1)
+	image = render(renderer)
+	np.testing.assert_array_equal(read(renderer.transparency.winner_color), 0)
+	from test_transparency_exact_nearest import encoded
+	np.testing.assert_allclose(image[0, ..., :3], np.broadcast_to(encoded(np.array([.4, .6, .8])), (96, 96, 3)), atol=1)
 	renderer.instances[0].material["base_color"] = (1, 1, 1, 0)
 	render(renderer)
 	np.testing.assert_array_equal(read(renderer.transparency.winner_color), 0)

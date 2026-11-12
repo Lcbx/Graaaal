@@ -10,22 +10,60 @@
 
 storage<1, 0, read> instances: array<MeshInstance>;
 storage<1, 1, read> visible_instances: array<u32>;
+#set GUIDE_SAMPLES = PARAMS.get("guide_sample_count", PARAMS.get("sample_count", 1))
+#if GUIDE_SAMPLES > 1 and PARAMS.get("sample_count", 1) == 1
+texture<3, 0> opaque_depth: texture_depth_multisampled_2d;
+fn raster_opaque_depth(pixel: vec2i, sample: u32) -> f32 { return textureLoad(opaque_depth, pixel, i32(sample)); }
+#else
 sample_texture<3, 0> opaque_depth: depth;
+fn raster_opaque_depth(pixel: vec2i, sample: u32) -> f32 { return sample_texture_load(opaque_depth, pixel, sample); }
+#endif
 texture<3, 1> blue_noise: texture_2d<f32>;
 texture<3, 2> noise_hierarchy: texture_2d<f32>;
+#if PARAMS.get("banded_tail", false)
+#include "banded_sampling.shaderlib"
+<BandCount> total: atomic<u32>;
+<BandCount> running: atomic<u32>;
+storage<3, 10, read_write> band_counts: array<BandCount>;
+texture<3, 11> band_payloads: texture_storage_2d_array<rgba32uint, write>;
+
+fn band_index(pixel: vec2u, sample: u32) -> u32 {
+	return (pixel.y*textureDimensions(opaque_depth).x+pixel.x)*{{PARAMS.get("sample_count", 1)}}u+sample;
+}
+#if PARAMS.get("banded_proxy", false) and PARAMS.get("banded_statistics", true)
+<BandTransmission> @location(0) transmission: vec4f;
+<BandTransmission> @location(1) proxy: vec4f;
+#endif
+#endif
 #if PARAMS.get("exact_nearest", false)
+#if GUIDE_SAMPLES > 1 and PARAMS.get("sample_count", 1) == 1
+texture<3, 8> nearest_ids: texture_multisampled_2d<u32>;
+#else
 sample_texture<3, 8> nearest_ids: u32;
-#if PARAMS.get("sample_count", 1) > 1
+#endif
+#if GUIDE_SAMPLES > 1
 texture<3, 9> nearest_ids_extra: texture_multisampled_2d<u32>;
 #endif
 fn is_exact_nearest(input: VertexOutput, sample: u32) -> bool {
-#if PARAMS.get("sample_count", 1) > 1
-	let low = sample_texture_load(nearest_ids, vec2i(input.position.xy), sample);
+#if GUIDE_SAMPLES > 1 and PARAMS.get("sample_count", 1) == 1
+	// Pixel-center rasterization can land on the other triangle across an
+	// internal edge. Exclude any native nearest ID, avoiding a false front tail
+	// along mesh diagonals without assuming cards or merging primitive IDs.
+	for (var native = 0u; native < {{GUIDE_SAMPLES}}u; native += 1u) {
+		let low = textureLoad(nearest_ids, vec2i(input.position.xy), i32(native));
+		let ids = vec2u(low.x | (low.y << 16u), low.z | (low.w << 16u));
+		if all(ids == vec2u(input.instance+1u, input.triangle)) { return true; }
+	}
+	return false;
+#else
+#if GUIDE_SAMPLES > 1
+	let low = textureLoad(nearest_ids, vec2i(input.position.xy), i32(sample));
 	let ids = vec2u(low.x | (low.y << 16u), low.z | (low.w << 16u));
 #else
 	let ids = sample_texture_load(nearest_ids, vec2i(input.position.xy), sample).xy;
 #endif
 	return all(ids == vec2u(input.instance+1u, input.triangle));
+#endif
 }
 #endif
 #if PARAMS.get("winner_count", 1) > 1 or PARAMS.get("winner_mix", "average") == "fill"
@@ -106,16 +144,17 @@ fn surface_grazing_fade(id: u32, world: vec3f) -> f32 {
 	return grazing_fade_factor(dot(geometric_normal, to_eye)/denominator, grazing.x, grazing.y);
 }
 
-fn raster_opacity(id: u32, material: Material, uv: vec2f, lod: f32, world: vec3f) -> vec3f {
-	let alpha = base_color(material, uv, lod).a;
-	let width = fwidth(alpha);
-	let coverage = select(alpha, sharpen_alpha(alpha, material.surface.w, width), material.surface.z == 1.0);
+fn raster_opacity_from_alpha(id: u32, material: Material, uv: vec2f, lod: f32, world: vec3f, alpha: f32) -> vec3f {
 	let fade = surface_grazing_fade(id, world);
-	var result = coverage*material.opacity_rgb.rgb;
+	var result = alpha*material.opacity_rgb.rgb;
 #if PARAMS.get("material_library") is not none
 	result = library_opacity(id, material, result, uv, world, lod);
 #endif
 	return clamp(result, vec3f(0.0), vec3f(1.0))*fade;
+}
+
+fn raster_opacity(id: u32, material: Material, uv: vec2f, lod: f32, world: vec3f) -> vec3f {
+	return raster_opacity_from_alpha(id, material, uv, lod, world, base_color(material, uv, lod).a);
 }
 
 @fragment
@@ -139,21 +178,39 @@ fn opaque(input: VertexOutput, @builtin(front_facing) front: bool) -> @location(
 
 @fragment
 fn transmittance(input: VertexOutput, @builtin(front_facing) front: bool, @builtin(sample_index) sample: u32)
-#if PARAMS.get("force_single_contributor", false)
+#if PARAMS.get("banded_tail", false) and PARAMS.get("banded_proxy", false) and PARAMS.get("banded_statistics", true)
+ -> BandTransmission {
+#elif PARAMS.get("force_single_contributor", false)
  -> TransmittanceOutput {
 #else
  -> @location(0) vec4f {
 #endif
 	let lod = raster_lod(input.uv);
 	let material = get_material(input.instance);
+#if PARAMS.get("banded_tail", false) and PARAMS.get("banded_proxy", false) and PARAMS.get("banded_statistics", true)
+	let base = base_color(material, input.uv, lod);
+	let alpha = raster_opacity_from_alpha(input.instance, material, input.uv, lod, input.world, base.a);
+#else
 	let alpha = raster_opacity(input.instance, material, input.uv, lod, input.world);
+#endif
+	if material.surface.z == 1.0 { discard; }
 #if PARAMS.get("exact_nearest", false)
 	if is_exact_nearest(input, sample) { discard; }
 #endif
 	if !front && material.flags.y == 0u { discard; }
 	let p = max(alpha.x, max(alpha.y, alpha.z));
 	let transmission = vec4f(vec3f(1.0)-alpha, 1.0-p);
-#if PARAMS.get("force_single_contributor", false)
+#if PARAMS.get("banded_tail", false)
+	// Side effects are not protected by WebGPU early depth tests.
+	if input.position.z >= raster_opaque_depth(vec2i(input.position.xy), sample) { discard; }
+#if PARAMS.get("banded_statistics", true)
+	atomicAdd(&band_counts[band_index(vec2u(input.position.xy), sample)].total, u32(round(p*65536.0)));
+#endif
+#endif
+#if PARAMS.get("banded_tail", false) and PARAMS.get("banded_proxy", false) and PARAMS.get("banded_statistics", true)
+	let pq = f32(u32(round(p*65536.0)))/65536.0;
+	return BandTransmission(transmission, vec4f(pq*base.rgb, pq));
+#elif PARAMS.get("force_single_contributor", false)
 	return TransmittanceOutput(transmission, select(0.0, 1.0, p > 0.0));
 #else
 	return transmission;
@@ -177,10 +234,11 @@ fn transparent_depth(input: VertexOutput, @builtin(front_facing) front: bool, @b
 	// gradient permits exact planar prediction, including perspective foreshortening.
 	let reciprocal_depth = 1.0 / max(-(frame.view*vec4f(input.world, 1.0)).z, 1e-6);
 	let slope = vec2f(dpdxFine(reciprocal_depth), dpdyFine(reciprocal_depth));
+	if material.surface.z == 1.0 { discard; }
 #if PARAMS.get("exact_nearest", false)
 	if is_exact_nearest(input, sample) { discard; }
 #endif
-	if input.position.z >= sample_texture_load(opaque_depth, vec2i(input.position.xy), sample) { discard; }
+	if input.position.z >= raster_opaque_depth(vec2i(input.position.xy), sample) { discard; }
 	if !front && material.flags.y == 0u { discard; }
 	// Ignore fully transparent texels; retain every nonzero opacity, however low.
 	let p = max(alpha.x, max(alpha.y, alpha.z));
@@ -196,6 +254,67 @@ fn visibility_payload(input: VertexOutput, lod: f32, front: bool) -> vec4u {
 	return vec4u(input.instance+1u, input.triangle, pack2x16unorm(clamp(input.barycentric, vec2f(0.0), vec2f(1.0))), pack2x16float(vec2f(lod, select(-1.0, 1.0, front))));
 }
 
+#if PARAMS.get("banded_tail", false)
+@fragment
+fn tail_statistics(input: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4f {
+	let lod = raster_lod(input.uv);
+	let material = get_material(input.instance);
+	let base = base_color(material, input.uv, lod);
+	let alpha = raster_opacity_from_alpha(input.instance, material, input.uv, lod, input.world, base.a);
+	if material.surface.z == 1.0 { discard; }
+	// Depth uses native guide sample zero; nearest exclusion uses their ID union.
+	// Transmission and composition retain their actual per-hardware-sample IDs.
+	if is_exact_nearest(input, 0u) || (!front && material.flags.y == 0u) { discard; }
+	if input.position.z >= raster_opaque_depth(vec2i(input.position.xy), 0u) { discard; }
+	let pq = u32(round(max(alpha.x, max(alpha.y, alpha.z))*65536.0));
+	atomicAdd(&band_counts[band_index(vec2u(input.position.xy), 0u)].total, pq);
+#if PARAMS.get("banded_proxy", false)
+	return vec4f(f32(pq)/65536.0*base.rgb, f32(pq)/65536.0);
+#else
+	return vec4f(0.0, 0.0, 0.0, f32(pq)/65536.0);
+#endif
+}
+
+@fragment
+fn select_bands(input: VertexOutput, @builtin(front_facing) front: bool, @builtin(sample_index) sample: u32) {
+	let lod = raster_lod(input.uv);
+	let material = get_material(input.instance);
+	let alpha = raster_opacity(input.instance, material, input.uv, lod, input.world);
+	if material.surface.z == 1.0 { discard; }
+#if PARAMS.get("banded_subset", false)
+	// Alpha/material derivatives above require uniform quad execution.
+	if any(vec2u(input.position.xy) != band_selected_pixel(vec2u(input.position.xy)/2u)) { discard; }
+#endif
+	if is_exact_nearest(input, sample) || (!front && material.flags.y == 0u) { discard; }
+	let pixel = vec2i(input.position.xy);
+	if input.position.z >= raster_opaque_depth(pixel, sample) { discard; }
+	let pq = u32(round(max(alpha.x, max(alpha.y, alpha.z))*65536.0));
+	if pq == 0u { discard; }
+	let index = band_index(vec2u(pixel), sample);
+	let start = atomicAdd(&band_counts[index].running, pq);
+	let end = start+pq;
+	let total = atomicLoad(&band_counts[index].total);
+	// One shared screen-space field, never a per-fragment hash. Native sample
+	// positions address the finer lattice directly, preserving all four parities.
+	let size = textureDimensions(blue_noise);
+	let noise_pixels = frame.clip.z*{{2.0 if PARAMS.get("banded_mixed", false) else 1.0}};
+	let cell = vec2u(floor(input.position.xy/max(noise_pixels, 1e-6)));
+	let u = textureLoad(blue_noise, vec2i(cell%size), 0).r;
+	let m = f32(max(65536u, total));
+	// Clamp against conversion rounding at large totals. Complement is last.
+	let a = min(u32(u*m), max(65536u, total)-1u);
+	let b = min(u32((1.0-u)*m), max(65536u, total)-1u);
+	let payload = visibility_payload(input, lod, front);
+#if PARAMS.get("banded_subset", false)
+	let destination = pixel/2;
+#else
+	let destination = pixel;
+#endif
+	if a >= start && a < end { textureStore(band_payloads, destination, i32(sample*2u), payload); }
+	if b >= start && b < end { textureStore(band_payloads, destination, i32(sample*2u+1u), payload); }
+}
+#endif
+
 #if PARAMS.get("exact_nearest", false)
 <NearestOutput> @location(0) low: vec4u;
 <NearestOutput> @location(1) alpha: vec4f;
@@ -208,8 +327,9 @@ fn nearest_layer(input: VertexOutput, @builtin(front_facing) front: bool, @built
 	let material = get_material(input.instance);
 	let alpha = raster_opacity(input.instance, material, input.uv, lod, input.world);
 	let p = max(alpha.x, max(alpha.y, alpha.z));
+	if material.surface.z == 1.0 { discard; }
 	if p <= 0.0 || (!front && material.flags.y == 0u) { discard; }
-	if input.position.z >= sample_texture_load(opaque_depth, vec2i(input.position.xy), sample) { discard; }
+	if input.position.z >= raster_opaque_depth(vec2i(input.position.xy), sample) { discard; }
 	let payload = visibility_payload(input, lod, front);
 #if PARAMS.get("sample_count", 1) > 1
 	return NearestOutput(vec4u(payload.x & 65535u, payload.x >> 16u, payload.y & 65535u, payload.y >> 16u), vec4f(alpha, p), vec4u(payload.z & 65535u, payload.z >> 16u, payload.w & 65535u, payload.w >> 16u));
@@ -254,13 +374,14 @@ fn select_winner(input: VertexOutput, @builtin(front_facing) front: bool, @built
 	let uv_dy = dpdyFine(input.uv);
 	let p = max(alpha.x, max(alpha.y, alpha.z));
 	// All derivative-dependent material/LOD/noise inputs are now evaluated.
+	if material.surface.z == 1.0 { discard; }
 #if PARAMS.get("exact_nearest", false)
 	if is_exact_nearest(input, sample) { discard; }
 #endif
 	// Reject deterministic failures before count/guide reads and noise work.
 	if p <= 0.0 { discard; }
 	if !front && material.flags.y == 0u { discard; }
-	if input.position.z >= sample_texture_load(opaque_depth, pixel, sample) { discard; }
+	if input.position.z >= raster_opaque_depth(pixel, sample) { discard; }
 	var forced = false;
 #if PARAMS.get("force_single_contributor", false)
 	let acceptance = 1.0-sample_texture_load(selection_transmittance, pixel, sample).a;

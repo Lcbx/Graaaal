@@ -258,7 +258,7 @@ def test_material_record_preserves_external_opaque_color_and_occlusion(count, lo
 	# have exact coverage here and also check the default confidence reconstruction.
 	reconstruction = "fragment" if winner_count == 1 and not force else "push_pull"
 	renderer = MaterialRenderer(items, blue_noise=noise, target_format="rgba8unorm", sample_count=count,
-		opaque_color=color, opaque_depth=depth, winner_count=winner_count, force_single_contributor=force, reconstruction=reconstruction, exact_nearest=exact_nearest)
+		opaque_color=color, opaque_depth=depth, winner_count=winner_count, force_single_contributor=force, reconstruction=reconstruction, exact_nearest=exact_nearest, tail_allocation="stochastic")
 	# Another renderer supplies blue HDR color and a left-half foreground occluder.
 	shader = Shader(source='''
         <Output> @location(0) color: vec4f;

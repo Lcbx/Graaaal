@@ -129,7 +129,7 @@ class MaterialRenderer:
 			raise ValueError("Surface IDs must be distinct positive uint32 values")
 		# Pack once, before mutations. Instance offsets remain valid after regrouping.
 		headers, shared, instance, ids, offsets = self.library.pack(bindings, dirty_materials=dirty_materials)
-		routes = np.array([int(binding.shader.transparent) for binding in bindings], dtype=np.uint32)
+		routes = np.array([int(binding.shader.is_blended(self.library.material_values(binding), binding.overrides)) for binding in bindings], dtype=np.uint32)
 		self.draws.sync(mesh_ids, routes, labels=owners.astype(np.uint64))
 		order = self.draws.instance_order
 		self._write(self.headers, headers)
@@ -153,6 +153,15 @@ class MaterialRenderer:
 
 	def set_exact_nearest(self, enabled):
 		if self.transparency.set_exact_nearest(enabled): self._register_passes()
+
+	def set_tail_allocation(self, mode):
+		if self.transparency.set_tail_allocation(mode): self._register_passes()
+
+	def set_kawase_passes(self, count):
+		return self.transparency.set_kawase_passes(count)
+
+	def set_banded_options(self, **options):
+		if self.transparency.set_banded_options(**options): self._register_passes()
 
 	def set_noise_footprint_balancing(self, enabled):
 		if self.transparency.set_noise_footprint_balancing(enabled):
@@ -203,10 +212,17 @@ class MaterialRenderer:
 			oit.shade_nearest(commands, self.geometry[1])
 		for begin, name in ((oit.guide_pass, "guide"),
 			(oit.transmittance_pass, "transmittance")):
+			if name == "guide" and oit.banded_tail: continue
 			if name == "guide" and oit.bilateral_filter.kernel_size == 1: continue
 			with begin(commands) as render:
 				self.draws.draw(render, self.visibility, name)
-		for stream in range(oit.winner_count):
+		if oit.banded_tail:
+			if oit.mixed_tail:
+				with oit.tail_statistics_pass(commands) as render: self.draws.draw(render, self.visibility, "tail_statistics")
+			with oit.banded_pass(commands) as render:
+				self.draws.draw(render, self.visibility, "bands")
+			oit.shade_winner(commands, self.geometry[1])
+		for stream in range(0 if oit.banded_tail else oit.winner_count):
 			with oit.selection_pass(commands, stream=stream) as render:
 				self.draws.draw(render, self.visibility, oit.selection_name(stream))
 			oit.shade_winner(commands, self.geometry[1], stream=stream)

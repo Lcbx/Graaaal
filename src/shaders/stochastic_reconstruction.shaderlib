@@ -27,7 +27,11 @@ sample_texture<1, 10, layered> winner_source: u32;
 #endif
 
 fn winner_at(pixel: vec2i, sample: u32) -> vec4f {
+#if PARAMS.get("banded_mixed", false)
+	return sample_texture_load(winner_color, pixel, 0u, layered=true);
+#else
 	return sample_texture_load(winner_color, pixel, sample, layered=true);
+#endif
 }
 
 #if RECONSTRUCT_MODE is not defined or RECONSTRUCT_MODE != "profile"

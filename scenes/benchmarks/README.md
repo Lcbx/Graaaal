@@ -110,6 +110,30 @@ script includes initialization and wraps full `upload()` calls only; direct
 use full CPU array sizes. Durations measure CPU submission, not GPU completion or
 frame-time guarantees; check the actual frame count if the window closes early.
 
+## Banded-tail decision sweep
+
+Run `python -m scenes.benchmarks.diagnose_banded_tail --trials 64 --seed 2026`.
+`--output` selects the JSON path. This CPU-only sweep compares complemented
+nearest-wins and disjoint-band selection using the packaged tile, random flat
+colors, constant guides, and box/Gaussian 3x3 filters. It reports bias, spatial
+noise, RMSE, low-frequency power and layer-entry mask changes. It does not enable
+a rendering mode or measure GPU time or motion stability. See the
+[decision record](../../src/transparency_banded_tail_implementation.md).
+
+Run the GPU comparison with
+`python -m scenes.benchmarks.profile_banded_tail --output scenes/benchmarks/results/banded_profile.json`.
+It requires `timestamp-query`. `--variants baseline proxy subset single` compares
+the original method, proxy, proxy with a 2x2 subset, and that subset with 1x tail
+sampling. Optional `single_full` isolates 1x tails without subsampling. `--pairs`,
+`--samples`, `--size`, `--frames`, `--warmup` and `--rounds` set the comparison.
+Raw GPU pass timestamps, grouped stage medians, sorted-reference RMSE, spatial
+noise, edge error against sorted and banded references, and empty-tile fractions
+are written to JSON. Quality readbacks are outside the timed frame. Halo metrics
+use a strip of radius 2^pairs around the middle quad's vertical edges; noise is
+spatial variation after removing each column's mean in the central flat rows.
+These are static emissive quads, not temporal variance or a general lighting
+benchmark. Blur and its final normalization/proxy resolve are reported separately.
+
 ## Legacy Raylib comparison
 
 `benchmark_raylib_objects.py` uses Python objects; `benchmark_raylib_ecs.py` uses

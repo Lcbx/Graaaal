@@ -262,7 +262,8 @@ deferred-shading, and composition stages into caller-owned commands. Call
 the stages and submit. It does not submit or present frames itself.
 
 Use `create_geometry_passes(metadata, transparent=True, instances=buffer)` to
-create transparent `transmittance` and `main` shader passes plus a guide override.
+create the blended geometry passes. Register OPAQUE and MASK with
+`transparent=False`; MASK uses alpha-cutoff discard and writes opaque depth.
 Keep metadata in packed instance order, and share its vertex/material address
 space across all transparent draws in a selection target. Raster and deferred
 vertices use the same local coordinates and packed instance transforms.
@@ -272,11 +273,12 @@ opaque color/depth can be supplied through `opaque_color` and `opaque_depth`;
 they must match the target dimensions and sample count. Otherwise targets are
 allocated internally. Set `target_format` to match the output attachment.
 
-Defaults are single-sample rendering, anchored-blue noise at a one-pixel grain
-size, two averaged winner draws, grazing fade from 83 to 86 degrees, and 3x3 bilateral reconstruction with
-spatial sigma 0.9. `set_sample_count(1 or 4)`, `set_noise_mode`, `set_noise_scale`,
-`set_grazing_fade`, `set_bilateral_filter`, and `set_debug_view` update live
-settings. A 1x1 kernel bypasses reconstruction; 4x MSAA remains available.
+BLEND defaults to exact nearest plus two complementary banded tail winners
+and one Kawase down/up pair (`kawase_passes=1`). Tail estimation uses 1x;
+`set_sample_count(1 or 4)` selects native sampling for opaque/MASK,
+transmission and exact nearest. The examples expose blur count and diagnostics;
+there is no tail-MSAA UI toggle. Select `tail_allocation="stochastic"` for the
+earlier noise, winner-count and bilateral/confidence filtering options.
 No temporal accumulation is used.
 
 The [transparency guide](src/stochastic_transparency.md) covers pass order,

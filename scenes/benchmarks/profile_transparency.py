@@ -92,7 +92,7 @@ def run(size=(1280, 720), frames=30, warmup=5, configs=None, zoom=1.0, rounds=4,
 	RenderContext.screen = lambda **kwargs: output.color_attachment()
 	profiler = GpuProfiler(max_passes=128) if timestamps else None
 	try:
-		scene.init_scene()
+		scene.init_scene(tail_allocation="stochastic")
 		target = np.asarray(scene.camera.target)
 		scene.camera.position = scene.Vec3(target+(np.asarray(scene.camera.position)-target)/zoom)
 		oit = scene.transparency

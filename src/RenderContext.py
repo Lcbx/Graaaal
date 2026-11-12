@@ -850,6 +850,11 @@ class DepthAttachment:
 	stencil_read_only: bool = False
 
 	def descriptor(self) -> wgpu.RenderPassDepthStencilAttachment:
+		depth = {}
+		if not self.read_only:
+			depth = dict(depth_clear_value=self.clear or 0.0,
+				depth_load_op="clear" if self.clear is not None else "load",
+				depth_store_op="store" if self.store else "discard")
 		stencil = {}
 		if "stencil" in self.format:
 			stencil = dict(stencil_read_only=self.stencil_read_only)
@@ -859,10 +864,8 @@ class DepthAttachment:
 					stencil_store_op="store" if self.store else "discard")
 		return wgpu.RenderPassDepthStencilAttachment(
 			view=self.view,
-			depth_clear_value=self.clear or 0.0,
-			depth_load_op="clear" if self.clear is not None else "load",
-			depth_store_op="store" if self.store else "discard",
 			depth_read_only=self.read_only,
+			**depth,
 			**stencil,
 		)
 

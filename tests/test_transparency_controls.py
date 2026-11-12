@@ -11,7 +11,7 @@ from scenes import transparency_example as scene
 
 
 def make_renderer(**overrides):
-	values = dict(bilateral_filter=BilateralFilter(), winner_count=1, winner_mix="average",
+	values = dict(banded_tail=False, bilateral_filter=BilateralFilter(), winner_count=1, winner_mix="average",
 		force_single_contributor=False, debug_view="final", reconstruction="fragment")
 	values.update(overrides)
 	renderer = SimpleNamespace(**values)

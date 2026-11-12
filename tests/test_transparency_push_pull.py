@@ -51,7 +51,7 @@ def test_complemented_surface_primitive_pairs_do_not_alias(factory, samples, noi
 		vertices["normal"] = (0, 0, 1)
 		vertices["uv"] = vertices["position"][:, :2]
 		items.append(DrawInstance(MaterialMesh(vertices, shader), material={"base_color": (1, 1, 1, 0.5), "emission": (1, 0, 0) if layer == 0 else (0, 0, 1)}, position=(0, 0, -0.3*layer), surface_id=surface))
-	renderer = MaterialRenderer(items, sample_count=samples, noise_mode=noise_mode, target_format="rgba8unorm", reconstruction="atrous", bilateral_filter=BilateralFilter(kernel_size=1))
+	renderer = MaterialRenderer(items, sample_count=samples, noise_mode=noise_mode, target_format="rgba8unorm", reconstruction="atrous", bilateral_filter=BilateralFilter(kernel_size=1), tail_allocation="stochastic")
 	output = Texture((256, 256), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT)
 	commands = RenderContext.commands()
 	renderer.record(commands, (256, 256), Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 2, perspective=False), output.color_attachment())
@@ -122,7 +122,7 @@ def test_same_payload_is_shaded_only_once(factory, samples, monkeypatch):
 	vertices = np.zeros(6, dtype=VERTEX_DTYPE)
 	vertices["position"] = [(-10, -10, 0), (10, -10, 0), (10, 10, 0), (-10, -10, 0), (10, 10, 0), (-10, 10, 0)]
 	vertices["normal"] = (0, 0, 1)
-	renderer = MaterialRenderer([DrawInstance(MaterialMesh(vertices, shader), material={"base_color": (1, 1, 1, 0.75), "emission": (1, 0, 0)})], sample_count=samples, target_format="rgba8unorm", bilateral_filter=BilateralFilter(kernel_size=1))
+	renderer = MaterialRenderer([DrawInstance(MaterialMesh(vertices, shader), material={"base_color": (1, 1, 1, 0.75), "emission": (1, 0, 0)})], sample_count=samples, target_format="rgba8unorm", bilateral_filter=BilateralFilter(kernel_size=1), tail_allocation="stochastic")
 	counter = GpuBuffer(np.zeros(1, np.uint32), BufferUsage.STORAGE | BufferUsage.COPY_SRC)
 	renderer.geometry[1].shading_bindings = (renderer.transparency.shading_shader.bind_group(4, shade_calls=counter),)
 	render(renderer, (37, 29))
@@ -180,7 +180,7 @@ def test_confidence_reconstruction_uses_animated_material_frame_fields(factory, 
 	vertices = np.zeros(3, dtype=VERTEX_DTYPE)
 	vertices["position"] = [(-100, -100, 0), (100, -100, 0), (0, 100, 0)]
 	vertices["normal"] = (0, 0, 1)
-	renderer = MaterialRenderer([DrawInstance(MaterialMesh(vertices, shader), material={"base_color": (1, 1, 1, 0.5)})], sample_count=samples, reconstruction="atrous", target_format="rgba8unorm", frame_fields={"time": ("f32", 0.0)})
+	renderer = MaterialRenderer([DrawInstance(MaterialMesh(vertices, shader), material={"base_color": (1, 1, 1, 0.5)})], sample_count=samples, reconstruction="atrous", target_format="rgba8unorm", frame_fields={"time": ("f32", 0.0)}, tail_allocation="stochastic")
 	output = Texture((37, 29), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT)
 	for seconds in (0.25, 0.75):
 		commands = RenderContext.commands()

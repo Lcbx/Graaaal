@@ -2,8 +2,8 @@
 
 Run: python main.py scenes/transparency_example.py [--frames 120]
 Space toggles orbit, scrolling zooms, R reverses transparent submission order.
-1 disables reconstruction; 3, 5 and 9 enable it (and select bilateral kernel size).
-D cycles diagnostic views; N cycles noise modes; [ / ] adjusts noise scale.
+1/3/5/9 select 0/1/2/3 Kawase pairs (bilateral kernel sizes in stochastic mode).
+D cycles diagnostic views; N cycles stochastic noise modes; [ / ] adjusts noise scale.
 G toggles grazing-angle opacity fade (angles are adjustable in settings).
 M toggles 4x MSAA (off by default).
 F shows/hides ImGui settings.
@@ -44,7 +44,7 @@ TEXTURE_SIZE = 512
 
 
 def load_transparency_scene(path):
-	# This asset authors binary tree leaves as BLEND. Use MASK coverage/mips for
+	# This asset authors binary tree leaves as BLEND. Use MASK cutoff/mips for
 	# this named foliage material while keeping genuinely soft cards as BLEND.
 	return load_transparency_data(path, mask_materials=("Simple_foliage.001",))
 
@@ -52,7 +52,7 @@ def load_transparency_scene(path):
 class GeometryBatches:
 	"""Static glTF primitives submitted directly through DrawBatches."""
 	def __init__(self, primitives, materials, transparency:TransparencyPass, transparent:bool):
-		primitives = [p for p in primitives if (materials[p.material_id]["surface"][2] != 0) == transparent]
+		primitives = [p for p in primitives if (materials[p.material_id]["surface"][2] == 2) == transparent]
 		self.data = DrawBatches(MESH_INSTANCE_DTYPE)
 		self.metadata = GpuBuffer(np.zeros((1, 4), dtype=np.uint32), BufferUsage.STORAGE | BufferUsage.COPY_DST)
 		self.passes = transparency.create_geometry_passes(self.metadata, transparent=transparent, instances=self.data.buffers["instances"])
@@ -100,7 +100,8 @@ distance = 0.0
 
 def init_scene(path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_PATH, grazing_fade=None,
 	sample_count=1, winner_count=2, winner_mix="average", noise_mode="anchored_blue",
-	reconstruction="atrous", reconstruction_passes=1, winner_coupling="complement", confidence_filter=None, exact_nearest=False):
+	reconstruction="fragment", reconstruction_passes=1, winner_coupling="complement", confidence_filter=None, exact_nearest=False, tail_allocation="banded", kawase_passes=1,
+	banded_proxy=False, banded_subset=False, banded_tail_msaa=False):
 	"""Initialize the example's global render data after device setup."""
 	global transparency, opaque_batches, transparent_batches, camera, hzb, center, radius, angle, orbit, distance
 	primitives, materials, images, vertices = load_transparency_scene(path)
@@ -122,7 +123,8 @@ def init_scene(path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_P
 		base_textures=textures.view(dimension="2d-array"),
 		vertices=GpuBuffer(vertices, BufferUsage.STORAGE | BufferUsage.COPY_DST), blue_noise=blue_noise,
 		bilateral_filter=bilateral_filter, grazing_fade=grazing_fade, sample_count=sample_count, winner_count=winner_count,
-		winner_mix=winner_mix, noise_mode=noise_mode, reconstruction=reconstruction, reconstruction_passes=reconstruction_passes, winner_coupling=winner_coupling, confidence_filter=confidence_filter, exact_nearest=exact_nearest)
+		winner_mix=winner_mix, noise_mode=noise_mode, reconstruction=reconstruction, reconstruction_passes=reconstruction_passes, winner_coupling=winner_coupling, confidence_filter=confidence_filter, exact_nearest=exact_nearest, tail_allocation=tail_allocation, kawase_passes=kawase_passes,
+		banded_proxy=banded_proxy, banded_subset=banded_subset, banded_tail_msaa=banded_tail_msaa)
 	hzb = HZB()
 	opaque_batches = GeometryBatches(primitives, materials, transparency, False)
 	transparent_batches = GeometryBatches(primitives, materials, transparency, True)
@@ -145,6 +147,9 @@ def on_char(code):
 		transparent_batches.data.draw_batches.reverse()
 	elif chr(code) in ("1", "3", "5", "9"):
 		size = int(chr(code))
+		if transparency.banded_tail:
+			transparency.set_kawase_passes((1, 3, 5, 9).index(size))
+			return True
 		transparency.set_bilateral_filter(replace(transparency.bilateral_filter, kernel_size=size))
 		FilterSettings.sync_debug_view(transparency)
 		print(f"Bilateral filter: {size}x{size}")
@@ -203,12 +208,18 @@ def render_frame(*, profiler=None):
 			transparent_batches.draw(render, "main", pass_override=transparent_batches.passes.nearest)
 		transparency.shade_nearest(commands, transparent_batches.passes)
 	# The point estimator never samples a reconstruction guide.
-	if transparency.bilateral_filter.kernel_size != 1:
+	if transparency.bilateral_filter.kernel_size != 1 and not transparency.banded_tail:
 		with transparency.guide_pass(commands) as render:
 			transparent_batches.draw(render, "main", pass_override=transparent_batches.passes.guide)
 	with transparency.transmittance_pass(commands) as render:
 		transparent_batches.draw(render, "transmittance")
-	for stream in range(transparency.winner_count):
+	if transparency.banded_tail:
+		if transparency.mixed_tail:
+			with transparency.tail_statistics_pass(commands) as render: transparent_batches.draw(render, "tail_statistics")
+		with transparency.banded_pass(commands) as render:
+			transparent_batches.draw(render, "bands")
+		transparency.shade_winner(commands, transparent_batches.passes)
+	for stream in range(0 if transparency.banded_tail else transparency.winner_count):
 		with transparency.selection_pass(commands, stream=stream) as render:
 			transparent_batches.draw(render, transparency.selection_name(stream))
 		transparency.shade_winner(commands, transparent_batches.passes, stream=stream)

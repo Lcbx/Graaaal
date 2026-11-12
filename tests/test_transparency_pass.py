@@ -38,7 +38,7 @@ def test_procedural_transparency_records_into_caller_commands_and_output(monkeyp
 	storage = BufferUsage.STORAGE | BufferUsage.COPY_DST
 	oit = TransparencyPass(materials=GpuBuffer(material, storage),
 		base_textures=white.view(dimension="2d-array"), vertices=GpuBuffer(stored, storage),
-		blue_noise=noise, target_format="rgba8unorm", noise_mode=noise_mode, sample_count=sample_count, winner_count=1)
+		blue_noise=noise, target_format="rgba8unorm", noise_mode=noise_mode, sample_count=sample_count, winner_count=1, tail_allocation="stochastic")
 	metadata = GpuBuffer(np.array([[0, 0, 42, 0]], dtype=np.uint32), storage)
 	vertex_buffer = GpuBuffer(vertices, BufferUsage.VERTEX | BufferUsage.COPY_DST)
 	instances = GpuBuffer(np.zeros(1, dtype=MESH_INSTANCE_DTYPE), storage)

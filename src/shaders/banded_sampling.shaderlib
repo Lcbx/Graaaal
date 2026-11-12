@@ -1,0 +1,7 @@
+fn band_selected_pixel(block: vec2u) -> vec2u {
+	var h = block.x*0x9e3779b9u ^ block.y*0x85ebca6bu ^ 0x68bc21ebu;
+	h = (h ^ (h >> 16u))*0x7feb352du;
+	h = (h ^ (h >> 15u))*0x846ca68bu;
+	h ^= h >> 16u;
+	return block*2u+vec2u(h & 1u, (h >> 1u) & 1u);
+}

@@ -137,6 +137,10 @@ class MaterialShader:
 	def validate_resolved(self, values):
 		"""Optional shader-specific semantic validation after dictionary resolution."""
 
+	def is_blended(self, material=None, overrides=None):
+		"""Choose blended rendering for a binding; custom shaders use their route flag."""
+		return self.transparent
+
 
 @dataclass
 class MaterialBinding:
@@ -165,6 +169,11 @@ class MaterialLibrary:
 	def _layout_keys(self):
 		return tuple((s.transparent, str(s.template), s.source, str(s.filepath), tuple((name, p.kind, p.scope)
 			for name, p in s.parameters.items())) for s in self.shaders)
+
+	def material_values(self, binding):
+		"""Read-only shared values from the last pack, including retained cached data."""
+		base = binding.shader.default_material if binding.material is None else binding.material
+		return MappingProxyType(self._records[(binding.shader, id(base))][2])
 
 	def pack(self, bindings, *, dirty_materials=None):
 		if self._layouts != self._layout_keys():

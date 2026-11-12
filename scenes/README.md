@@ -56,12 +56,16 @@ import paths start with `scenes.` when running from the repository root.
 
 The settings window is visible at startup in `transparency_example`; press **F**
 to open it in `material_example`. Both use `transparency_settings.py`.
+BLEND defaults to **Banded + dual Kawase**, with one down/up pair and full-pixel 1x tail estimation.
+MASK uses deterministic alpha cutoff and opaque depth, evaluated at the scene's MSAA sample positions.
+Choose **Stochastic nearest wins** to expose the following winner/noise/filter
+comparisons.
 **Winner draws** accepts a positive
 integer, independently of MSAA. Average mode supports one or two (default);
 Fill accepts any positive count. Extra attempts reduce missing winners but add
 selection/shading work and do not supersample edges.
-**Exact nearest layer** is off by default. Enable it to shade the nearest visible
-transparent fragment deterministically; the winner/filter settings then apply
+**Exact nearest layer** is enabled and required in banded mode. In stochastic
+mode it can be disabled; when enabled the winner/filter settings apply
 only to the remaining tail. It adds nearest contribution/mask and tail
 transmittance diagnostics. Both examples use the same setting.
 Diagnostic views include each stream and the valid-stream fraction. See the
@@ -73,7 +77,7 @@ hides **forced**, and 1x1 hides **filter_support**. A view that becomes unavaila
 returns to **final** when editing settings.
 **Winner pairing** selects complemented thresholds (default) or independent
 sources for two-draw averaging. Fill always uses independent retries.
-**Filter implementation** selects the default A-trous cascade, Confidence pyramid,
+**Filter implementation** selects the A-trous cascade, Confidence pyramid,
 or either fixed bilateral implementation. The cascade's **Support budget D**
 defaults to four; increase it to smooth faint layers more broadly. **Cascade
 passes** selects one to four (default), reaching radii of 1/3/7/15 pixels.
@@ -82,7 +86,7 @@ Its **retained_support** view shows final D / budget. The pyramid retains
 See the
 [profiling report](../src/transparency_reconstruction_implementation.md) for measurements.
 **Force single contributor** deterministically accepts exactly one visible
-contributor at its opacity, including fractional MASK edges; it adds a small
+BLEND contributor at its opacity; it adds a small
 count target and is off by default. **Winner mix** offers experimental hole
 filling with default-source Object hash or Anchored blue noise. Select two draws,
 then Fill, before raising the count further. Reduce to two before returning to Average.
@@ -111,17 +115,33 @@ widgets, so those actions do not also move the camera or trigger scene shortcuts
 | Up/Down, Left/Right | Select/edit a settings row; Shift gives finer increments |
 | Home | Restore startup filter settings |
 
+**Tail allocation** defaults to **Banded + dual Kawase** in both
+examples (F opens settings in the material example). It captures an exact nearest
+layer and blurs only the banded tail. **Down/up pairs** sets 0-8 blur levels (default 1);
+zero shows the unblurred result. Left/Right changes this count, and 1/3/5/9 in
+the transparency example selects 0/1/2/3 pairs. More pairs blur more broadly;
+there is no depth edge stopping. This experimental WebGPU atomic path may change
+allocation between frames and approximates thick-tail color mixtures.
+
+**Proxy residual** is enabled by default in banded mode: it restores a local
+albedo proxy and blurs only the remaining signed color difference. Optional
+**Shade one pixel per 2 x 2 block** reduces allocation/lighting work and increases
+noise. Tail estimation uses 1x while transmission, exact nearest and opaque/MASK
+geometry use native MSAA; there is no tail-estimation MSAA toggle. This can miss
+subpixel tail details. The subset switch remains opt-in. The winner diagnostic
+displays signed residuals with neutral grey at zero.
+
 Arrow edits are disabled while the settings window is hidden.
 Startup uses the defaults in code; controls update live without a profile file.
-Anchored blue with two averaged winner draws is the default; UV CDF lerp, stochastic picking and Bayer
-remain experimental comparisons. The settings window also exposes these controls.
+Anchored blue, UV CDF lerp, stochastic picking and Bayer remain available as
+comparisons when stochastic allocation is selected.
 
 The noise selector includes correlated UV hierarchies and triplanar object-space
 projection for meshes with unsuitable UVs. Hierarchies build once on first use.
-**MSAA (M)** smooths silhouettes and adds four stochastic samples at extra GPU and
-memory cost. It works with every reconstruction kernel, including 1x1.
+**MSAA (M)** smooths opaque/MASK geometry and the exact nearest layer at extra GPU
+and memory cost. Classic stochastic mode also samples winner selection at 4x.
 Sampling is static; there is no TAA or frame history.
-The noise-cell slider stores the 1x width; 4x MSAA halves the effective target
+The stochastic noise-cell slider stores the 1x width; 4x MSAA halves the effective target
 (1 px becomes 0.5 px), and disabling MSAA restores the chosen width. The effective
 target is shown below the slider. Sizes remain approximate at oblique angles.
 **UV footprint balance** is an experimental compromise: 0 keeps maximum-derivative
@@ -130,8 +150,8 @@ Increasing it makes tilted grain finer along both axes, including subpixel cells
 along the compressed axis. It applies to UV modes and retains existing fallback
 and triplanar behavior. See the [tilt diagnostic](../IMPLEMENTATION_WORK.md#uv-footprint-compromise-experiment)
 for measured screen-space autocorrelation widths and limitations.
-The balancing shader feature is disabled by default. Check **Enable UV footprint
-balancing** to compile/cache it and show the editable UV slider. Its value can be
+The balancing shader feature is enabled by default in stochastic mode. **Enable UV footprint
+balancing** controls it and the editable UV slider. Its value can be
 adjusted in any noise mode, but only affects UV modes. Settings are separated by
 feature; disabled features hide their parameters. Selecting the 1 x 1 kernel
 hides the reconstruction tolerances, and disabling grazing fade hides its angles.
@@ -141,7 +161,7 @@ It reads pixel-sized grain around rest-space coarse anchors, without requiring
 UVs. Its anchor target defaults to 24 pixels and shift subdivisions to 4. Higher
 subdivisions reduce close-layer correlation at the cost of more shift seams.
 The mode keeps grain much more isotropic at tilt, but can reshuffle more during
-orbit/dolly. It is the example's default noise mode. See the
+orbit/dolly. See the
 [anchored noise audit](../IMPLEMENTATION_WORK.md#pixel-lattice-anchored-blue).
 
 "Fade grazing surfaces" starts enabled. Its two editable angles default to
@@ -149,9 +169,10 @@ orbit/dolly. It is the example's default noise mode. See the
 the geometric surface normal: 0 is face-on, 90 is edge-on. Opacity fades smoothly
 between them on both front and back faces. The interval must satisfy
 `0 <= start < end <= 90`; drag either value or Ctrl+click to type it. The fade
-affects MASK/BLEND surfaces consistently in guide, transmittance and selection.
+affects BLEND surfaces consistently in guide, transmittance and selection. MASK
+uses the regular alpha cutoff and does not receive grazing fade.
 
-Default reconstruction uses a fixed 3x3 footprint, spatial sigma 0.9, relative
+In stochastic bilateral mode, reconstruction uses a fixed 3x3 footprint, spatial sigma 0.9, relative
 depth sigma 0.05, transmittance sigma 0.3, and minimum depth tolerance 0.01.
 Slope correction is always enabled. The 1x1 option shows the unfiltered stochastic
 result; certain fully opaque nearest winners also bypass reconstruction.

@@ -19,7 +19,7 @@ def source_ids(oit):
 
 def test_low_level_custom_shaders_reject_fill_even_with_one_attempt():
 	with pytest.raises(ValueError, match="default shader set"):
-		TransparencyPass(materials=None, base_textures=None, vertices=None, winner_count=1,
+		TransparencyPass(materials=None, base_textures=None, vertices=None, winner_count=1, tail_allocation="stochastic",
 			winner_mix="fill", noise_mode="object_hash", geometry_shader=object(), shading_shader=object())
 
 

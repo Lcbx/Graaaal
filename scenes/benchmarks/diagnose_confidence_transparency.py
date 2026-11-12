@@ -67,7 +67,7 @@ def layer_comparison(size, targets, reconstruction="atrous", support_seeds=0, ex
 	colors = np.array([(1, 0, 0), (0, 1, 1), (0, 1, 0), (1, 0, 1), (0, 0, 1), (1, 1, 0), (1, 0.3, 0), (0.1, 0.2, 1)], np.float32)
 	mesh = MaterialMesh(vertices, shader)
 	items = [DrawInstance(mesh, material={"base_color": (1, 1, 1, 0.1), "emission": tuple(color)}, position=(0, 0, -0.03*i), surface_id=17+i) for i, color in enumerate(colors)]
-	renderer = MaterialRenderer(items, target_format="rgba8unorm", bilateral_filter=BilateralFilter(kernel_size=3), reconstruction=reconstruction, exact_nearest=exact_nearest)
+	renderer = MaterialRenderer(items, target_format="rgba8unorm", bilateral_filter=BilateralFilter(kernel_size=3), reconstruction=reconstruction, exact_nearest=exact_nearest, tail_allocation="stochastic")
 	camera = Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 55, near=0.01, far=100)
 	output = Texture((size, size), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT)
 	rows = []

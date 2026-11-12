@@ -54,7 +54,9 @@ def test_time_is_read_from_frame_without_material_or_instance_slots():
 @pytest.mark.parametrize("count", [1, 4])
 @pytest.mark.parametrize("winner_count", [1, 2])
 @pytest.mark.parametrize("exact_nearest", [False, True])
-def test_deformed_raster_and_deferred_shading_match_at_fixed_times(count, winner_count, exact_nearest):
+@pytest.mark.parametrize("tail_allocation", ["stochastic", "banded"])
+def test_deformed_raster_and_deferred_shading_match_at_fixed_times(count, winner_count, exact_nearest, tail_allocation):
+	if tail_allocation == "banded" and (not exact_nearest or winner_count != 2): pytest.skip("Banded tail always uses exact nearest and two winners")
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	vertices = np.zeros(12, dtype=VERTEX_DTYPE)
 	rows = []
@@ -67,7 +69,7 @@ def test_deformed_raster_and_deferred_shading_match_at_fixed_times(count, winner
 	renderers = [MaterialRenderer([DrawInstance(MaterialMesh(vertices,
 		DefaultMaterialShader(transparent=transparent, source=ANIMATED_SOURCE),
 		bounds=((0.4, 0, 0), (1.0, 0.8, 0.1))))], target_format="rgba8unorm",
-		sample_count=count, winner_count=winner_count, frame_fields={"time": ("f32", 0.0)}, bilateral_filter=BilateralFilter(kernel_size=1), exact_nearest=exact_nearest) for transparent in (False, True)]
+		sample_count=count, winner_count=winner_count, frame_fields={"time": ("f32", 0.0)}, bilateral_filter=BilateralFilter(kernel_size=1), exact_nearest=exact_nearest, tail_allocation=tail_allocation) for transparent in (False, True)]
 	camera = Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 50)
 	output = Texture((96, 64), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	def render(renderer, seconds):

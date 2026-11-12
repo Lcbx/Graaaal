@@ -231,7 +231,7 @@ def test_transparency_external_opaque_inputs_and_transformed_reconstruction(monk
     }'''
     oit = tp.TransparencyPass(materials=rc.GpuBuffer(material, storage), base_textures=white.view(dimension="2d-array"),
         vertices=rc.GpuBuffer(stored, storage), blue_noise=noise, target_format="rgba8unorm",
-        opaque_color=opaque, opaque_depth=depth, material_source=material_source, winner_count=1)
+        opaque_color=opaque, opaque_depth=depth, material_source=material_source, winner_count=1, tail_allocation="stochastic")
     instance = np.zeros(1, dtype=MESH_INSTANCE_DTYPE)
     angle = np.pi / 6
     scale, translation = np.array([1.2, 0.6, 1.8]), np.array([0.2, 0, 0.1])

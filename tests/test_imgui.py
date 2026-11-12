@@ -159,7 +159,13 @@ def test_both_scenes_render_real_imgui_draw_data_to_gpu(monkeypatch):
 	settings = FilterSettings(renderer)
 	try:
 		with ImGui() as gui:
-			for draw in (lambda: draw_actors(cache), settings.draw):
+			def draw_banded():
+				renderer.banded_tail = True
+				renderer.kawase_passes = 2
+				renderer.banded_proxy, renderer.banded_subset, renderer.banded_tail_msaa = True, False, True
+				try: settings.draw()
+				finally: renderer.banded_tail = False
+			for draw in (lambda: draw_actors(cache), settings.draw, draw_banded):
 				# A first-use window may defer layout for one frame.
 				for _ in range(2):
 					gui.render(draw, clear=(0, 0, 0, 1))

@@ -92,7 +92,8 @@ class FilterSettings:
 		"""UI choices for the current technique; shader diagnostic IDs stay fixed."""
 		averaged_pair = renderer.winner_count == 2 and renderer.winner_mix == "average"
 		return tuple(view for view in DEBUG_VIEWS
-			if (view not in ("winner_a", "winner_b") or averaged_pair)
+			if (not getattr(renderer, "banded_tail", False) or view not in ("winner_a", "winner_b", "winner_count", "forced", "filter_support"))
+			and (view not in ("winner_a", "winner_b") or averaged_pair)
 			and (view != "winner_count" or renderer.winner_count > 1)
 			and (view != "forced" or renderer.force_single_contributor)
 			and (view not in ("nearest", "nearest_mask", "tail_transmittance") or getattr(renderer, "exact_nearest", False))
@@ -107,17 +108,22 @@ class FilterSettings:
 
 	@staticmethod
 	def debug_view_label(renderer, view):
+		if view == "winner" and getattr(renderer, "banded_tail", False) and getattr(renderer, "banded_proxy", False): return "signed residual"
 		if view == "filter_support" and renderer.reconstruction == "atrous": return "retained_support"
 		if view == "filter_support" and renderer.reconstruction in ("push_pull", "atrous"): return "confidence"
 		return "winner_validity" if view == "winner_count" and renderer.winner_mix == "fill" else view
 
 	def move(self, direction):
+		if getattr(self.renderer, "banded_tail", False): return
 		indices = [index for index, row in enumerate(SETTINGS) if row[0] != "spatial_sigma" or self.renderer.reconstruction != "atrous"]
 		if self.selected not in indices: self.selected = indices[0]
 		self.selected = indices[(indices.index(self.selected)+direction) % len(indices)]
 		self.message = ""
 
 	def adjust(self, direction, fine=False):
+		if getattr(self.renderer, "banded_tail", False):
+			self.controls.set_kawase_passes(max(0, min(8, self.renderer.kawase_passes+direction)))
+			return
 		if SETTINGS[self.selected][0] == "spatial_sigma" and self.renderer.reconstruction == "atrous": self.move(direction)
 		name, _, step, _, _ = SETTINGS[self.selected]
 		options = self.renderer.bilateral_filter
@@ -132,6 +138,9 @@ class FilterSettings:
 		self.set_value(name, value)
 
 	def reset(self):
+		if getattr(self.renderer, "banded_tail", False):
+			self.controls.set_kawase_passes(1)
+			return
 		self.renderer.set_bilateral_filter(self.defaults)
 		self.sync_debug_view(self.renderer)
 		self.message = "Restored startup settings"
@@ -182,6 +191,18 @@ class FilterSettings:
 			value = min(90, max(value, options.start_angle+0.01))
 		self.renderer.set_grazing_fade(replace(options, **{name: value}))
 
+	def draw_grazing(self):
+		from imgui_bundle import imgui
+		imgui.separator_text("Grazing fade")
+		fade = self.renderer.grazing_fade
+		changed, enabled = imgui.checkbox("Fade grazing surfaces (G)", fade.enabled)
+		_item_tooltip("Smooth opacity fade between angles from the geometric normal: 0 face-on, 90 edge-on.")
+		if changed: self.renderer.set_grazing_fade(replace(fade, enabled=enabled))
+		if self.renderer.grazing_fade.enabled:
+			for name, label in (("start_angle", "Fade start (degrees)"), ("end_angle", "Fully faded (degrees)")):
+				changed, value = imgui.drag_float(label, getattr(self.renderer.grazing_fade, name), 0.5, 0.0, 90.0, "%.2f")
+				if changed: self.set_grazing_angle(name, value)
+
 	def draw(self):
 		from imgui_bundle import imgui
 
@@ -207,7 +228,7 @@ class FilterSettings:
 			if not expanded:
 				return
 			imgui.text_disabled("Hover a setting or diagnostic view for an explanation.")
-			if imgui.collapsing_header("Tuning guide"):
+			if not getattr(self.renderer, "banded_tail", False) and imgui.collapsing_header("Tuning guide"):
 				imgui.text_wrapped("Start with the reconstruction view. Increase the confidence budget, or bilateral spread/kernel size, to smooth noise; "
 					"reduce depth and transmittance tolerances if colors bleed across edges.")
 				imgui.text_wrapped("Use 1 x 1 to inspect the raw stochastic result. Bilateral filters use fixed kernels; confidence filters expose a support budget. "
@@ -216,12 +237,22 @@ class FilterSettings:
 				imgui.text_wrapped("Filter controls smooth reconstruction; noise controls choose winners; grazing fade reduces opacity at steep view angles. "
 					"There is no smoothing across frames, so some noise can remain during camera movement.")
 			imgui.separator_text("Rendering")
+			changed, index = imgui.combo("Tail allocation", int(getattr(self.renderer, "banded_tail", False)), ("Stochastic nearest wins", "Banded + dual Kawase (experimental)"))
+			_item_tooltip("Banded captures the exact nearest layer, selects a complementary pair with shared screen noise, then blurs the tail. WebGPU atomic ordering can change between frames; thick tails use an approximate opacity-weighted color mix.")
+			if changed:
+				self.controls.set_tail_allocation(("stochastic", "banded")[index])
+				views = self.sync_debug_view(self.renderer)
+			banded = getattr(self.renderer, "banded_tail", False)
+			imgui.begin_disabled(banded)
 			changed, enabled = imgui.checkbox("Exact nearest layer", self.renderer.exact_nearest)
 			_item_tooltip("Shade the nearest visible transparent fragment deterministically, and sample only the remaining tail. Adds capture and shading passes; every nonzero opacity is eligible.")
 			if changed: self.controls.set_exact_nearest(enabled)
+			imgui.end_disabled()
 			labels = tuple(self.debug_view_label(self.renderer, view) for view in views)
 			changed, index = imgui.combo("Diagnostic view", views.index(self.renderer.debug_view), labels)
 			help_text = DEBUG_VIEW_HELP[views[index]]
+			if views[index] == "winner" and banded and self.renderer.banded_proxy:
+				help_text = "Signed unblurred residual, displayed as 0.5 + 0.5 * residual: neutral grey is zero. Display clips outside [-1, 1]; the actual float filtering remains signed and unclamped."
 			if views[index] == "filter_support" and self.renderer.reconstruction in ("push_pull", "atrous"):
 				help_text = "Local expected-winner weight divided by the target budget. Dark pixels prefer the broader pyramid estimate; white pixels trust the local estimate."
 				if self.renderer.reconstruction == "atrous": help_text = "Final retained unit-peak acceptance D divided by the budget, clamped to one. Includes rejection from every cascade pass."
@@ -229,10 +260,27 @@ class FilterSettings:
 			if changed:
 				self.renderer.set_debug_view(views[index])
 			changed, index = imgui.combo("MSAA (M)", int(self.renderer.sample_count == 4), ("Off (1x)", "4x"))
-			_item_tooltip("4x samples geometry, opacity and winner selection at four positions per pixel. "
-				"Reconstruction resolves linear HDR before tone mapping. Costs additional GPU time and memory; no temporal accumulation.")
+			_item_tooltip("4x samples opaque/MASK geometry, transmission and the exact nearest layer. Banded tail estimation stays at 1x. Linear HDR is resolved before tone mapping."
+				if banded else "4x samples geometry, opacity and winner selection at four positions per pixel. Reconstruction resolves linear HDR before tone mapping; no temporal accumulation.")
 			if changed:
 				self.controls.set_sample_count((1, 4)[index])
+			if banded:
+				imgui.separator_text("Tail estimation")
+				changed, enabled = imgui.checkbox("Proxy residual", self.renderer.banded_proxy)
+				_item_tooltip("Accumulate opacity-weighted texture albedo at full resolution and blur only the signed shading residual. The proxy is restored locally; thick-tail mixing remains approximate.")
+				if changed: self.controls.set_banded_options(proxy=enabled)
+				changed, enabled = imgui.checkbox("Shade one pixel per 2 x 2 block", self.renderer.banded_subset)
+				_item_tooltip("Fixed spatial mask, compact payloads, and one lighting invocation per block. Increases noise; compare one additional blur pair. Alpha derivatives still run before the allocation discard.")
+				if changed: self.controls.set_banded_options(subset=enabled)
+				imgui.separator_text("Dual Kawase tail blur")
+				changed, passes = imgui.slider_int("Down/up pairs", self.renderer.kawase_passes, 0, 8)
+				_item_tooltip("Each pair adds one half-resolution downsample and one upsample. Zero shows the unblurred tail. Color and allocation confidence are blurred together; the nearest layer stays sharp. Blur is not depth-guided and can bleed across tail edges.")
+				if changed: self.controls.set_kawase_passes(passes)
+				changed, value = imgui.drag_float("Screen noise cell size (px at 1x)", self.renderer.noise_scale, 0.05, 0.25, 4.0, "%.3g")
+				if changed and np.isfinite(value): self.renderer.set_noise_scale(max(0.25, min(4.0, value)))
+				self.draw_grazing()
+				imgui.text_wrapped("Left/Right changes blur pairs. F hides/shows settings. Tail noise is shared in screen space; per-surface noise controls do not apply.")
+				return
 			changed, count = imgui.input_int("Winner draws", self.renderer.winner_count)
 			_item_tooltip("Any positive draw count in Fill mode; Average supports one or two. Choose Object hash or Anchored blue and Fill before increasing beyond two. Each attempt adds selection and shading work; silhouettes are unchanged.")
 			if changed:
@@ -289,21 +337,7 @@ class FilterSettings:
 				changed, value = imgui.slider_int("Shift subdivisions", self.renderer.noise_anchor_subdivisions, 1, 32)
 				_item_tooltip("Finer rest cells select independent tile shifts without changing the anchor. More subdivisions reduce layer correlation but add seams. Layers within one fine cell can still share thresholds.")
 				if changed: self.renderer.set_noise_anchor(self.renderer.noise_anchor_pixels, value)
-			imgui.separator_text("Grazing fade")
-			fade = self.renderer.grazing_fade
-			changed, enabled = imgui.checkbox("Fade grazing surfaces (G)", fade.enabled)
-			_item_tooltip("Smoothly reduce transparent-surface opacity between the two angles below. "
-				"0 degrees is face-on; 90 is edge-on. Uses geometric normals on both sides. "
-				"Fade and noise controls update immediately.")
-			if changed:
-				self.renderer.set_grazing_fade(replace(fade, enabled=enabled))
-			if self.renderer.grazing_fade.enabled:
-				for name, label in (("start_angle", "Fade start (degrees)"), ("end_angle", "Fully faded (degrees)")):
-					changed, value = imgui.drag_float(label, getattr(self.renderer.grazing_fade, name), 0.5, 0.0, 90.0, "%.2f")
-					_item_tooltip("Angle from the geometric surface normal. Opacity is unchanged at start and zero at the end, "
-						"with a smooth fade between them. The start must be below the end.")
-					if changed:
-						self.set_grazing_angle(name, value)
+			self.draw_grazing()
 			imgui.separator_text("Reconstruction")
 			implementations = ("atrous", "push_pull", "fragment", "compute")
 			changed, index = imgui.combo("Filter implementation", implementations.index(self.renderer.reconstruction), ("A-trous cascade", "Confidence pyramid", "Bilateral fragment", "Bilateral compute"))
