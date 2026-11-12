@@ -30,7 +30,7 @@ from .TransparencyData import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE
 
 SHADERS = Path(__file__).with_name("shaders")
 DEBUG_VIEWS = ("final", "transmittance", "winner", "reconstruction", "filter_support",
-	"winner_a", "winner_b", "winner_count", "forced")
+	"winner_a", "winner_b", "winner_count", "forced", "nearest", "nearest_mask", "tail_transmittance")
 KERNEL_SIZES = (1, 3, 5, 9)
 MSAA_SAMPLE_COUNTS = (1, 4)
 NOISE_MODES = ("object_hash", "uv_blue_lerp", "uv_blue_pick", "uv_bayer",
@@ -107,6 +107,8 @@ class GeometryPasses:
 	owner: object
 	shading_bindings: tuple[BindGroup, ...] = ()
 	creation_args: dict | None = None
+	nearest: ShaderPass | None = None
+	nearest_shading: BindGroup | None = None
 
 
 @dataclass(frozen=True)
@@ -127,6 +129,11 @@ class TransparencyTargets:
 	reconstruction_pair: Texture | None = None
 	reconstruction_pair_scratch: Texture | None = None
 	winner_first_payload: Texture | None = None
+	nearest_payload: Texture | None = None
+	nearest_extra: Texture | None = None
+	nearest_alpha: Texture | None = None
+	nearest_depth: Texture | None = None
+	nearest_color: Texture | None = None
 
 
 class TransparencyPass:
@@ -143,10 +150,14 @@ class TransparencyPass:
 		grazing_fade=None, sample_count=1, winner_count=2, noise_footprint_balance=1.0, noise_footprint_balancing=True,
 		force_single_contributor=False, winner_mix="average", winner_coupling="complement", reconstruction="fragment", reconstruction_passes=1, confidence_filter=None, early_b_rejection=False,
 		noise_anchor_pixels=24.0, noise_anchor_subdivisions=4,
-		opaque_color=None, opaque_depth=None, material_source=None, material_library=None, frame_fields=None,
+		opaque_color=None, opaque_depth=None, material_source=None, material_library=None, frame_fields=None, exact_nearest=False,
 		geometry_shader=None, shading_shader=None, compose_shader=None):
 		if (geometry_shader is None) != (shading_shader is None):
 			raise ValueError("Custom deformation requires matched geometry and shading shaders")
+		if type(exact_nearest) is not bool: raise ValueError("exact_nearest must be boolean")
+		if exact_nearest and any(s is not None for s in (geometry_shader, shading_shader, compose_shader)):
+			raise ValueError("Exact nearest requires the default shader set; material hooks remain supported")
+		self.exact_nearest = exact_nearest
 		if type(sample_count) is not int or sample_count not in MSAA_SAMPLE_COUNTS:
 			raise ValueError("Transparency sample_count must be 1 or 4")
 		self._validate_count(winner_count, "winner_count")
@@ -244,6 +255,7 @@ class TransparencyPass:
 		self.shade_pipeline = ComputePipeline(self.shading_shader, entry="shade_winner",
 			layout=self._pipeline_layout(self.shading_shader, "shade_winner"))
 		self.mix_pipeline = self._create_mix_pipeline()
+		self._create_nearest_pipeline()
 		self.compose_pipeline = RenderPipeline(self.compose_shader, vertex_entry="fullscreen",
 			fragment_entry="compose", depth_test=None, depth_write=False, cull_mode="none",
 			layout=self._pipeline_layout(self.compose_shader, "fullscreen", "compose"))
@@ -259,14 +271,14 @@ class TransparencyPass:
 			self.set_opaque_inputs(opaque_color, opaque_depth)
 
 	def _geometry_shader(self, count):
-		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix, self.complemented_winners)
+		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix, self.complemented_winners, self.exact_nearest)
 		if key not in self._geometry_shaders:
 			self._geometry_shaders[key] = self._custom_shaders[0] or Shader(
 				filepath=str(SHADERS / "stochastic_geometry.shader"),
 				features=("NOISE_FOOTPRINT_BALANCE",) if self.noise_footprint_balancing else (),
 				params={"material_source": self._material_source, "sample_count": count,
 					"winner_count": min(self.winner_count, 2), "force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix,
-					"material_library": self._material_library, "frame_fields": self._frame_types, "complemented_winners": self.complemented_winners})
+					"material_library": self._material_library, "frame_fields": self._frame_types, "exact_nearest": self.exact_nearest, "complemented_winners": self.complemented_winners})
 		return self._geometry_shaders[key]
 
 	@property
@@ -296,11 +308,11 @@ class TransparencyPass:
 		return self._pipeline_layouts[key]
 
 	def _shader_set(self, count):
-		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix, self.reconstruction, self.reconstruction_passes > 1, self.complemented_winners)
+		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix, self.reconstruction, self.reconstruction_passes > 1, self.complemented_winners, self.exact_nearest)
 		if key not in self._shader_sets:
 			geometry, shading, compose = self._custom_shaders
 			params = {"material_source": self._material_source, "sample_count": count,
-				"material_library": self._material_library, "frame_fields": self._frame_types,
+				"material_library": self._material_library, "frame_fields": self._frame_types, "exact_nearest": self.exact_nearest,
 				"winner_count": min(self.winner_count, 2),
 				"force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix, "complemented_winners": self.complemented_winners}
 			self._shader_sets[key] = (
@@ -310,7 +322,7 @@ class TransparencyPass:
 					params={"srgb_surface": self.target_format.endswith("-srgb"), "sample_count": count,
 						"winner_count": min(self.winner_count, 2), "force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix,
 						"compute_reconstruction": self.reconstruction != "fragment", "filter_input": self.reconstruction_passes > 1 and self.reconstruction not in ("push_pull", "atrous"),
-						"frame_fields": self._frame_types}),
+						"frame_fields": self._frame_types, "exact_nearest": self.exact_nearest}),
 			)
 		return self._shader_sets[key]
 
@@ -329,34 +341,54 @@ class TransparencyPass:
 		entry = "shade_fill" if self.winner_mix == "fill" else "shade_mix"
 		if self.complemented_winners:
 			if self.shading_shader not in self._mix_shaders:
-				self._mix_shaders[self.shading_shader] = Shader(filepath=str(SHADERS / "stochastic_shade.shader"), params={"material_source": self._material_source, "sample_count": self.sample_count, "material_library": self._material_library, "frame_fields": self._frame_types, "winner_count": 2, "force_single_contributor": self.force_single_contributor, "winner_mix": "average", "complemented_winners": True, "mix_only": True})
+				self._mix_shaders[self.shading_shader] = Shader(filepath=str(SHADERS / "stochastic_shade.shader"), params={"material_source": self._material_source, "sample_count": self.sample_count, "material_library": self._material_library, "frame_fields": self._frame_types, "exact_nearest": self.exact_nearest, "winner_count": 2, "force_single_contributor": self.force_single_contributor, "winner_mix": "average", "complemented_winners": True, "mix_only": True})
 			self.mixing_shader = self._mix_shaders[self.shading_shader]
 		return ComputePipeline(self.mixing_shader, entry=entry, layout=self._pipeline_layout(self.mixing_shader, entry))
+
+	def _create_nearest_pipeline(self):
+		self.nearest_shading_shader = self.nearest_shade_pipeline = None
+		if not self.exact_nearest: return
+		key = ("nearest", self.sample_count)
+		if key not in self._mix_shaders:
+			self._mix_shaders[key] = Shader(filepath=str(SHADERS / "stochastic_shade.shader"), params={"material_source": self._material_source, "sample_count": self.sample_count, "material_library": self._material_library, "frame_fields": self._frame_types, "winner_count": 1})
+		self.nearest_shading_shader = self._mix_shaders[key]
+		self.nearest_shade_pipeline = ComputePipeline(self.nearest_shading_shader, entry="shade_winner", layout=self._pipeline_layout(self.nearest_shading_shader, "shade_winner"))
+
+	def set_exact_nearest(self, enabled):
+		if type(enabled) is not bool: raise ValueError("exact_nearest must be boolean")
+		if enabled == self.exact_nearest: return False
+		if any(s is not None for s in self._custom_shaders): raise ValueError("Exact nearest requires the default shader set")
+		self.exact_nearest = enabled
+		if not enabled and self.debug_view in ("nearest", "nearest_mask", "tail_transmittance"): self.set_debug_view("final")
+		self._activate_shaders(self.sample_count)
+		self._rebuild_geometry()
+		return True
 
 	def _create_reconstruction_pipeline(self):
 		self.reconstruct_shader = self.reconstruct_pipeline = self.reconstruct_frame = None
 		self.pair_shader = self.pair_pipeline = self.pair_frame = None
+		self.initial_pair_shader = self.initial_pair_pipeline = None
 		self.pyramid_shader = None
 		self.pyramid_frame = self.pyramid_inputs = self.pyramid_dummy = None
 		self.pyramid_pipelines = {}
 		self.pyramid, self.pyramid_stages = [], []
 		if self.reconstruction in ("push_pull", "atrous"):
-			key = (self.sample_count, self.force_single_contributor, self.reconstruction)
+			key = (self.sample_count, self.force_single_contributor, self.reconstruction, self.exact_nearest)
 			if key not in self._reconstruction_shaders:
 				filename = "stochastic_atrous.shader" if self.reconstruction == "atrous" else "stochastic_push_pull.shader"
-				self._reconstruction_shaders[key] = Shader(filepath=str(SHADERS / filename), params={"sample_count": self.sample_count, "force_single_contributor": self.force_single_contributor, "frame_fields": self._frame_types})
+				self._reconstruction_shaders[key] = Shader(filepath=str(SHADERS / filename), params={"sample_count": self.sample_count, "force_single_contributor": self.force_single_contributor, "frame_fields": self._frame_types, "exact_nearest": self.exact_nearest})
 			self.pyramid_shader = self._reconstruction_shaders[key]
 			entries = ("cascade", "finish") if self.reconstruction == "atrous" else ("pull", "push", "finish")
 			self.pyramid_pipelines = {entry: ComputePipeline(self.pyramid_shader, entry=entry, layout=self._pipeline_layout(self.pyramid_shader, entry)) for entry in entries}
 			self.pyramid_frame = self._frame_group(self.pyramid_shader)
 			return
 		if self.reconstruction_passes > 1:
-			key = (self.sample_count, self.force_single_contributor, self.reconstruction)
+			key = (self.sample_count, self.force_single_contributor, self.reconstruction, self.exact_nearest)
 			if key not in self._pair_shaders:
 				self._pair_shaders[key] = Shader(filepath=str(SHADERS / ("stochastic_reconstruct.shader" if self.reconstruction == "compute" else "stochastic_filter.shader")),
 					params={"sample_count": self.sample_count, "force_single_contributor": self.force_single_contributor,
 						"filter_input": True, "filter_pairs": True, "tiled_reconstruction": self.reconstruction == "compute",
-						"frame_fields": self._frame_types})
+						"frame_fields": self._frame_types, "exact_nearest": self.exact_nearest})
 			self.pair_shader = self._pair_shaders[key]
 			if self.reconstruction == "compute":
 				self.pair_pipeline = ComputePipeline(self.pair_shader, entry="reconstruct", layout=self._pipeline_layout(self.pair_shader, "reconstruct"))
@@ -364,13 +396,22 @@ class TransparencyPass:
 				self.pair_pipeline = RenderPipeline(self.pair_shader, vertex_entry="fullscreen", fragment_entry="filter_pair",
 					depth_test=None, depth_write=False, cull_mode="none", layout=self._pipeline_layout(self.pair_shader, "fullscreen", "filter_pair"))
 			self.pair_frame = self._frame_group(self.pair_shader)
+			if self.exact_nearest:
+				key = (self.sample_count, self.force_single_contributor, self.reconstruction, "initial")
+				if key not in self._pair_shaders:
+					self._pair_shaders[key] = Shader(filepath=str(SHADERS / ("stochastic_reconstruct.shader" if self.reconstruction == "compute" else "stochastic_filter.shader")), params={"sample_count": self.sample_count, "force_single_contributor": self.force_single_contributor, "filter_input": True, "filter_pairs": True, "initial_pairs": True, "exact_nearest": True, "tiled_reconstruction": self.reconstruction == "compute", "frame_fields": self._frame_types})
+				self.initial_pair_shader = self._pair_shaders[key]
+				if self.reconstruction == "compute":
+					self.initial_pair_pipeline = ComputePipeline(self.initial_pair_shader, entry="reconstruct", layout=self._pipeline_layout(self.initial_pair_shader, "reconstruct"))
+				else:
+					self.initial_pair_pipeline = RenderPipeline(self.initial_pair_shader, vertex_entry="fullscreen", fragment_entry="filter_pair", depth_test=None, depth_write=False, cull_mode="none", layout=self._pipeline_layout(self.initial_pair_shader, "fullscreen", "filter_pair"))
 		if self.reconstruction == "fragment": return
-		key = (self.sample_count, self.force_single_contributor, self.reconstruction_passes > 1)
+		key = (self.sample_count, self.force_single_contributor, self.reconstruction_passes > 1, self.exact_nearest)
 		if key not in self._reconstruction_shaders:
 			self._reconstruction_shaders[key] = Shader(filepath=str(SHADERS / "stochastic_reconstruct.shader"),
 				params={"sample_count": self.sample_count, "force_single_contributor": self.force_single_contributor,
 					"tiled_reconstruction": True, "compute_reconstruction": True, "filter_input": self.reconstruction_passes > 1,
-					"frame_fields": self._frame_types})
+					"frame_fields": self._frame_types, "exact_nearest": self.exact_nearest})
 		self.reconstruct_shader = self._reconstruction_shaders[key]
 		self.reconstruct_pipeline = ComputePipeline(self.reconstruct_shader, entry="reconstruct",
 			layout=self._pipeline_layout(self.reconstruct_shader, "reconstruct"))
@@ -514,6 +555,7 @@ class TransparencyPass:
 
 	def _rebuild_geometry(self, *, preserve_targets=False):
 		size, geometries = self.size, self._geometries
+		self._create_nearest_pipeline()
 		targets = self._targets if preserve_targets and size is not None else None
 		self.size = None
 		self._geometries, self._transparent_geometries = [], []
@@ -522,6 +564,7 @@ class TransparencyPass:
 			geometry.render_shader.passes.clear()
 			geometry.render_shader.passes.update(rebuilt.render_shader.passes)
 			geometry.guide, geometry.shading = rebuilt.guide, rebuilt.shading
+			geometry.nearest, geometry.nearest_shading = rebuilt.nearest, rebuilt.nearest_shading
 			self._geometries[-1] = geometry
 			if geometry.creation_args["transparent"]:
 				self._transparent_geometries[-1] = geometry
@@ -576,6 +619,9 @@ class TransparencyPass:
 		geometry = GeometryPasses(RenderShader({"main": ShaderPass(last, bindings), first_pass: ShaderPass(first, bindings)}),
 			guide, self.shading_shader.bind_group(2, **self.shared, metadata=metadata, vertices=self.vertices,
 				shading_instances=instances, **shading_resources), self, tuple(shading_bindings))
+		if transparent and self.exact_nearest:
+			geometry.nearest = ShaderPass(RenderPipeline(self.shader, vertex_entry="vertex", fragment_entry="nearest_layer", cull_mode="none", sample_count=self.sample_count, label="nearest_layer", layout=self._pipeline_layout(self.shader, "vertex", "nearest_layer")), bindings)
+			geometry.nearest_shading = self.nearest_shading_shader.bind_group(2, **self.shared, metadata=metadata, vertices=self.vertices, shading_instances=instances, **shading_resources)
 		if transparent and self.winner_count > 1:
 			second = last if not self.early_b_rejection else RenderPipeline(self.shader, vertex_entry="vertex", fragment_entry="select_winner",
 				cull_mode="none", label="select_fill_b_stencil", sample_count=self.sample_count,
@@ -597,13 +643,19 @@ class TransparencyPass:
 		return "main" if stream == 0 else "second" if stream == 1 else f"winner_{stream}"
 
 	def _bind_targets(self, geometry):
-		bindings = geometry.render_shader['transmittance'].bindings
+		bindings = tuple(b for b in geometry.render_shader['transmittance'].bindings if b.group != 3)
+		nearest = {}
+		if self.exact_nearest:
+			nearest = dict(nearest_ids=self.nearest_payload)
+			if self.sample_count > 1: nearest["nearest_ids_extra"] = self.nearest_extra
+			geometry.render_shader['transmittance'].bindings = bindings + (self.shader.bind_group(3, **nearest),)
+			geometry.nearest.bindings = bindings + (self.shader.bind_group(3, opaque_depth=self.depth),)
 		for stream in range(self.winner_count):
 			name = self.selection_name(stream)
 			noise = self.noise if stream == 0 or self.complemented_winners else self.noise_second
 			hierarchy = self._noise_hierarchy if stream == 0 or self.complemented_winners else self._noise_hierarchy_second
 			resources = dict(opaque_depth=self.depth, blue_noise=noise,
-				noise_hierarchy=hierarchy if hierarchy is not None else noise)
+				noise_hierarchy=hierarchy if hierarchy is not None else noise, **nearest)
 			if self._winner_settings is not None:
 				resources.update(winner_settings=self._winner_settings[stream], winner_guide=self.transparent_guide)
 			if self.force_single_contributor:
@@ -611,7 +663,7 @@ class TransparencyPass:
 			if self.winner_mix == "fill":
 				resources["previous_winner"] = self.winner_color.view(dimension="2d-array") if self.sample_count > 1 else self.winner_color
 			geometry.render_shader[name].bindings = bindings + (self.shader.bind_group(3, **resources),)
-		geometry.guide.bindings = bindings + (self.shader.bind_group(3, opaque_depth=self.depth),)
+		geometry.guide.bindings = bindings + (self.shader.bind_group(3, opaque_depth=self.depth, **nearest),)
 
 	def _selection_stencil(self, second):
 		if not self.early_b_rejection: return None
@@ -717,6 +769,8 @@ class TransparencyPass:
 		"""Inspect scalar transmittance, raw winners, or reconstructed contribution."""
 		if view not in DEBUG_VIEWS:
 			raise ValueError(f"Debug view must be one of {DEBUG_VIEWS}")
+		if view in ("nearest", "nearest_mask", "tail_transmittance") and not self.exact_nearest:
+			raise ValueError("Nearest-layer diagnostics require exact_nearest")
 		self.debug_view = view
 		self.set_bilateral_filter(self.bilateral_filter)
 
@@ -764,10 +818,13 @@ class TransparencyPass:
 		if self.reconstruction not in ("push_pull", "atrous") and self.reconstruction_passes > 2: formats["reconstruction_pair_scratch"] = "rgba16float"
 		if self.early_b_rejection: formats["selection_depth"] = "depth32float-stencil8"
 		if self.complemented_winners: formats["winner_first_payload"] = "rgba32uint"
+		if self.exact_nearest:
+			formats.update(nearest_depth="depth32float", nearest_alpha="rgba16float", nearest_payload="rgba16uint" if self.sample_count > 1 else "rgba32uint", nearest_color="rgba16float")
+			if self.sample_count > 1: formats["nearest_extra"] = "rgba16uint"
 		if targets is not None:
 			for name, format in formats.items():
 				texture = getattr(targets, name)
-				shaded = name in ("winner_color", "winner_first", "winner_source", "winner_first_payload", "reconstruction_color", "reconstruction_pair", "reconstruction_pair_scratch")
+				shaded = name in ("winner_color", "nearest_color", "winner_first", "winner_source", "winner_first_payload", "reconstruction_color", "reconstruction_pair", "reconstruction_pair_scratch")
 				usage = TextureUsage.TEXTURE_BINDING | (TextureUsage.STORAGE_BINDING if shaded else TextureUsage.RENDER_ATTACHMENT)
 				if name.startswith("reconstruction_pair"): usage |= TextureUsage.RENDER_ATTACHMENT
 				count = 1 if shaded else self.sample_count
@@ -780,7 +837,7 @@ class TransparencyPass:
 				if inputs and name in ("main_color", "depth"):
 					values[name] = inputs[0 if name == "main_color" else 1]
 				else:
-					shaded = name in ("winner_color", "winner_first", "winner_source", "winner_first_payload", "reconstruction_color", "reconstruction_pair", "reconstruction_pair_scratch")
+					shaded = name in ("winner_color", "nearest_color", "winner_first", "winner_source", "winner_first_payload", "reconstruction_color", "reconstruction_pair", "reconstruction_pair_scratch")
 					usage = TextureUsage.TEXTURE_BINDING | (TextureUsage.STORAGE_BINDING if shaded else TextureUsage.RENDER_ATTACHMENT)
 					if name.startswith("reconstruction_pair"): usage |= TextureUsage.RENDER_ATTACHMENT
 					count = 1 if shaded else self.sample_count
@@ -797,6 +854,13 @@ class TransparencyPass:
 		self.reconstruction_pair_scratch = targets.reconstruction_pair_scratch if self.reconstruction not in ("push_pull", "atrous") and self.reconstruction_passes > 2 else None
 		self.winner_first_payload = targets.winner_first_payload if self.complemented_winners else None
 		self._targets = targets
+		for name in ("nearest_payload", "nearest_extra", "nearest_alpha", "nearest_depth", "nearest_color"):
+			setattr(self, name, getattr(targets, name) if self.exact_nearest else None)
+		self.nearest_shade_targets = None
+		if self.exact_nearest:
+			resources = dict(winners=self.nearest_payload, winner_color=self.nearest_color.view(dimension="2d-array") if self.sample_count > 1 else self.nearest_color)
+			if self.sample_count > 1: resources["winners_extra"] = self.nearest_extra
+			self.nearest_shade_targets = self.nearest_shading_shader.bind_group(1, **resources)
 		for geometry in self._transparent_geometries:
 			self._bind_targets(geometry)
 		def shaded_view(texture):
@@ -828,6 +892,8 @@ class TransparencyPass:
 			winner_color=self.winner_color.view(dimension="2d-array") if self.sample_count > 1 else self.winner_color, opaque_depth=self.depth,
 			transparent_depth=self.transparent_depth, transparent_guide=self.transparent_guide,
 			bilateral=self.bilateral_uniforms)
+		if self.exact_nearest:
+			compose_resources.update(nearest_alpha=self.nearest_alpha, nearest_color=shaded_view(self.nearest_color))
 		if self.winner_first is not None: compose_resources["first_color"] = shaded_view(self.winner_first)
 		if self.winner_mix == "fill": compose_resources["winner_source"] = shaded_view(self.winner_source)
 		if self.force_single_contributor: compose_resources["contributor_count"] = self.contributor_count
@@ -836,7 +902,8 @@ class TransparencyPass:
 			pairs = [self.reconstruction_pair] + ([self.reconstruction_pair_scratch] if self.reconstruction_passes > 2 else [])
 			for texture in [self.winner_color, *pairs]:
 				resources = dict(compose_resources, filter_input=shaded_view(texture))
-				self.pair_inputs.append(self.pair_shader.bind_group(1, **{name: value for name, value in resources.items() if name in self.pair_shader.info.bindings}))
+				shader = self.initial_pair_shader if texture is self.winner_color and self.initial_pair_shader is not None else self.pair_shader
+				self.pair_inputs.append(shader.bind_group(1, **{name: value for name, value in resources.items() if name in shader.info.bindings}))
 			for texture in pairs:
 				if self.reconstruction == "compute": self.pair_outputs.append(self.pair_shader.bind_group(2, filter_output=shaded_view(texture)))
 				self.pair_attachments.append([ColorAttachment(texture.view(dimension="2d", base_array_layer=sample, array_layer_count=1).handle,
@@ -1012,6 +1079,22 @@ class TransparencyPass:
 			depth=self.transparent_depth.depth_attachment(clear=1),
 			label="2a_transparent_depth_guide")
 
+	def nearest_pass(self, commands):
+		self._require_targets()
+		if not self.exact_nearest: raise RuntimeError("Enable exact_nearest before recording its pass")
+		colors = [self.nearest_payload.color_attachment(clear=(0, 0, 0, 0)), self.nearest_alpha.color_attachment(clear=(0, 0, 0, 0))]
+		if self.sample_count > 1: colors.append(self.nearest_extra.color_attachment(clear=(0, 0, 0, 0)))
+		return commands.render_pass(color=colors, depth=self.nearest_depth.depth_attachment(clear=1), label="2_nearest_layer")
+
+	def shade_nearest(self, commands, geometry):
+		width, height = self._require_targets()
+		if not self.exact_nearest: raise RuntimeError("Enable exact_nearest before shading its pass")
+		if geometry.owner is not self: raise ValueError("Geometry passes belong to another transparency pass")
+		with commands.compute_pass(label="2_shade_nearest") as compute:
+			compute.set_pipeline(self.nearest_shade_pipeline)
+			for bindings in (self._frame_group(self.nearest_shading_shader), self.nearest_shade_targets, geometry.nearest_shading, *geometry.shading_bindings): compute.set_bind_group(bindings)
+			compute.dispatch((width+7)//8, (height+7)//8, self.sample_count)
+
 	def transmittance_pass(self, commands):
 		self._require_targets()
 		colors = [self.transmittance.color_attachment(clear=(1, 1, 1, 1))]
@@ -1062,17 +1145,18 @@ class TransparencyPass:
 		if self.reconstruction not in ("push_pull", "atrous") and self.reconstruction_passes > 1 and self.bilateral_filter.kernel_size != 1 and self.debug_view in ("final", "reconstruction", "filter_support"):
 			width, height = self.size
 			for stage in range(self.reconstruction_passes-1):
+				pipeline = self.initial_pair_pipeline if stage == 0 and self.initial_pair_pipeline is not None else self.pair_pipeline
 				source = 0 if stage == 0 else 1+(stage-1)%len(self.pair_attachments)
 				destination = stage%len(self.pair_attachments)
 				if self.reconstruction == "compute":
 					with commands.compute_pass(label=f"5a_reconstruct_pair_{stage}") as compute:
-						compute.set_pipeline(self.pair_pipeline)
+						compute.set_pipeline(pipeline)
 						for bindings in (self.pair_frame, self.pair_inputs[source], self.pair_outputs[destination]): compute.set_bind_group(bindings)
 						compute.dispatch((width+7)//8, (height+7)//8, self.sample_count)
 				else:
 					for sample, attachment in enumerate(self.pair_attachments[destination]):
 						with commands.render_pass(color=attachment, label=f"5a_reconstruct_pair_{stage}_{sample}") as render:
-							render.set_pipeline(self.pair_pipeline)
+							render.set_pipeline(pipeline)
 							render.set_bind_groups(self.pair_frame, self.pair_inputs[source])
 							render.draw(3, first_instance=sample)
 		if self.reconstruction == "compute" and self.bilateral_filter.kernel_size != 1 and self.debug_view in ("final", "reconstruction", "filter_support"):

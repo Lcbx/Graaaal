@@ -56,6 +56,9 @@ DEBUG_VIEW_HELP = {
 	"winner_b": "Raw second-stream color in two-draw Average mode, before filtering. Equals the first stream at exact certainty.",
 	"winner_count": "Average mode: valid-stream fraction (black/gray/white for zero/one/two). Fill mode: empty or filled, regardless of the successful attempt. MSAA averages hardware samples.",
 	"forced": "White marks an exactly counted single contributor accepted deterministically at its accumulated opacity.",
+	"nearest": "Exact nearest-layer color multiplied by its RGB opacity, before tail and background composition.",
+	"nearest_mask": "White where a nonzero-opacity visible fragment was selected as the exact nearest layer.",
+	"tail_transmittance": "Scalar tail transmission after excluding the exact nearest fragment. Raw winner views also describe only the tail in this mode.",
 }
 
 
@@ -92,6 +95,7 @@ class FilterSettings:
 			if (view not in ("winner_a", "winner_b") or averaged_pair)
 			and (view != "winner_count" or renderer.winner_count > 1)
 			and (view != "forced" or renderer.force_single_contributor)
+			and (view not in ("nearest", "nearest_mask", "tail_transmittance") or getattr(renderer, "exact_nearest", False))
 			and (view != "filter_support" or renderer.bilateral_filter.kernel_size != 1))
 
 	@classmethod
@@ -212,6 +216,9 @@ class FilterSettings:
 				imgui.text_wrapped("Filter controls smooth reconstruction; noise controls choose winners; grazing fade reduces opacity at steep view angles. "
 					"There is no smoothing across frames, so some noise can remain during camera movement.")
 			imgui.separator_text("Rendering")
+			changed, enabled = imgui.checkbox("Exact nearest layer", self.renderer.exact_nearest)
+			_item_tooltip("Shade the nearest visible transparent fragment deterministically, and sample only the remaining tail. Adds capture and shading passes; every nonzero opacity is eligible.")
+			if changed: self.controls.set_exact_nearest(enabled)
 			labels = tuple(self.debug_view_label(self.renderer, view) for view in views)
 			changed, index = imgui.combo("Diagnostic view", views.index(self.renderer.debug_view), labels)
 			help_text = DEBUG_VIEW_HELP[views[index]]

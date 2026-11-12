@@ -96,7 +96,9 @@ class MaterialRenderer:
 	def _register_passes(self):
 		opaque, transparent = self.geometry
 		self.draws.register_shader(0, RenderShader({"opaque": opaque.render_shader["main"]}))
-		self.draws.register_shader(1, RenderShader(dict(transparent.render_shader.passes, guide=transparent.guide)))
+		passes = dict(transparent.render_shader.passes, guide=transparent.guide)
+		if transparent.nearest is not None: passes["nearest"] = transparent.nearest
+		self.draws.register_shader(1, RenderShader(passes))
 
 	@staticmethod
 	def _write(buffer, content):
@@ -149,6 +151,9 @@ class MaterialRenderer:
 		if self.transparency.set_sample_count(count):
 			self._register_passes()
 
+	def set_exact_nearest(self, enabled):
+		if self.transparency.set_exact_nearest(enabled): self._register_passes()
+
 	def set_noise_footprint_balancing(self, enabled):
 		if self.transparency.set_noise_footprint_balancing(enabled):
 			self._register_passes()
@@ -192,6 +197,10 @@ class MaterialRenderer:
 			# opaque geometry adds to those targets using their current contents.
 			with oit.opaque_pass(commands, load=external) as render:
 				self.draws.draw(render, self.visibility, "opaque")
+		if oit.exact_nearest:
+			with oit.nearest_pass(commands) as render:
+				self.draws.draw(render, self.visibility, "nearest")
+			oit.shade_nearest(commands, self.geometry[1])
 		for begin, name in ((oit.guide_pass, "guide"),
 			(oit.transmittance_pass, "transmittance")):
 			if name == "guide" and oit.bilateral_filter.kernel_size == 1: continue

@@ -60,6 +60,10 @@ to open it in `material_example`. Both use `transparency_settings.py`.
 integer, independently of MSAA. Average mode supports one or two (default);
 Fill accepts any positive count. Extra attempts reduce missing winners but add
 selection/shading work and do not supersample edges.
+**Exact nearest layer** is off by default. Enable it to shade the nearest visible
+transparent fragment deterministically; the winner/filter settings then apply
+only to the remaining tail. It adds nearest contribution/mask and tail
+transmittance diagnostics. Both examples use the same setting.
 Diagnostic views include each stream and the valid-stream fraction. See the
 [two-winner plan and findings](../src/transparency_multiple_winners_implementation.md).
 The diagnostic dropdown and **D** shortcut follow the active technique. A/B

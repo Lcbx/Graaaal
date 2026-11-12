@@ -12,6 +12,16 @@
 #endif
 #endif
 
+#if PARAMS.get("exact_nearest", false)
+#if PARAMS.get("sample_count", 1) > 1
+{{ binding('nearest_alpha', 'texture_multisampled_2d<f32>', 1, 13) }}
+{{ binding('nearest_color', 'texture_2d_array<f32>', 1, 14) }}
+#else
+{{ binding('nearest_alpha', 'texture_2d<f32>', 1, 13) }}
+{{ binding('nearest_color', 'texture_2d<f32>', 1, 14) }}
+#endif
+#endif
+
 @vertex
 fn fullscreen(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
 	let uv = vec2f(f32((index << 1u) & 2u), f32(index & 2u));
@@ -29,9 +39,25 @@ fn present_linear(color: vec3f) -> vec4f {
 fn compose_sample(pixel: vec2i, sample: u32) -> vec3f {
 	let dimensions = vec2i(textureDimensions(transmittance));
 	let t = textureLoad(transmittance, pixel, i32(sample));
+#if PARAMS.get("exact_nearest", false)
+	if bilateral.kernel.y == 11u { return vec3f(t.a); }
+	if bilateral.kernel.y == 10u { return vec3f(select(0.0, 1.0, textureLoad(nearest_alpha, pixel, i32(sample)).a > 0.0)); }
+	if bilateral.kernel.y == 9u {
+#if PARAMS.get("sample_count", 1) > 1
+		let color = textureLoad(nearest_color, pixel, i32(sample), 0).rgb;
+#else
+		let color = textureLoad(nearest_color, pixel, 0).rgb;
+#endif
+		return textureLoad(nearest_alpha, pixel, i32(sample)).rgb*color;
+	}
+#endif
 	// Display T_scalar directly, with no exposure curve or reconstruction.
 	if bilateral.kernel.y == 1u {
+#if PARAMS.get("exact_nearest", false)
+		return vec3f(t.a*(1.0-textureLoad(nearest_alpha, pixel, i32(sample)).a));
+#else
 		return vec3f(t.a);
+#endif
 	}
 	if bilateral.kernel.y == 2u {
 		return debug_color(winner_at(pixel, sample));
@@ -85,7 +111,17 @@ fn compose_sample(pixel: vec2i, sample: u32) -> vec3f {
 	let transparent = filtered.rgb;
 	// Reconstruction and composition happen in linear HDR. Encode only when the
 	// presentation surface does not already perform the sRGB conversion.
-	let hdr = max(select(main*t.rgb + transparent, transparent, bilateral.kernel.y == 3u), vec3f(0.0));
+	var hdr = select(main*t.rgb + transparent, transparent, bilateral.kernel.y == 3u);
+#if PARAMS.get("exact_nearest", false)
+	let a1 = textureLoad(nearest_alpha, pixel, i32(sample)).rgb;
+#if PARAMS.get("sample_count", 1) > 1
+	let c1 = textureLoad(nearest_color, pixel, i32(sample), 0).rgb;
+#else
+	let c1 = textureLoad(nearest_color, pixel, 0).rgb;
+#endif
+	hdr = a1*c1+(vec3f(1.0)-a1)*hdr;
+#endif
+	hdr = max(hdr, vec3f(0.0));
 	return hdr;
 }
 
@@ -97,7 +133,7 @@ fn compose(@builtin(position) position: vec4f) -> @location(0) vec4f {
 		color += compose_sample(vec2i(position.xy), sample);
 	}
 	color /= {{PARAMS.get("sample_count", 1)}}.0;
-	if bilateral.kernel.y != 1u && bilateral.kernel.y != 4u && bilateral.kernel.y != 7u && bilateral.kernel.y != 8u {
+	if bilateral.kernel.y != 1u && bilateral.kernel.y != 4u && bilateral.kernel.y != 7u && bilateral.kernel.y != 8u && bilateral.kernel.y != 10u && bilateral.kernel.y != 11u {
 		color /= vec3f(1.0)+color;
 	}
 	return present_linear(color);

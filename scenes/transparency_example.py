@@ -100,7 +100,7 @@ distance = 0.0
 
 def init_scene(path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_PATH, grazing_fade=None,
 	sample_count=1, winner_count=2, winner_mix="average", noise_mode="anchored_blue",
-	reconstruction="atrous", reconstruction_passes=1, winner_coupling="complement", confidence_filter=None):
+	reconstruction="atrous", reconstruction_passes=1, winner_coupling="complement", confidence_filter=None, exact_nearest=False):
 	"""Initialize the example's global render data after device setup."""
 	global transparency, opaque_batches, transparent_batches, camera, hzb, center, radius, angle, orbit, distance
 	primitives, materials, images, vertices = load_transparency_scene(path)
@@ -122,7 +122,7 @@ def init_scene(path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_P
 		base_textures=textures.view(dimension="2d-array"),
 		vertices=GpuBuffer(vertices, BufferUsage.STORAGE | BufferUsage.COPY_DST), blue_noise=blue_noise,
 		bilateral_filter=bilateral_filter, grazing_fade=grazing_fade, sample_count=sample_count, winner_count=winner_count,
-		winner_mix=winner_mix, noise_mode=noise_mode, reconstruction=reconstruction, reconstruction_passes=reconstruction_passes, winner_coupling=winner_coupling, confidence_filter=confidence_filter)
+		winner_mix=winner_mix, noise_mode=noise_mode, reconstruction=reconstruction, reconstruction_passes=reconstruction_passes, winner_coupling=winner_coupling, confidence_filter=confidence_filter, exact_nearest=exact_nearest)
 	hzb = HZB()
 	opaque_batches = GeometryBatches(primitives, materials, transparency, False)
 	transparent_batches = GeometryBatches(primitives, materials, transparency, True)
@@ -198,6 +198,10 @@ def render_frame(*, profiler=None):
 	# draw both lists directly from the frustum visibility prepared above.
 	with transparency.opaque_pass(commands) as render:
 		opaque_batches.draw(render, "main")
+	if transparency.exact_nearest:
+		with transparency.nearest_pass(commands) as render:
+			transparent_batches.draw(render, "main", pass_override=transparent_batches.passes.nearest)
+		transparency.shade_nearest(commands, transparent_batches.passes)
 	# The point estimator never samples a reconstruction guide.
 	if transparency.bilateral_filter.kernel_size != 1:
 		with transparency.guide_pass(commands) as render:

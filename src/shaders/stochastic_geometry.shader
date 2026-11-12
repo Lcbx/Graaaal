@@ -17,6 +17,23 @@ storage<1, 1, read> visible_instances: array<u32>;
 #endif
 {{ binding('blue_noise', 'texture_2d<f32>', 3, 1) }}
 {{ binding('noise_hierarchy', 'texture_2d<f32>', 3, 2) }}
+#if PARAMS.get("exact_nearest", false)
+#if PARAMS.get("sample_count", 1) > 1
+{{ binding('nearest_ids', 'texture_multisampled_2d<u32>', 3, 8) }}
+{{ binding('nearest_ids_extra', 'texture_multisampled_2d<u32>', 3, 9) }}
+#else
+{{ binding('nearest_ids', 'texture_2d<u32>', 3, 8) }}
+#endif
+fn is_exact_nearest(input: VertexOutput, sample: u32) -> bool {
+#if PARAMS.get("sample_count", 1) > 1
+	let low = textureLoad(nearest_ids, vec2i(input.position.xy), i32(sample));
+	let ids = vec2u(low.x | (low.y << 16u), low.z | (low.w << 16u));
+#else
+	let ids = textureLoad(nearest_ids, vec2i(input.position.xy), 0).xy;
+#endif
+	return all(ids == vec2u(input.instance+1u, input.triangle));
+}
+#endif
 #if PARAMS.get("winner_count", 1) > 1 or PARAMS.get("winner_mix", "average") == "fill"
 <WinnerSettings> info: vec4u;
 uniform<3, 3> winner_settings: WinnerSettings;
@@ -140,7 +157,7 @@ fn opaque(input: VertexOutput, @builtin(front_facing) front: bool) -> @location(
 }
 
 @fragment
-fn transmittance(input: VertexOutput, @builtin(front_facing) front: bool)
+fn transmittance(input: VertexOutput, @builtin(front_facing) front: bool, @builtin(sample_index) sample: u32)
 #if PARAMS.get("force_single_contributor", false)
  -> TransmittanceOutput {
 #else
@@ -149,6 +166,9 @@ fn transmittance(input: VertexOutput, @builtin(front_facing) front: bool)
 	let lod = raster_lod(input.uv);
 	let material = get_material(input.instance);
 	let alpha = raster_opacity(input.instance, material, input.uv, lod, input.world);
+#if PARAMS.get("exact_nearest", false)
+	if is_exact_nearest(input, sample) { discard; }
+#endif
 	if !front && material.flags.y == 0u { discard; }
 	let p = max(alpha.x, max(alpha.y, alpha.z));
 	let transmission = vec4f(vec3f(1.0)-alpha, 1.0-p);
@@ -176,6 +196,9 @@ fn transparent_depth(input: VertexOutput, @builtin(front_facing) front: bool, @b
 	// gradient permits exact planar prediction, including perspective foreshortening.
 	let reciprocal_depth = 1.0 / max(-(frame.view*vec4f(input.world, 1.0)).z, 1e-6);
 	let slope = vec2f(dpdxFine(reciprocal_depth), dpdyFine(reciprocal_depth));
+#if PARAMS.get("exact_nearest", false)
+	if is_exact_nearest(input, sample) { discard; }
+#endif
 	if input.position.z >= textureLoad(opaque_depth, vec2i(input.position.xy), i32(sample)) { discard; }
 	if !front && material.flags.y == 0u { discard; }
 	// Ignore fully transparent texels; retain every nonzero opacity, however low.
@@ -187,6 +210,33 @@ fn transparent_depth(input: VertexOutput, @builtin(front_facing) front: bool, @b
 	let guide_probability = select(min(p, 0.99951171875), 1.0, p == 1.0);
 	return vec4f(guide_probability, slope, reciprocal_depth);
 }
+
+fn visibility_payload(input: VertexOutput, lod: f32, front: bool) -> vec4u {
+	return vec4u(input.instance+1u, input.triangle, pack2x16unorm(clamp(input.barycentric, vec2f(0.0), vec2f(1.0))), pack2x16float(vec2f(lod, select(-1.0, 1.0, front))));
+}
+
+#if PARAMS.get("exact_nearest", false)
+<NearestOutput> @location(0) low: vec4u;
+<NearestOutput> @location(1) alpha: vec4f;
+#if PARAMS.get("sample_count", 1) > 1
+<NearestOutput> @location(2) high: vec4u;
+#endif
+@fragment
+fn nearest_layer(input: VertexOutput, @builtin(front_facing) front: bool, @builtin(sample_index) sample: u32) -> NearestOutput {
+	let lod = raster_lod(input.uv);
+	let material = get_material(input.instance);
+	let alpha = raster_opacity(input.instance, material, input.uv, lod, input.world);
+	let p = max(alpha.x, max(alpha.y, alpha.z));
+	if p <= 0.0 || (!front && material.flags.y == 0u) { discard; }
+	if input.position.z >= textureLoad(opaque_depth, vec2i(input.position.xy), i32(sample)) { discard; }
+	let payload = visibility_payload(input, lod, front);
+#if PARAMS.get("sample_count", 1) > 1
+	return NearestOutput(vec4u(payload.x & 65535u, payload.x >> 16u, payload.y & 65535u, payload.y >> 16u), vec4f(alpha, p), vec4u(payload.z & 65535u, payload.z >> 16u, payload.w & 65535u, payload.w >> 16u));
+#else
+	return NearestOutput(payload, vec4f(alpha, p));
+#endif
+}
+#endif
 
 #if PARAMS.get("sample_count", 1) > 1
 <WinnerOutput> @location(0) low: vec4u;
@@ -223,6 +273,9 @@ fn select_winner(input: VertexOutput, @builtin(front_facing) front: bool, @built
 	let uv_dy = dpdyFine(input.uv);
 	let p = max(alpha.x, max(alpha.y, alpha.z));
 	// All derivative-dependent material/LOD/noise inputs are now evaluated.
+#if PARAMS.get("exact_nearest", false)
+	if is_exact_nearest(input, sample) { discard; }
+#endif
 	// Reject deterministic failures before count/guide reads and noise work.
 	if p <= 0.0 { discard; }
 	if !front && material.flags.y == 0u { discard; }
@@ -274,9 +327,8 @@ fn select_winner(input: VertexOutput, @builtin(front_facing) front: bool, @built
 	if !forced && p < 1.0 && u >= p { discard; }
 	// Zero instance is the empty sentinel. Hardware depth writes keep all four
 	// payload components consistent with the nearest accepted triangle.
-	let payload = vec4u(input.instance + 1u, input.triangle,
-		pack2x16unorm(clamp(input.barycentric, vec2f(0.0), vec2f(1.0))),
-		pack2x16float(vec2f(lod, select(-1.0, 1.0, front))) | select(0u, WINNER_FORCED_BIT, forced));
+	let raw_payload = visibility_payload(input, lod, front);
+	let payload = vec4u(raw_payload.xyz, raw_payload.w | select(0u, WINNER_FORCED_BIT, forced));
 #if PARAMS.get("sample_count", 1) > 1
 	// rgba32uint cannot be multisampled. Preserve every bit in two rgba16uint targets.
 	return WinnerOutput(vec4u(payload.x & 65535u, payload.x >> 16u, payload.y & 65535u, payload.y >> 16u),

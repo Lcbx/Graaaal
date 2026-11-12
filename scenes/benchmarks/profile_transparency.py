@@ -75,7 +75,7 @@ def distribution(values):
 
 
 def run(size=(1280, 720), frames=30, warmup=5, configs=None, zoom=1.0, rounds=4,
-	implementations=("fragment", "compute"), seed=11012, stencil=False):
+	implementations=("fragment", "compute"), seed=11012, stencil=False, exact_nearest=False):
 	RenderContext.setup_graphics_backend(True)
 	features = ["indirect-first-instance"]
 	timestamps = "timestamp-query" in RenderContext.adapter.features
@@ -96,6 +96,7 @@ def run(size=(1280, 720), frames=30, warmup=5, configs=None, zoom=1.0, rounds=4,
 		target = np.asarray(scene.camera.target)
 		scene.camera.position = scene.Vec3(target+(np.asarray(scene.camera.position)-target)/zoom)
 		oit = scene.transparency
+		oit.set_exact_nearest(exact_nearest)
 		oit.set_noise_mode("anchored_blue")
 		settings = [c for c in configurations(stencil) if configs is None or c[0] in configs]
 		unknown = set(configs or ())-{c[0] for c in settings}
@@ -157,7 +158,7 @@ def run(size=(1280, 720), frames=30, warmup=5, configs=None, zoom=1.0, rounds=4,
 					output_sha256=hashlib.sha256(image.tobytes()).hexdigest(),
 					max_output_byte_delta=int(np.max(np.abs(image.astype(int)-baseline))),
 					mean_output_byte_delta=float(np.mean(np.abs(image.astype(int)-baseline)))))
-		return dict(adapter=dict(RenderContext.adapter.info), size=size, zoom=zoom, frames=frames, warmup_per_block=warmup,
+		return dict(adapter=dict(RenderContext.adapter.info), size=size, zoom=zoom, exact_nearest=exact_nearest, frames=frames, warmup_per_block=warmup,
 			rounds=rounds, seed=seed, schedule=schedule, timestamps=timestamps, rows=rows)
 	finally:
 		RenderContext.screen = original_screen
@@ -176,13 +177,14 @@ def main():
 	parser.add_argument("--implementations", nargs="+", choices=("fragment", "compute", "push_pull", "atrous"), default=["fragment", "compute"])
 	parser.add_argument("--seed", type=int, default=11012)
 	parser.add_argument("--stencil", action="store_true", help="Include optional fill B stencil-gating comparisons")
+	parser.add_argument("--exact-nearest", action="store_true", help="Capture/shade an exact nearest layer before sampling the tail")
 	parser.add_argument("--output", type=Path, required=True)
 	args = parser.parse_args()
 	try: size = tuple(map(int, args.size.lower().split("x")))
 	except ValueError: parser.error("size must be WIDTHxHEIGHT")
 	if len(size) != 2 or min(size) < 1 or args.frames < 1 or args.warmup < 0 or args.rounds < 1 or not np.isfinite(args.zoom) or args.zoom <= 0:
 		parser.error("Positive size/frames/zoom and nonnegative warmup required")
-	result = run(size, args.frames, args.warmup, args.configs, args.zoom, args.rounds, tuple(dict.fromkeys(args.implementations)), args.seed, args.stencil)
+	result = run(size, args.frames, args.warmup, args.configs, args.zoom, args.rounds, tuple(dict.fromkeys(args.implementations)), args.seed, args.stencil, args.exact_nearest)
 	args.output.write_text(json.dumps(result, indent=2)+"\n", encoding="utf-8")
 	for row in result["rows"]:
 		print(row["config"], row["reconstruction"], "frame", row["gpu_frame_ms_median"],

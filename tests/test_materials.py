@@ -236,7 +236,8 @@ def test_example_shared_highlights_are_visible_and_default_replacement_is_local(
 @pytest.mark.parametrize("local_opaque", [False, True])
 @pytest.mark.parametrize("winner_count", [1, 2])
 @pytest.mark.parametrize("force", [False, True])
-def test_material_record_preserves_external_opaque_color_and_occlusion(count, local_opaque, winner_count, force):
+@pytest.mark.parametrize("exact_nearest", [False, True])
+def test_material_record_preserves_external_opaque_color_and_occlusion(count, local_opaque, winner_count, force, exact_nearest):
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	usage = TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING
 	color = Texture((32, 32), format="rgba16float", usage=usage, sample_count=count)
@@ -257,7 +258,7 @@ def test_material_record_preserves_external_opaque_color_and_occlusion(count, lo
 	# have exact coverage here and also check the default confidence reconstruction.
 	reconstruction = "fragment" if winner_count == 1 and not force else "push_pull"
 	renderer = MaterialRenderer(items, blue_noise=noise, target_format="rgba8unorm", sample_count=count,
-		opaque_color=color, opaque_depth=depth, winner_count=winner_count, force_single_contributor=force, reconstruction=reconstruction)
+		opaque_color=color, opaque_depth=depth, winner_count=winner_count, force_single_contributor=force, reconstruction=reconstruction, exact_nearest=exact_nearest)
 	# Another renderer supplies blue HDR color and a left-half foreground occluder.
 	shader = Shader(source='''
         <Output> @location(0) color: vec4f;

@@ -66,12 +66,20 @@ fn winner_at(pixel: vec2i, sample: u32) -> vec4f {
 fn filter_input_at(pixel: vec2i, sample: u32) -> vec4f {
 #if PARAMS.get("filter_input", false)
 #if PARAMS.get("sample_count", 1) > 1
-	return textureLoad(filter_input, pixel, i32(sample), 0);
+	var value = textureLoad(filter_input, pixel, i32(sample), 0);
 #else
-	return textureLoad(filter_input, pixel, 0);
+	var value = textureLoad(filter_input, pixel, 0);
 #endif
+#if PARAMS.get("exact_nearest", false) and PARAMS.get("initial_pairs", false)
+	value.a = max(1.0-textureLoad(transmittance, pixel, i32(sample)).a, 0.0);
+#endif
+	return value;
+#else
+#if PARAMS.get("exact_nearest", false)
+	return vec4f(winner_at(pixel, sample).rgb, max(1.0-textureLoad(transmittance, pixel, i32(sample)).a, 0.0));
 #else
 	return winner_at(pixel, sample);
+#endif
 #endif
 }
 

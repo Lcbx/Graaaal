@@ -16,6 +16,9 @@ The audit reports empirical variance reduction relative to D; it does not assert
 independence of spatial blue noise. `profile_transparency.py --implementations fragment compute push_pull atrous`
 compares renderer timings. A-trous and push-pull use different footprints from
 the bilateral modes; their output differences are comparisons, not parity checks.
+Both scripts accept `--exact-nearest`. The RMSE script compares the full nearest
+plus tail transparent contribution; the profiler records capture/shading costs
+and marks the option in its JSON metadata.
 
 The table lists main entry points and selected reusable helpers, not every
 function. `main()` parses command-line arguments; the CPU helpers need no window.

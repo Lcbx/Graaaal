@@ -25,10 +25,11 @@ RenderContext before constructing GPU resources.
 | `TransparencyPass(...)` | Owns persistent pipelines and size-dependent targets; accepts material, vertex, texture and optional opaque inputs. |
 | `resize(size, targets=...)` | Allocates or adopts targets; call before updating camera data or recording. `targets` is keyword-only. |
 | `update_frame(...)`, `update_camera(camera, ...)` | Upload explicit arrays or camera-object values and return `view @ projection`; accept `frame` and `lighting` mappings. |
-| `create_geometry_passes(metadata, transparent=..., instances=...)` | Returns `GeometryPasses`: `.render_shader` for DrawBatches, `.guide` for the guide override, and deferred bindings for `shade_winner`. |
+| `create_geometry_passes(metadata, transparent=..., instances=...)` | Returns `GeometryPasses`: `.render_shader` for DrawBatches, `.guide` and optional `.nearest` overrides, and deferred shading bindings. |
 | `opaque_pass`, `guide_pass`, `transmittance_pass`, `selection_pass` | Open raster passes on caller-owned commands; issue draws inside each scope. |
 | `shade_winner(commands, geometry)`, `compose(commands, output)` | Record deferred shading and composition; `output` is a matching `ColorAttachment`. Neither submits work. |
 | `set_opaque_inputs(color, depth)` | Uses caller-owned opaque textures; pass `None, None` to restore internal targets. |
+| `exact_nearest=True`, `set_exact_nearest(bool)` | Opt-in deterministic nearest transparent layer; remaining fragments use the selected stochastic technique. Default off. |
 | `set_sample_count`, `set_noise_mode`, `set_noise_scale`, `set_debug_view` | Update live sampling and diagnostic settings. |
 | `set_winner_count(N)`, `set_winner_mix(mode)` | Positive uint32 draw count and `"average"`/`"fill"` mode; averaging supports 1 or 2. Default: 2 in average mode. |
 | `set_winner_coupling("complement" or "independent")` | Pair two averaged selections with one complemented tile (default), or independent sources. Fill always uses independent retries. |
@@ -71,6 +72,37 @@ uint32 draw count with `object_hash` or `anchored_blue` and the default noise
 sources. Switch back to at most two draws before selecting average mode.
 `set_early_b_rejection(True)` optionally requires the
 `depth32float-stencil8` GPU feature for fill mode.
+
+Enable `exact_nearest=True` to shade the nearest nonzero-opacity transparent
+fragment exactly at each hardware sample, then composite it over the reconstructed
+tail. All noise, winner-count, force/fill, filter and MSAA choices apply to the
+tail. Every nonzero opacity is eligible; there is no minimum-alpha cutoff.
+`MaterialRenderer.record()` handles these passes automatically. Direct recording
+must call `nearest_pass()` and draw using `geometry.nearest`, followed by
+`shade_nearest(commands, geometry)`, before the tail guide/transmittance/selection
+passes. The nearest pass is required even at a 1x1 reconstruction kernel.
+`set_exact_nearest()` is available on both pass and material renderer. Material
+templates and frame animation are supported; low-level custom shader sets are not.
+
+Direct DrawBatches recording after opaque rendering, with a shared `geometry`:
+
+```python
+with transparency.nearest_pass(commands) as render:
+	batches.draw(render, visibility, "main", pass_override=geometry.nearest)
+transparency.shade_nearest(commands, geometry)
+# Record the tail guide, transmittance and winner passes next, then compose.
+```
+
+```python
+renderer.set_exact_nearest(True)  # MaterialRenderer, or TransparencyPass
+renderer.transparency.set_debug_view("nearest")  # exact nearest contribution
+```
+
+With this option, `transmittance` shows total scalar transmission; `winner` and
+stream diagnostics describe the tail only. Additional views are `nearest`,
+`nearest_mask` and `tail_transmittance`. Disabling the option resets an active
+nearest-only diagnostic to `final`. Existing depth/transmittance filter controls
+guide the tail; single-layer nearest contributions bypass reconstruction.
 `set_reconstruction("atrous"|"push_pull"|"fragment"|"compute")` chooses the implementation.
 The optional a-trous cascade expands the footprint where retained acceptance
 support is low. `ConfidenceFilter.target_winners` sets its support budget D;
@@ -122,6 +154,12 @@ Complemented two-draw averaging additionally requires `winner_first_payload`
 (`rgba32uint`, sampled/storage, one layer per sample, including an array layer
 at 1x). Push-pull and compute require `reconstruction_color` (`rgba16float`,
 sampled/storage, layered only at 4x); internal confidence-filter textures are pass-owned.
+
+Caller-owned targets for `exact_nearest=True` additionally need `nearest_depth`
+(`depth32float`), `nearest_alpha` (`rgba16float`), and `nearest_payload`
+(`rgba32uint` at 1x; `rgba16uint` plus `nearest_extra` at 4x). These are raster
+attachments matching native sample count. `nearest_color` is `rgba16float`
+sampled/storage, a 2D texture at 1x or four single-sample array layers at 4x.
 
 For custom material shading or geometry deformation, use `material_source`, a
 matching `geometry_shader`/`shading_shader` pair, or the extra resource arguments

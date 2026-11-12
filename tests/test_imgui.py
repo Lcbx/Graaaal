@@ -152,7 +152,7 @@ def test_both_scenes_render_real_imgui_draw_data_to_gpu(monkeypatch):
 	cache = ActorCache(world, world.query(Damageable, Attributes, ActorMetadata))
 	cache.update()
 	from numpyecs.TransparencyPass import ConfidenceFilter
-	renderer = NS(bilateral_filter=BilateralFilter(), confidence_filter=ConfidenceFilter(), debug_view="final", sample_count=1, winner_count=2, winner_mix="average", reconstruction="push_pull",
+	renderer = NS(exact_nearest=False, bilateral_filter=BilateralFilter(), confidence_filter=ConfidenceFilter(), debug_view="final", sample_count=1, winner_count=2, winner_mix="average", reconstruction="push_pull",
 		reconstruction_passes=1, winner_coupling="complement", noise_mode="anchored_blue", noise_anchor_pixels=24, noise_anchor_subdivisions=4,
 		noise_scale=1, effective_noise_scale=1, noise_footprint_balance=0,
 		noise_footprint_balancing=False, force_single_contributor=False, grazing_fade=GrazingFade())

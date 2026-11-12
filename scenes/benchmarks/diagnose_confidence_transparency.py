@@ -54,7 +54,7 @@ def read(texture, dtype=np.float16):
 	return np.frombuffer(data, dtype).reshape(layers, height, width, 4).astype(np.float32)
 
 
-def layer_comparison(size, targets, reconstruction="atrous", support_seeds=0):
+def layer_comparison(size, targets, reconstruction="atrous", support_seeds=0, exact_nearest=False):
 	shader = DefaultMaterialShader(transparent=True, source='''
 #extends "default_material.shader"
 #block lighting
@@ -67,7 +67,7 @@ def layer_comparison(size, targets, reconstruction="atrous", support_seeds=0):
 	colors = np.array([(1, 0, 0), (0, 1, 1), (0, 1, 0), (1, 0, 1), (0, 0, 1), (1, 1, 0), (1, 0.3, 0), (0.1, 0.2, 1)], np.float32)
 	mesh = MaterialMesh(vertices, shader)
 	items = [DrawInstance(mesh, material={"base_color": (1, 1, 1, 0.1), "emission": tuple(color)}, position=(0, 0, -0.03*i), surface_id=17+i) for i, color in enumerate(colors)]
-	renderer = MaterialRenderer(items, target_format="rgba8unorm", bilateral_filter=BilateralFilter(kernel_size=3), reconstruction=reconstruction)
+	renderer = MaterialRenderer(items, target_format="rgba8unorm", bilateral_filter=BilateralFilter(kernel_size=3), reconstruction=reconstruction, exact_nearest=exact_nearest)
 	camera = Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 55, near=0.01, far=100)
 	output = Texture((size, size), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT)
 	rows = []
@@ -84,8 +84,12 @@ def layer_comparison(size, targets, reconstruction="atrous", support_seeds=0):
 					renderer.record(commands, (size, size), camera, output.color_attachment())
 					RenderContext.submit(commands.finish())
 					actual = read(renderer.transparency.reconstruction_color)[0, ..., :3]
+					if exact_nearest:
+						a1 = read(renderer.transparency.nearest_alpha)[0, ..., :3]
+						c1 = read(renderer.transparency.nearest_color)[0, ..., :3]
+						actual = a1*c1+(1-a1)*actual
 					error = actual-reference
-					rows.append(dict(layers=layers, alpha=alpha, coupling=coupling, reconstruction=reconstruction, target_winners=target, rmse=float(np.sqrt(np.mean(error**2))), mean_error=error.mean(axis=(0, 1)).tolist(), reference=reference.tolist()))
+					rows.append(dict(layers=layers, alpha=alpha, coupling=coupling, reconstruction=reconstruction, exact_nearest=exact_nearest, noise_mode=renderer.transparency.noise_mode, footprint_balance=renderer.transparency.noise_footprint_balance, target_winners=target, rmse=float(np.sqrt(np.mean(error**2))), mean_error=error.mean(axis=(0, 1)).tolist(), reference=reference.tolist()))
 	support = None
 	if support_seeds:
 		# Force the final footprint, so its measured variance and D describe the
@@ -144,6 +148,7 @@ def main():
 	parser.add_argument("--size", type=int, default=256)
 	parser.add_argument("--targets", nargs="+", type=float, default=(1, 2, 4, 8, 16))
 	parser.add_argument("--reconstruction", choices=("atrous", "push_pull"), default="atrous")
+	parser.add_argument("--exact-nearest", action="store_true", help="Shade the nearest fragment deterministically and filter only the tail")
 	parser.add_argument("--support-seeds", type=int, default=0, help="Optional final-footprint variance audit; atrous only, at least two seeds")
 	parser.add_argument("--output", type=Path, required=True)
 	args = parser.parse_args()
@@ -156,7 +161,7 @@ def main():
 		original = transparency.Texture
 		transparency.Texture = lambda *a, usage, **kw: original(*a, usage=usage | (TextureUsage.COPY_SRC if kw.get("sample_count", 1) == 1 else 0), **kw)
 		noise = noise_comparison(args.size)
-		rows, support = layer_comparison(args.size, args.targets, args.reconstruction, args.support_seeds)
+		rows, support = layer_comparison(args.size, args.targets, args.reconstruction, args.support_seeds, args.exact_nearest)
 		args.output.parent.mkdir(parents=True, exist_ok=True)
 		args.output.write_text(json.dumps(dict(size=args.size, noise=noise, layers=rows, support=support), indent=2)+"\n", encoding="utf-8")
 		plot(rows, args.output.with_suffix(".png"))
