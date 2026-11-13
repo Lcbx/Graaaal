@@ -1,6 +1,6 @@
 # Interactive scenes
 
-Install the package and example dependencies from the repository root:
+Run the examples from the repository root after installing the optional dependencies:
 
 ```powershell
 pip install -e ".[render,assets,ui,examples,test]"
@@ -12,196 +12,97 @@ python main.py scenes/material_example.py
 python main.py scenes/msaa_example.py
 ```
 
-| Scene | Purpose and controls |
+Add `--frames N` to stop a RenderContext scene after N displayed frames, for
+example `python main.py scenes/material_example.py --frames 120`. Closing the
+window can end a run earlier. The six modules export `run_scene()` and can be
+imported without opening a GPU device. `main.py` invokes that entry point and
+cleans up the context afterward.
+
+| Scene | What to try |
 | --- | --- |
-| `draw_batches_example.py` | ECS movement, deferred spawning/deletion, LoD, and Hi-Z culling. Space switches cameras; scrolling adjusts the view. |
-| `direct_draw_example.py` | Direct instanced drawing and shadows. Scrolling adjusts the view. |
-| `prototype.py` | ImGui actor/health panels backed by ECS data; combat resolution remains a placeholder. |
-| `transparency_example.py` | Stochastic transparency using `resources/small_scene.glb`; controls below. |
-| `material_example.py` | Shared dictionary materials, instance overrides, rim lighting, and an embedded WGSL shader with animated vertex displacement. Controls adjust stripes, displacement amplitude/speed, and pause animation. M: MSAA; D: replace default; F: transparency settings; Space: orbit. |
-| `msaa_example.py` | Rotating triangle with resize handling. Number keys: 1 disables MSAA; 4 selects 4x MSAA (default). |
+| `draw_batches_example.py` | ECS movement and entity changes, LOD, indirect draws and Hi-Z culling; Space switches camera, scroll zooms. |
+| `direct_draw_example.py` | Direct drawing with instance changes and shadows; scroll zooms. |
+| `prototype.py` | ECS-backed actor/health panels in ImGui. Combat resolution is a placeholder. |
+| `transparency_example.py` | OPAQUE/MASK/BLEND glTF geometry, transparency modes and diagnostics; see below. |
+| `material_example.py` | Shared material dictionaries, per-instance overrides, rim lighting and animated stripes. Space orbits; M toggles MSAA; D changes a default material; F opens settings. |
+| `msaa_example.py` | Minimal full-window rotating triangle; 1 selects single sampling and 4 selects 4x MSAA. |
 
-All six expose `run_scene()` and can be imported without creating a window or
-GPU device. The launcher initializes scene execution and cleans up RenderContext
-on exit. Paths and asset files resolve relative to the scene modules.
+These files are runnable examples rather than a stable scene API. For reusable
+components, see the [engine guide](../README.md), [ECS reference](../src/ECS_API.md),
+[material guide](../src/materials.md), and
+[transparency guide](../src/stochastic_transparency.md).
 
-Add `--frames N` for a bounded run:
+## Transparency settings and controls
 
-```powershell
-python -u main.py scenes/draw_batches_example.py --frames 120
-```
+In `transparency_example.py`, the ImGui settings panel is visible at startup.
+`material_example.py` opens it with **F**. Both use
+`FilterSettings` in `transparency_settings.py`; its `handle_key` callback
+handles keyboard editing of visible controls.
 
-The launcher presents the final submitted frame and prints the frame count.
-Closing the window early can produce fewer frames. The limit applies to
-`RenderContext.window_loop()` scenes, including the six above; it does not apply
-to the legacy Raylib benchmark loop.
+The default **Banded + dual Kawase** mode captures the nearest transparent
+layer exactly and uses a complementary banded pair for the remaining tail.
+**Down/up pairs** controls the blur (0–8, default 1). **Proxy residual**
+subtracts a local albedo estimate before blurring to reduce color halos.
+It is **off in `transparency_example.py`** and **on by default in
+`MaterialRenderer`**, which powers `material_example.py`. **Shade one pixel
+per 2 x 2 block** is an optional lower-cost, noisier approximation. Tail
+estimation defaults to 1x even when the scene uses MSAA; exact nearest,
+transmittance and opaque/MASK geometry still use the selected native sample count.
+There is no tail-MSAA control in this UI (see `set_banded_options()` for the API).
 
-## Useful scene APIs
+Select **Stochastic nearest wins** in the panel to compare other options:
 
-These are examples to adapt, not a stable library API. This list is non-exhaustive;
-import paths start with `scenes.` when running from the repository root.
-
-| Module | Useful classes and functions |
+| Setting | Usage |
 | --- | --- |
-| All six scenes | `run_scene()` starts the interactive example; importing the module creates no window or device. |
-| `draw_batches_example` | `Transform`, `Velocity`, `MeshRef` define components; `movement_system(world, dt)` updates motion; `update_instances(world, data)` packs drawing columns. Other scene systems use state initialized by `run_scene()`. |
-| `direct_draw_example` | `CubeInstances.update()` refreshes `.content` only when component versions or query membership change. |
-| `prototype` | `create_world()` returns sample actors; `actor_statuses(world, query)` returns `ActorStatus` records; `.health_fraction` clamps UI health; `ActorCache.update()` refreshes displayed values on change. |
-| `transparency_example` | `init_scene(...)` builds GPU resources; `render_frame()` records/submits a frame using scene state. |
-| `transparency_settings` | `FilterSettings(renderer, visible=True, position=(12, 12))` provides shared ImGui controls for a `TransparencyPass` or `MaterialRenderer`; register `.handle_key` and render `.draw`. |
-| `material_example` | `sphere_vertices()`, `make_instances()`, and `make_world()` build CPU geometry/material/ECS inputs without opening a device. |
-| `msaa_example` | `run_scene()` contains the minimal window, resize and sample-count switching loop. |
+| **Exact nearest layer** | Enable/disable the exact foremost transparent contribution; required in banded mode. |
+| **Winner draws / mix** | Average supports 1–2 draws, with complemented thresholds by default; Fill supports any positive count with supported noise modes. Reduce the count to 2 or less before switching back to Average. |
+| **Noise mode / grain size** | Compare UV, object-hash, anchored and triplanar noise. UV footprint balancing applies only to UV modes, is enabled by default and has a default balance of **1.0** (0 uses maximum-derivative sizing). |
+| **Filter implementation** | Fragment or compute bilateral (1x1, 3x3, 5x5 or 9x9), a-trous cascade, or confidence pyramid. A 1x1 footprint skips reconstruction. |
+| **Reconstruction passes** | Repeat the bilateral kernel on weighted color/validity pairs. Only fixed bilateral modes use this setting. |
+| **Support budget / cascade passes** | Control smoothing in a-trous reconstruction; the four-pass cascade reaches a maximum radius of 15 pixels. |
+| **Force single contributor** | Optionally force an isolated contributor to be selected; disabled by default. |
+| **Grazing fade** | Fade BLEND opacity toward silhouettes. The low-level pass defaults to enabled from 83° to 86°; material shaders also have per-material grazing parameters. |
 
-## Transparency controls
+Some settings and diagnostic views disappear when the active technique cannot
+use them. Debug views include **final**, **transmittance**, **winner**,
+**reconstruction**, **nearest** and stream-specific views where applicable.
+The **winner** view shows signed residuals when the banded proxy is active.
+The settings panel describes each control on hover.
 
-The settings window is visible at startup in `transparency_example`; press **F**
-to open it in `material_example`. Both use `transparency_settings.py`.
-BLEND defaults to **Banded + dual Kawase**, with one down/up pair and full-pixel 1x tail estimation.
-MASK uses deterministic alpha cutoff and opaque depth, evaluated at the scene's MSAA sample positions.
-Choose **Stochastic nearest wins** to expose the following winner/noise/filter
-comparisons.
-**Winner draws** accepts a positive
-integer, independently of MSAA. Average mode supports one or two (default);
-Fill accepts any positive count. Extra attempts reduce missing winners but add
-selection/shading work and do not supersample edges.
-**Exact nearest layer** is enabled and required in banded mode. In stochastic
-mode it can be disabled; when enabled the winner/filter settings apply
-only to the remaining tail. It adds nearest contribution/mask and tail
-transmittance diagnostics. Both examples use the same setting.
-Diagnostic views include each stream and the valid-stream fraction. See the
-[two-winner plan and findings](../src/transparency_multiple_winners_implementation.md).
-The diagnostic dropdown and **D** shortcut follow the active technique. A/B
-views appear only for two-draw Average mode; Fill labels its binary mask
-**winner_validity**. Single-draw mode hides stream/count views, disabled forcing
-hides **forced**, and 1x1 hides **filter_support**. A view that becomes unavailable
-returns to **final** when editing settings.
-**Winner pairing** selects complemented thresholds (default) or independent
-sources for two-draw averaging. Fill always uses independent retries.
-**Filter implementation** selects the A-trous cascade, Confidence pyramid,
-or either fixed bilateral implementation. The cascade's **Support budget D**
-defaults to four; increase it to smooth faint layers more broadly. **Cascade
-passes** selects one to four (default), reaching radii of 1/3/7/15 pixels.
-Its **retained_support** view shows final D / budget. The pyramid retains
-**Target expected winners**, **Pyramid levels** and its **confidence** view.
-See the
-[profiling report](../src/transparency_reconstruction_implementation.md) for measurements.
-**Force single contributor** deterministically accepts exactly one visible
-BLEND contributor at its opacity; it adds a small
-count target and is off by default. **Winner mix** offers experimental hole
-filling with default-source Object hash or Anchored blue noise. Select two draws,
-then Fill, before raising the count further. Reduce to two before returning to Average.
-Other noise modes retain averaging. The **forced** view marks deterministic
-samples; weighted color views show color with its weight removed.
-In bilateral modes, **Reconstruction passes** stacks the selected kernel, filtering weighted pairs
-and applying opacity once at the end. Two 3x3 passes reach up to 5x5 support;
-four reach 9x9, with different weights from a single large kernel. A 1x1 kernel
-bypasses all stages. Confidence modes instead have an **Enable reconstruction** toggle.
-The FPS/frame-time overlay remains visible when settings hide.
-Drag values or Ctrl+click to type;
-hover controls for units and tuning guidance. ImGui captures input while editing
-widgets, so those actions do not also move the camera or trigger scene shortcuts.
-
-| Input | Action |
+| Input | Action in `transparency_example.py` |
 | --- | --- |
-| Space / scroll | Toggle orbit / zoom |
+| Space / mouse scroll | Toggle orbit / zoom |
 | R | Reverse transparent draw order |
-| D | Cycle final, transmittance, winner, reconstruction, and filter-support views |
-| N | Cycle noise modes, including UV correlated hierarchy and both triplanar options |
-| [ / ] | Decrease/increase surface noise-cell size |
-| G | Toggle grazing-angle opacity fade |
-| M | Toggle 4x MSAA (off by default); also available in the settings dropdown |
-| 1 / 3 / 5 / 9 | Disable reconstruction / select its fixed footprint |
-| F | Hide/show settings |
-| Up/Down, Left/Right | Select/edit a settings row; Shift gives finer increments |
-| Home | Restore startup filter settings |
+| D | Cycle the currently available diagnostic views |
+| N | Cycle noise modes (used by stochastic allocation) |
+| [ / ] | Decrease/increase the stochastic noise-cell size |
+| G | Toggle grazing fade |
+| M | Toggle 4x MSAA (starts off) |
+| 1 / 3 / 5 / 9 | In banded mode: select 0 / 1 / 2 / 3 Kawase pairs; in stochastic bilateral mode: select filter size |
+| F | Show/hide the settings panel |
+| Arrow keys | Select/edit settings while the panel is visible; Shift makes smaller changes |
+| Home | Reset the banded blur to one pair, or reset stochastic bilateral-filter values |
 
-**Tail allocation** defaults to **Banded + dual Kawase** in both
-examples (F opens settings in the material example). It captures an exact nearest
-layer and blurs only the banded tail. **Down/up pairs** sets 0-8 blur levels (default 1);
-zero shows the unblurred result. Left/Right changes this count, and 1/3/5/9 in
-the transparency example selects 0/1/2/3 pairs. More pairs blur more broadly;
-there is no depth edge stopping. This experimental WebGPU atomic path may change
-allocation between frames and approximates thick-tail color mixtures.
+No TAA or temporal history is used. MSAA improves opaque/MASK and nearest-layer
+edges, but the 1x banded tail can miss subpixel details. Stochastic modes can
+still show spatial grain and motion shimmer. For controls from Python, use
+`set_tail_allocation()`, `set_kawase_passes()`, `set_banded_options()`,
+`set_winner_count()`, `set_noise_mode()`, `set_reconstruction()` and
+`set_debug_view()` as documented in the [transparency guide](../src/stochastic_transparency.md).
 
-**Proxy residual** is enabled by default in banded mode: it restores a local
-albedo proxy and blurs only the remaining signed color difference. Optional
-**Shade one pixel per 2 x 2 block** reduces allocation/lighting work and increases
-noise. Tail estimation uses 1x while transmission, exact nearest and opaque/MASK
-geometry use native MSAA; there is no tail-estimation MSAA toggle. This can miss
-subpixel tail details. The subset switch remains opt-in. The winner diagnostic
-displays signed residuals with neutral grey at zero.
+The transparency scene loads `resources/small_scene.glb`, with
+`Simple_foliage.001` treated as MASK. It supports static glTF node transforms,
+base color, roughness/metallic and emission. Normal maps, skinning, animation,
+material extensions and sampler overrides are not covered by this example.
+The [blue-noise data and license](../src/data/blue_noise/README.md) are bundled.
 
-Arrow edits are disabled while the settings window is hidden.
-Startup uses the defaults in code; controls update live without a profile file.
-Anchored blue, UV CDF lerp, stochastic picking and Bayer remain available as
-comparisons when stochastic allocation is selected.
+## Scene tests and benchmarks
 
-The noise selector includes correlated UV hierarchies and triplanar object-space
-projection for meshes with unsuitable UVs. Hierarchies build once on first use.
-**MSAA (M)** smooths opaque/MASK geometry and the exact nearest layer at extra GPU
-and memory cost. Classic stochastic mode also samples winner selection at 4x.
-Sampling is static; there is no TAA or frame history.
-The stochastic noise-cell slider stores the 1x width; 4x MSAA halves the effective target
-(1 px becomes 0.5 px), and disabling MSAA restores the chosen width. The effective
-target is shown below the slider. Sizes remain approximate at oblique angles.
-**UV footprint balance** is an experimental compromise: 0 keeps maximum-derivative
-sizing (default), 0.5 uses a geometric mean, and 1 uses the minimum estimate.
-Increasing it makes tilted grain finer along both axes, including subpixel cells
-along the compressed axis. It applies to UV modes and retains existing fallback
-and triplanar behavior. See the [tilt diagnostic](../IMPLEMENTATION_WORK.md#uv-footprint-compromise-experiment)
-for measured screen-space autocorrelation widths and limitations.
-The balancing shader feature is enabled by default in stochastic mode. **Enable UV footprint
-balancing** controls it and the editable UV slider. Its value can be
-adjusted in any noise mode, but only affects UV modes. Settings are separated by
-feature; disabled features hide their parameters. Selecting the 1 x 1 kernel
-hides the reconstruction tolerances, and disabling grazing fade hides its angles.
-
-**Anchored blue: pixel lattice** is available through the noise selector or N.
-It reads pixel-sized grain around rest-space coarse anchors, without requiring
-UVs. Its anchor target defaults to 24 pixels and shift subdivisions to 4. Higher
-subdivisions reduce close-layer correlation at the cost of more shift seams.
-The mode keeps grain much more isotropic at tilt, but can reshuffle more during
-orbit/dolly. See the
-[anchored noise audit](../IMPLEMENTATION_WORK.md#pixel-lattice-anchored-blue).
-
-"Fade grazing surfaces" starts enabled. Its two editable angles default to
-83 degrees (start) and 86 degrees (completely faded). Angles are measured from
-the geometric surface normal: 0 is face-on, 90 is edge-on. Opacity fades smoothly
-between them on both front and back faces. The interval must satisfy
-`0 <= start < end <= 90`; drag either value or Ctrl+click to type it. The fade
-affects BLEND surfaces consistently in guide, transmittance and selection. MASK
-uses the regular alpha cutoff and does not receive grazing fade.
-
-In stochastic bilateral mode, reconstruction uses a fixed 3x3 footprint, spatial sigma 0.9, relative
-depth sigma 0.05, transmittance sigma 0.3, and minimum depth tolerance 0.01.
-Slope correction is always enabled. The 1x1 option shows the unfiltered stochastic
-result; certain fully opaque nearest winners also bypass reconstruction.
-See the [transparency notes](../src/stochastic_transparency.md) for the pass order,
-filter parameters, and interpretation of diagnostic views.
-
-The example loads static glTF node transforms, OPAQUE/MASK/BLEND modes,
-double-sided materials, base-color textures, roughness/metallic factors, and
-emissive factors. The tree's `Simple_foliage.001` material is treated as MASK.
-The grain target defaults to 1 pixel at 1x;
-`transparency.set_noise_scale(2)` makes it coarser. Repeated UV islands can correlate
-overlapping layers; compare object-hash or triplanar modes on those assets.
-See the [sampling notes](../IMPLEMENTATION_WORK.md#acceptance-and-winner-data)
-for threshold construction and its limits.
-Normal/material maps, sampler overrides,
-material extensions, animation, and skinning are outside this example.
-[Blue-noise source and license](../src/data/blue_noise/README.md).
-
-## CPU caches and checks
-
-For untracked edits to ECS object fields, call `touch()` to notify readers.
-
-Run scene-model/import/cache tests without opening windows:
+For untracked in-place edits to ECS object fields, call `touch()` so dependent
+readers can observe them. Run the import, scene-state and cache tests with:
 
 ```powershell
 python -m pytest tests/test_scenes.py tests/test_scene_caches.py src/tests/test_library_boundaries.py -q -p no:cacheprovider
 ```
 
-The [engine guide](../README.md) describes procedural rendering and resource
-lifetimes; the [ECS reference](../src/ECS_API.md) covers simulation contracts.
-See [benchmarks](benchmarks/README.md) for measurement commands and
-[implementation work](../IMPLEMENTATION_WORK.md#ecs-benchmark-history) for recorded data.
+See [benchmarks](benchmarks/README.md) for CLI usage of diagnostic scripts.

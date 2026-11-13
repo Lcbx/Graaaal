@@ -20,7 +20,6 @@ and attributes use snake_case. Constants use UPPER_SNAKE_CASE.
 | [Transparency](src/stochastic_transparency.md) | Pass order, reconstruction, and technique limits |
 | [Dictionary materials](src/materials.md) | Plain WGSL materials, shared parameters, instance overrides, and Jinja inheritance |
 | [Benchmarks](scenes/benchmarks/README.md) | Reproduction commands and diagnostic options |
-| [Implementation work](IMPLEMENTATION_WORK.md) | Backlog, implementation decisions and historical measurements (status record) |
 
 ## Modules and useful APIs
 
@@ -59,7 +58,10 @@ classes, methods, and helpers; the linked guides explain their contracts.
 
 Simulation, math, asset-data, packing, grouping, and utility modules import without
 graphics dependencies. Asset decoders load their optional dependencies when called.
-Engine shaders are included in the installed package. `Geometry.make_cube_mesh()`
+Built-in engine shaders are in `src/shaders/` and included in the installed
+package. `scenes/shaders/` contains only scene-specific examples. `Shader(filepath=...)`
+looks up shader includes beside the supplied file, then in the engine shader
+directory. `Geometry.make_cube_mesh()`
 creates a GPU mesh and requires an initialized backend.
 
 ## Arrays and ordinary systems
@@ -96,8 +98,7 @@ request can partially apply. Declared fields are touched on exit, including afte
 exceptions; writes are not rolled back. Compact multicomponent stores containing
 holes first. General joins between independently ordered stores still gather.
 
-See the [ECS reference](src/ECS_API.md) for full contracts and the
-[array measurements](IMPLEMENTATION_WORK.md#array-access) for scratch-memory costs.
+See the [ECS reference](src/ECS_API.md) for full contracts and array usage.
 
 ## Shared draws and independent visibility
 

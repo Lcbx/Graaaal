@@ -132,8 +132,7 @@ Exported views must not escape the scope. Compact multicomponent holes first.
 Independent component stores still require joins/gathers to align their rows.
 
 See [the engine guide](../README.md#arrays-and-ordinary-systems) for a complete
-shaped-field example and [array measurements](../IMPLEMENTATION_WORK.md#array-access)
-for scratch-memory tradeoffs.
+shaped-field example.
 
 ## Inspection and allocation control
 
@@ -802,10 +801,8 @@ Array aliases include `EntityArray`, `IndexArray`, `GenerationArray`, `MaskArray
 missing owner sentinel; neither is a usable live identity. `entity_index()` and
 `entity_generation()` accept a scalar or array and preserve scalar/array form.
 
-The facade also exports `ComponentColumns`, `ComponentSchema`, `ComponentStorage`,
-and `MultiComponentStorage`. Schema/storage construction is implementation-facing;
-application code should register types and use inspection, selections, and queries.
-Methods beginning with `_` and dense/sparse buffers are internal.
+Use `ECS.register()` and public accessors, selections, and queries to interact
+with component stores. Methods beginning with `_` are not public API.
 
 | Error | Typical cause |
 | --- | --- |

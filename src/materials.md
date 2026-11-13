@@ -140,7 +140,7 @@ Instance values do not split draw batches.
 
 ## Shader-defined materials
 
-`MaterialShader` accepts exactly one of `source` (inline Jinja2 template),
+`MaterialShader` accepts one of `source` (inline Jinja2 template),
 `filepath` or `template` (path to a Jinja2 file).
 `DefaultMaterialShader` supplies the built-in lighting, alpha and vertex hooks.
 Custom materials extend its template and override only the hooks they need.
@@ -166,7 +166,7 @@ striped = DefaultMaterialShader(source='''
 ```
 
 In a material's `parameters` block, `<MaterialParameters>` declares shared
-values, `<InstanceParameters>` declares per-instance overrides, and
+values and `<InstanceParameters>` declares per-instance overrides.
 Each parameter declaration requires a default, expressed as a Jinja2 value (scalar or tuple).
 The available inherited blocks are `parameters`, `helpers`, `surface`, `vertex`,
 `opacity`, `grazing` and `lighting`. `super()` retains inherited parameter
@@ -285,8 +285,9 @@ default to BLEND; opaque shaders default to OPAQUE. `DefaultMaterialShader`
 routes each binding by its resolved `alpha_mode`: OPAQUE/MASK write opaque
 depth; MASK uses deterministic texture-alpha cutoff at native MSAA sample
 locations. BLEND defaults to exact nearest plus banded tails with one Kawase
-down/up pair and 1x tail estimation. Grazing fade defaults off at 70/85 degrees, independently of
-the legacy TransparencyPass frame override.
+down/up pair and 1x tail estimation. The material parameter `grazing_fade`
+defaults to `false`, with start/end angles of 70/85 degrees. For low-level
+`TransparencyPass` rendering, `GrazingFade` defaults to enabled at 83/86 degrees.
 
 `MaterialShader.is_blended(material, overrides)` selects a binding's route;
 generic shaders use their `transparent` flag. Custom policies may override this
@@ -425,9 +426,8 @@ same `lighting` mapping. Lighting values persist when omitted from subsequent
 calls; the initial `light_dir` is `(0.4, 0.8, 0.3)`. Material response
 coefficients (`ambient`, `diffuse`,
 `specular`) remain material parameters; the light direction is scene data.
-Shaders that previously read `frame.light_dir` should read
-`lighting.light_dir`. Rebuild custom uniform dtypes from the shared include or
-reflection rather than retaining the earlier Frame byte offsets.
+Custom lighting shaders should read `lighting.light_dir` (not
+`frame.light_dir`).
 
 Lighting currently supports a scene directional light; no local-light distribution
 compute pass is implemented.
@@ -460,6 +460,3 @@ multiple views recorded before the same submission; each such view needs its
 own buffer or aligned range. `upload_changed()` on reflected uniform buffers
 tracks raw bytes, including padding; ordinary `upload()` remains available.
 
-The [dated material audit](materials_audit.md) records storage and upload
-measurements for the six-sphere example. These describe that setup, not general
-performance guarantees.

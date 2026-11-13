@@ -131,7 +131,7 @@ settings and confidence budgets do not affect this path. Diagnostics are
 is enabled; zero residual displays as neutral grey),
 `reconstruction`, `nearest`, `nearest_mask`, and `tail_transmittance`.
 
-This is the guide's unordered WebGPU atomic fallback. Band assignment may
+Banded allocation uses an unordered WebGPU atomic path. Its band assignment may
 change between frames in overlap regions. Tail colors approach a p-weighted
 mixture, which differs from depth-ordered over for thick tails. Probabilities
 use 1/65536 fixed-point quantization; extremely faint tail fragments can round
@@ -322,6 +322,5 @@ when their selected winner mode enables them.
 
 This approach is spatial and can introduce noise or bias around insufficient
 winner samples; MSAA improves silhouettes but does not guarantee motion stability.
-For shader formulas, experiments, measured results, and design rationale see
-[implementation work](../IMPLEMENTATION_WORK.md#stochastic-transparency-implementation-and-validation-record)
-and the [dated multiple-winner report](transparency_multiple_winners.md).
+For a runnable example and live controls, see the
+[scene guide](../scenes/README.md#transparency-settings-and-controls).
