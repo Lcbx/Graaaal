@@ -14,7 +14,7 @@ from graaal.ImGui import ImGui
 from graaal.RenderContext import RenderContext
 from scenes.prototype import ActorCache, Damageable, Attributes, ActorMetadata, create_world, draw_actors
 from graaal.TransparencyPass import BilateralFilter, GrazingFade
-from scenes.transparency_settings import FilterSettings
+from scenes.rendering_settings import FilterSettings
 
 
 @pytest.fixture

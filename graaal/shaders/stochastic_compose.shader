@@ -3,6 +3,7 @@
 #if not PARAMS.srgb_surface
 #include "utils_color.shaderlib"
 #endif
+#include "ambient_occlusion.shaderlib"
 
 #if PARAMS.get("compute_reconstruction", false)
 sample_texture<1, 11, layered> reconstructed: f32;
@@ -73,7 +74,11 @@ fn compose_sample(pixel: vec2i, sample: u32) -> vec3f {
 #endif
 #endif
 	}
-	let main = sample_texture_load(main_color, pixel, sample).rgb;
+	var main = sample_texture_load(main_color, pixel, sample).rgb;
+	if bilateral.kernel.z != 0u && bilateral.kernel.y == 0u {
+		let depth = textureLoad(opaque_depth, pixel, i32(sample));
+		main *= ambient_occlusion(pixel, sample, depth, frame.proj, frame.clip.xy);
+	}
 	var filtered: vec4f;
 #if PARAMS.get("compute_reconstruction", false)
 #if PARAMS.get("banded_tail", false)

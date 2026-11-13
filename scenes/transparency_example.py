@@ -5,7 +5,7 @@ Space toggles orbit, scrolling zooms, R reverses transparent submission order.
 1/3/5/9 select 0/1/2/3 Kawase pairs (bilateral kernel sizes in stochastic mode).
 D cycles diagnostic views; N cycles stochastic noise modes; [ / ] adjusts noise scale.
 G toggles grazing-angle opacity fade (angles are adjustable in settings).
-M toggles 4x MSAA (off by default).
+M toggles 4x MSAA; A toggles SSAO; O selects SSAO in the compose pass or a separate pass.
 F shows/hides ImGui settings.
 FPS and average frame time remain visible in the top-right corner.
 Drag settings or Ctrl+click to type; Up/Down and Left/Right also select/edit.
@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from graaal.Assets import DEFAULT_BLUE_NOISE_PATH, load_blue_noise
+from graaal.AmbientOcclusionPass import AmbientOcclusionPass
 from graaal.DrawBatches import DrawBatches, FrustumCuller, HiZCuller, ShaderPass
 from graaal.HZB import HZB
 from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
@@ -35,7 +36,7 @@ from graaal.RenderContext import (
 from graaal.TextureProcessing import build_material_texture_array
 from graaal.TransparencyData import load_transparency_scene as load_transparency_data
 from graaal.TransparencyPass import BilateralFilter, ConfidenceFilter, FILL_NOISE_MODES, GrazingFade, NOISE_MODES, TransparencyPass
-from scenes.transparency_settings import FilterSettings, NOISE_LABELS
+from scenes.rendering_settings import FilterSettings, RenderingSettings, NOISE_LABELS
 
 
 PATH = Path(__file__).parent / "resources/small_scene.glb"
@@ -87,6 +88,7 @@ class GeometryBatches:
 
 
 transparency: TransparencyPass
+ao_pass: AmbientOcclusionPass
 opaque_batches: GeometryBatches
 transparent_batches: GeometryBatches
 camera: Camera
@@ -96,11 +98,14 @@ radius: float
 angle = 0.65
 orbit = False
 distance = 0.0
+msaa_enabled = False
+ao_enabled = False
+ao_method = "compose"
 
 
 def init_scene(path=PATH, *, blue_noise_path=BLUE_NOISE_PATH, **transparency_options):
 	"""Initialize the example's global render data after device setup."""
-	global transparency, opaque_batches, transparent_batches, camera, hzb, center, radius, angle, orbit, distance
+	global transparency, ao_pass, opaque_batches, transparent_batches, camera, hzb, center, radius, angle, orbit, distance, msaa_enabled, ao_enabled, ao_method
 	primitives, materials, images, vertices = load_transparency_scene(path)
 	# Ignore a large flat ground plane when framing the example.
 	objects = [p.vertices["position"] for p in primitives if np.ptp(p.vertices["position"][:, 1]) > 0.01]
@@ -120,12 +125,38 @@ def init_scene(path=PATH, *, blue_noise_path=BLUE_NOISE_PATH, **transparency_opt
 		base_textures=textures.view(dimension="2d-array"),
 		vertices=GpuBuffer(vertices, BufferUsage.STORAGE | BufferUsage.COPY_DST), blue_noise=blue_noise,
 		**transparency_options)
+	ao_pass = AmbientOcclusionPass(target_format=transparency.target_format)
+	msaa_enabled = transparency.sample_count == 4
+	ao_enabled, ao_method = False, "compose"
 	hzb = HZB()
 	opaque_batches = GeometryBatches(primitives, materials, transparency, False)
 	transparent_batches = GeometryBatches(primitives, materials, transparency, True)
 	camera = Camera(tuple(center + (radius, radius*0.65, radius)), tuple(center), (0, 1, 0), 55,
 		near=max(0.01, radius/1000), far=radius*100)
 	angle, orbit, distance = 0.65, False, radius*1.4
+	transparency.set_ambient_occlusion(False)
+
+
+def set_msaa_enabled(enabled):
+	global msaa_enabled
+	if type(enabled) is not bool: raise ValueError("MSAA enabled must be boolean")
+	transparency.set_sample_count(4 if enabled else 1)
+	msaa_enabled = enabled
+
+
+def set_ao_enabled(enabled):
+	global ao_enabled
+	if type(enabled) is not bool: raise ValueError("AO enabled must be boolean")
+	ao_enabled = enabled
+	transparency.set_ambient_occlusion(enabled and ao_method == "compose")
+
+
+def set_ao_method(method):
+	global ao_method
+	if method not in ("compose", "pass"):
+		raise ValueError("AO method must be compose or pass")
+	ao_method = method
+	transparency.set_ambient_occlusion(ao_enabled and method == "compose")
 
 
 def scroll_callback(x, y):
@@ -146,13 +177,13 @@ def on_char(code):
 			transparency.set_kawase_passes((1, 3, 5, 9).index(size))
 			return True
 		transparency.set_bilateral_filter(replace(transparency.bilateral_filter, kernel_size=size))
-		FilterSettings.sync_debug_view(transparency)
+		RenderingSettings.sync_debug_view(transparency)
 		print(f"Bilateral filter: {size}x{size}")
 	elif chr(code).lower() == "d":
-		views = FilterSettings.sync_debug_view(transparency)
+		views = RenderingSettings.sync_debug_view(transparency)
 		index = (views.index(transparency.debug_view)+1) % len(views)
 		transparency.set_debug_view(views[index])
-		print(f"View: {FilterSettings.debug_view_label(transparency, transparency.debug_view)}")
+		print(f"View: {RenderingSettings.debug_view_label(transparency, transparency.debug_view)}")
 	elif chr(code).lower() == "n":
 		index = (NOISE_MODES.index(transparency.noise_mode)+1) % len(NOISE_MODES)
 		if transparency.winner_mix == "fill" and NOISE_MODES[index] not in FILL_NOISE_MODES:
@@ -169,8 +200,14 @@ def on_char(code):
 		transparency.set_grazing_fade(replace(options, enabled=not options.enabled))
 		print(f"Grazing fade: {not options.enabled}, {options.start_angle:g} to {options.end_angle:g} degrees")
 	elif chr(code).lower() == "m":
-		transparency.set_sample_count(4 if transparency.sample_count == 1 else 1)
+		set_msaa_enabled(not msaa_enabled)
 		print(f"MSAA: {transparency.sample_count}x")
+	elif chr(code).lower() == "a":
+		settings.set_ssao_enabled(not ao_enabled)
+		print(f"SSAO: {ao_enabled}")
+	elif chr(code).lower() == "o":
+		set_ao_method("pass" if ao_method == "compose" else "compose")
+		print(f"SSAO path: {ao_method}")
 	return True
 
 
@@ -218,7 +255,14 @@ def render_frame(*, profiler=None):
 		with transparency.selection_pass(commands, stream=stream) as render:
 			transparent_batches.draw(render, transparency.selection_name(stream))
 		transparency.shade_winner(commands, transparent_batches.passes, stream=stream)
-	transparency.compose(commands, RenderContext.screen())
+	output = RenderContext.screen()
+	if ao_enabled and ao_method == "pass":
+		ao_pass.resize((width, height))
+		output = ao_pass.color_attachment()
+	transparency.compose(commands, output)
+	if ao_enabled and ao_method == "pass":
+		ao_pass.update_camera(camera, sample_count=transparency.sample_count)
+		ao_pass.record(commands, transparency.depth, RenderContext.screen())
 	RenderContext.submit(commands.finish())
 	return True
 
@@ -227,10 +271,11 @@ def run_scene():
 	global settings, angle
 	from graaal.ImGui import ImGui
 
-	RenderContext.init_window(1200, 900, "Stochastic transparency | M: MSAA | F: settings | D: debug | Space: orbit",
+	RenderContext.init_window(1200, 900, "Stochastic transparency | M: MSAA | A: SSAO | O: SSAO path | F: rendering settings | D: debug | Space: orbit",
 		required_gpu_features=["indirect-first-instance"])
 	init_scene()
-	settings = FilterSettings(transparency)
+	settings = RenderingSettings(transparency, on_msaa_changed=set_msaa_enabled,
+		on_ssao_changed=set_ao_enabled, ssao_enabled=ao_enabled)
 	RenderContext.event_handlers["mouse_scroll"].append(scroll_callback)
 	RenderContext.event_handlers["char"].append(on_char)
 	RenderContext.event_handlers["key"].append(settings.handle_key)

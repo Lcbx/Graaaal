@@ -123,7 +123,7 @@ def test_owned_nearest_targets_validate_and_diagnostics_follow_option(factory):
 	with pytest.raises(ValueError, match="nearest_payload"):
 		oit.resize((33, 25), targets=replace(targets, nearest_payload=None))
 	assert not oit.resize((33, 25), targets=targets)
-	from scenes.transparency_settings import FilterSettings
+	from scenes.rendering_settings import FilterSettings
 	assert {"nearest", "nearest_mask", "tail_transmittance"} <= set(FilterSettings.available_debug_views(oit))
 	for view in ("nearest", "nearest_mask", "tail_transmittance", "transmittance", "reconstruction", "winner"):
 		oit.set_debug_view(view)

@@ -32,12 +32,15 @@ components, see the [engine guide](../README.md), [ECS reference](../graaal/ECS_
 [material guide](../graaal/materials.md), and
 [transparency guide](../graaal/stochastic_transparency.md).
 
-## Transparency settings and controls
+## Rendering and transparency settings
 
 In `transparency_example.py`, the ImGui settings panel is visible at startup.
 `material_example.py` opens it with **F**. Both use
-`FilterSettings` in `transparency_settings.py`; its `handle_key` callback
-handles keyboard editing of visible controls.
+`RenderingSettings` in `rendering_settings.py`; its `handle_key` callback
+handles keyboard editing of visible controls. The top section controls MSAA
+and SSAO independently; transparency reconstruction and sampling controls are
+below it. **A** toggles SSAO and **O** switches between its compose and
+separate-pass implementations.
 Both examples start with `TransparencyPass` defaults.
 
 The default **Banded + dual Kawase** mode captures the nearest transparent

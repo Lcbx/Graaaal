@@ -1,8 +1,8 @@
 """Dictionary materials, shared values, instance overrides and inherited shaders.
 
 Run: python main.py scenes/material_example.py [--frames 120]
-M toggles MSAA; Space toggles orbit; D replaces the opaque shader's default.
-F shows/hides transparency settings.
+M toggles 4x MSAA; A toggles SSAO; O selects SSAO in the compose pass or a separate pass. Space toggles orbit; D replaces the opaque shader's default.
+F shows/hides rendering settings.
 The bottom-left pair shares a dictionary; the bottom-right transparent sphere
 adds rim lighting through a Jinja child template. No transparency code is copied.
 The top-middle sphere uses time-driven displacement in the Jinja material below.
@@ -13,13 +13,14 @@ from math import cos, sin
 import numpy as np
 
 from graaal.DefaultMaterial import DefaultMaterialShader
+from graaal.AmbientOcclusionPass import AmbientOcclusionPass
 from graaal.ECS import ECS
 from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
 from graaal.MaterialRenderer import MaterialMesh, DrawInstance, MaterialRenderer
 from graaal.Math import Camera, Vec3
 from graaal.RenderContext import RenderContext
 from graaal.TransparencyData import VERTEX_DTYPE
-from scenes.transparency_settings import FilterSettings
+from scenes.rendering_settings import RenderingSettings
 
 
 STRIPED_SHADER = '''
@@ -106,25 +107,45 @@ def run_scene():
 	from graaal.ImGui import ImGui
 	from imgui_bundle import imgui
 
-	RenderContext.init_window(1100, 760, "Materials | M: MSAA | D: default | F: transparency | Space: orbit",
+	RenderContext.init_window(1100, 760, "Materials | M: MSAA | A: SSAO | O: SSAO path | D: default | F: rendering | Space: orbit",
 		required_gpu_features=["indirect-first-instance"])
 	world, entities, meshes, shared, opaque = make_world()
 	renderer = MaterialRenderer(meshes=meshes, frame_fields={"time": ("f32", 0.0)})
-	settings = FilterSettings(renderer, visible=False, position=(370, 12))
+	ao_pass = AmbientOcclusionPass(target_format=renderer.transparency.target_format)
 	adapter = EcsMaterialAdapter(renderer, world)
 	overrides = world.get(MaterialInstance)[entities].overrides
 	striped = meshes[-1].shader.default_material
 	camera = Camera((0, 1.3, 9), (0, 1.3, 0), (0, 1, 0), 50, near=0.05, far=100)
 	orbit, angle, alternate = False, 0.0, False
+	msaa_enabled, ao_enabled, ao_method = False, False, "compose"
 	animation_time, animate = 0.0, True
+	def set_msaa_enabled(enabled):
+		nonlocal msaa_enabled
+		msaa_enabled = enabled
+		renderer.set_sample_count(4 if enabled else 1)
+	def set_ssao_enabled(enabled):
+		nonlocal ao_enabled
+		ao_enabled = enabled
+		renderer.set_ambient_occlusion(enabled and ao_method == "compose")
+	settings = RenderingSettings(renderer, visible=False, position=(370, 12),
+		on_msaa_changed=set_msaa_enabled, on_ssao_changed=set_ssao_enabled, ssao_enabled=ao_enabled)
 	def set_alternate_color(enabled):
 		nonlocal alternate
 		alternate = enabled
 		opaque.default_material = {"base_color": (0.6, 0.1, 0.8, 1) if alternate else (0.8, 0.2, 0.08, 1)}
 		adapter.touch_materials(opaque.default_material)
 	def on_char(code):
-		nonlocal orbit
-		if chr(code).lower() == "m": renderer.set_sample_count(5-renderer.transparency.sample_count)
+		nonlocal orbit, msaa_enabled, ao_enabled, ao_method
+		if chr(code).lower() == "m":
+			settings.set_msaa_enabled(not msaa_enabled)
+			print(f"MSAA: {renderer.transparency.sample_count}x")
+		elif chr(code).lower() == "a":
+			settings.set_ssao_enabled(not ao_enabled)
+			print(f"SSAO: {ao_enabled}")
+		elif chr(code).lower() == "o":
+			ao_method = "pass" if ao_method == "compose" else "compose"
+			renderer.set_ambient_occlusion(ao_enabled and ao_method == "compose")
+			print(f"SSAO path: {ao_method}")
 		elif chr(code) == " ": orbit = not orbit
 		elif chr(code).lower() == "d":
 			set_alternate_color(not alternate)
@@ -185,7 +206,7 @@ def run_scene():
 				if changed:
 					striped[name] = value
 					adapter.touch_materials(striped)
-			imgui.text_wrapped("D changes only the top-left default. Top-right has an explicit green material. Bottom-right adds inherited rim lighting. M: MSAA; F: transparency settings; Space: orbit.")
+			imgui.text_wrapped("D changes only the top-left default. Top-right has an explicit green material. Bottom-right adds inherited rim lighting. M: MSAA; A: SSAO; O: SSAO path; F: rendering settings; Space: orbit.")
 		finally: imgui.end()
 		settings.draw()
 	RenderContext.subscribe_event("char", on_char)
@@ -199,8 +220,15 @@ def run_scene():
 				camera.position = Vec3(9*sin(angle), 1.3, 9*cos(angle))
 				adapter.sync()
 				commands = RenderContext.commands("material_example")
-				renderer.record(commands, RenderContext.window_dimensions, camera, RenderContext.screen(),
+				output = RenderContext.screen()
+				if ao_enabled and ao_method == "pass":
+					ao_pass.resize(RenderContext.window_dimensions)
+					output = ao_pass.color_attachment()
+				renderer.record(commands, RenderContext.window_dimensions, camera, output,
 					frame={"time": animation_time}, lighting={"light_dir": (0.4, 0.8, 0.3)})
+				if ao_enabled and ao_method == "pass":
+					ao_pass.update_camera(camera, sample_count=renderer.transparency.sample_count)
+					ao_pass.record(commands, renderer.transparency.depth, RenderContext.screen())
 				RenderContext.submit(commands.finish())
 				gui.render(draw_controls)
 	finally:

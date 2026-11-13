@@ -151,6 +151,10 @@ class MaterialRenderer:
 		if self.transparency.set_sample_count(count):
 			self._register_passes()
 
+	def set_ambient_occlusion(self, enabled):
+		"""Enable or disable screen-space ambient occlusion."""
+		return self.transparency.set_ambient_occlusion(enabled)
+
 	def set_exact_nearest(self, enabled):
 		if self.transparency.set_exact_nearest(enabled): self._register_passes()
 

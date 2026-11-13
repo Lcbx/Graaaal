@@ -6,7 +6,7 @@ import pytest
 import glfw
 
 from graaal.TransparencyPass import BilateralFilter
-from scenes.transparency_settings import FilterSettings, SETTINGS
+from scenes.rendering_settings import FilterSettings, SETTINGS
 from scenes import transparency_example as scene
 
 
