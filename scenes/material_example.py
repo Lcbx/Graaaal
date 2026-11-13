@@ -14,6 +14,7 @@ import numpy as np
 
 from graaal.DefaultMaterial import DefaultMaterialShader
 from graaal.AmbientOcclusionPass import AmbientOcclusionPass
+from graaal.AntialiasingPass import AntialiasingPass
 from graaal.ECS import ECS
 from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
 from graaal.MaterialRenderer import MaterialMesh, DrawInstance, MaterialRenderer
@@ -112,6 +113,7 @@ def run_scene():
 	world, entities, meshes, shared, opaque = make_world()
 	renderer = MaterialRenderer(meshes=meshes, frame_fields={"time": ("f32", 0.0)})
 	ao_pass = AmbientOcclusionPass(target_format=renderer.transparency.target_format)
+	aa_pass = AntialiasingPass(target_format=renderer.transparency.target_format)
 	adapter = EcsMaterialAdapter(renderer, world)
 	overrides = world.get(MaterialInstance)[entities].overrides
 	striped = meshes[-1].shader.default_material
@@ -128,7 +130,7 @@ def run_scene():
 		ao_enabled = enabled
 		renderer.transparency.set_ambient_occlusion(enabled and ao_method == "compose")
 	settings = RenderingSettings(renderer, visible=False, position=(370, 12),
-		on_msaa_changed=set_msaa_enabled, on_ssao_changed=set_ssao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_pass)
+		on_msaa_changed=set_msaa_enabled, on_ssao_changed=set_ssao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_pass, aa_pass=aa_pass)
 	def set_alternate_color(enabled):
 		nonlocal alternate
 		alternate = enabled
@@ -221,6 +223,10 @@ def run_scene():
 				adapter.sync()
 				commands = RenderContext.commands("material_example")
 				output = RenderContext.screen()
+				if aa_pass.mode in ("lxaa", "faaa"):
+					aa_pass.resize(RenderContext.window_dimensions)
+					output = aa_pass.color_attachment()
+				aa_output = output
 				if ao_enabled and ao_method == "pass":
 					ao_pass.resize(RenderContext.window_dimensions)
 					output = ao_pass.color_attachment()
@@ -228,7 +234,9 @@ def run_scene():
 					frame={"time": animation_time}, lighting={"light_dir": (0.4, 0.8, 0.3)})
 				if ao_enabled and ao_method == "pass":
 					ao_pass.update_camera(camera, sample_count=renderer.transparency.sample_count)
-					ao_pass.record(commands, renderer.transparency.depth, RenderContext.screen())
+					ao_pass.record(commands, renderer.transparency.depth, aa_output)
+				if aa_pass.mode in ("lxaa", "faaa"):
+					aa_pass.record(commands, RenderContext.screen(), aa_pass.mode)
 				RenderContext.submit(commands.finish())
 				gui.render(draw_controls)
 	finally:

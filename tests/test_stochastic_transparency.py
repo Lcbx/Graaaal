@@ -265,6 +265,17 @@ def render_frame(render_scene):
 	render_scene.render_frame()
 
 
+def test_postprocess_antialiasing_with_both_ao_paths(gpu_scene):
+	renderer, output = gpu_scene
+	for mode in ("lxaa", "faaa"):
+		for ao_method in ("compose", "pass"):
+			renderer.aa_pass.mode = mode
+			renderer.set_ao_method(ao_method)
+			renderer.set_ao_enabled(True)
+			render_frame(renderer)
+			assert read_texture(output, np.uint8, 4)[:, :, :3].max() > 0
+
+
 def read_texture(texture, dtype, components):
 	width, height, _ = texture.size
 	row_bytes = width*np.dtype(dtype).itemsize*components

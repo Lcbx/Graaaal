@@ -80,7 +80,7 @@ class RenderingSettings:
 	"""Live rendering controls for a TransparencyPass or MaterialRenderer."""
 
 	def __init__(self, renderer, *, visible=True, position=(12, 12), on_msaa_changed=None,
-		on_ssao_changed=None, ssao_enabled=False, ao_pass=None):
+		on_ssao_changed=None, ssao_enabled=False, ao_pass=None, aa_pass=None):
 		self.controls = renderer
 		self.renderer = getattr(renderer, "transparency", renderer)
 		self.defaults = self.renderer.bilateral_filter
@@ -91,6 +91,8 @@ class RenderingSettings:
 		self.on_msaa_changed = on_msaa_changed
 		self.on_ssao_changed = on_ssao_changed
 		self.ao_pass = ao_pass
+		self.aa_pass = aa_pass
+		self.aa_mode = "msaa" if getattr(self.renderer, "sample_count", 1) == 4 else "off"
 		self.ssao_enabled = ssao_enabled
 		if self.on_ssao_changed is not None:
 			self.on_ssao_changed(ssao_enabled)
@@ -99,12 +101,19 @@ class RenderingSettings:
 
 	def set_msaa_enabled(self, enabled):
 		if type(enabled) is not bool: raise ValueError("MSAA enabled must be boolean")
-		sample_count = 4 if enabled else 1
-		if self.renderer.sample_count == sample_count: return
-		if self.on_msaa_changed is not None:
-			self.on_msaa_changed(enabled)
-		else:
-			self.controls.set_sample_count(sample_count)
+		self.set_aa_mode("msaa" if enabled else "off")
+
+	def set_aa_mode(self, mode):
+		if mode not in ("off", "msaa", "lxaa", "faaa"): raise ValueError("Unknown antialiasing mode")
+		if mode in ("lxaa", "faaa") and self.aa_pass is None: raise ValueError("Postprocess AA requires an AntialiasingPass")
+		sample_count = 4 if mode == "msaa" else 1
+		if self.renderer.sample_count != sample_count:
+			if self.on_msaa_changed is not None:
+				self.on_msaa_changed(mode == "msaa")
+			else:
+				self.controls.set_sample_count(sample_count)
+		self.aa_mode = mode
+		if self.aa_pass is not None: self.aa_pass.mode = mode
 
 	def set_ssao_enabled(self, enabled):
 		if type(enabled) is not bool: raise ValueError("SSAO enabled must be boolean")
@@ -241,12 +250,28 @@ class RenderingSettings:
 				"There is no smoothing across frames, so some noise can remain during camera movement.")
 
 	def draw_general_rendering_options(self, imgui):
-		changed, index = imgui.combo("Antialiasing (M)", int(self.renderer.sample_count == 4), ("Off", "MSAA 4x"))
+		modes = ("off", "msaa", "lxaa", "faaa") if self.aa_pass is not None else ("off", "msaa")
+		changed, index = imgui.combo("Antialiasing (M)", modes.index(self.aa_mode), ("Off", "MSAA 4x", "LXAA", "FAAA")[:len(modes)])
 		banded = getattr(self.renderer, "banded_tail", False)
 		_item_tooltip("4x samples opaque/MASK geometry and the exact nearest layer; optical transmission and both tail winners stay at 1x."
 			if self.renderer.keyed_tail else "4x samples opaque/MASK geometry, transmission and the exact nearest layer. Banded tail estimation stays at 1x. Linear HDR is resolved before tone mapping."
 			if banded else "4x samples geometry, opacity and winner selection at four positions per pixel. Reconstruction resolves linear HDR before tone mapping; no temporal accumulation.")
-		if changed: self.set_msaa_enabled(index == 1)
+		if changed: self.set_aa_mode(modes[index])
+		if self.aa_pass is not None and self.aa_mode in ("lxaa", "faaa"):
+			options = self.aa_pass.settings
+			if self.aa_mode == "lxaa":
+				changed, value = imgui.slider_float("LXAA edge threshold", options.lxaa_edge_threshold, 0.0, 1.0, "%.3f")
+				if changed: options = replace(options, lxaa_edge_threshold=value)
+				changed, value = imgui.checkbox("LXAA line check", options.lxaa_line_check)
+				if changed: options = replace(options, lxaa_line_check=value)
+			else:
+				changed, value = imgui.slider_float("FAAA edge threshold", options.faaa_edge_threshold, 1.0, 9.0, "%.2f")
+				if changed: options = replace(options, faaa_edge_threshold=value)
+				changed, value = imgui.slider_int("FAAA quality", options.faaa_quality, 1, 9)
+				if changed: options = replace(options, faaa_quality=value)
+				changed, value = imgui.checkbox("FAAA show edges", options.faaa_show_edges)
+				if changed: options = replace(options, faaa_show_edges=value)
+			self.aa_pass.set_settings(options)
 		changed, enabled = imgui.checkbox("SSAO (A)", self.ssao_enabled)
 		_item_tooltip("Screen-space ambient occlusion from the main depth buffer. A toggles SSAO; O selects the compose or separate-pass implementation.")
 		if changed: self.set_ssao_enabled(enabled)

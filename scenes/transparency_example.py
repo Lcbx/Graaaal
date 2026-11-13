@@ -20,6 +20,7 @@ import numpy as np
 
 from graaal.Assets import DEFAULT_BLUE_NOISE_PATH, load_blue_noise
 from graaal.AmbientOcclusionPass import AmbientOcclusionPass
+from graaal.AntialiasingPass import AntialiasingPass
 from graaal.DrawBatches import DrawBatches, FrustumCuller, HiZCuller, ShaderPass
 from graaal.HZB import HZB
 from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
@@ -90,6 +91,7 @@ class GeometryBatches:
 
 transparency: TransparencyPass
 ao_pass: AmbientOcclusionPass
+aa_pass: AntialiasingPass
 opaque_batches: GeometryBatches
 transparent_batches: GeometryBatches
 camera: Camera
@@ -106,7 +108,7 @@ ao_method = "compose"
 
 def init_scene(path=PATH, *, blue_noise_path=BLUE_NOISE_PATH, **transparency_options):
 	"""Initialize the example's global render data after device setup."""
-	global transparency, ao_pass, opaque_batches, transparent_batches, camera, hzb, center, radius, angle, orbit, distance, msaa_enabled, ao_enabled, ao_method
+	global transparency, ao_pass, aa_pass, opaque_batches, transparent_batches, camera, hzb, center, radius, angle, orbit, distance, msaa_enabled, ao_enabled, ao_method
 	primitives, materials, images, vertices = load_transparency_scene(path)
 	# Ignore a large flat ground plane when framing the example.
 	objects = [p.vertices["position"] for p in primitives if np.ptp(p.vertices["position"][:, 1]) > 0.01]
@@ -127,6 +129,7 @@ def init_scene(path=PATH, *, blue_noise_path=BLUE_NOISE_PATH, **transparency_opt
 		vertices=GpuBuffer(vertices, BufferUsage.STORAGE | BufferUsage.COPY_DST), blue_noise=blue_noise,
 		**transparency_options)
 	ao_pass = AmbientOcclusionPass(target_format=transparency.target_format)
+	aa_pass = AntialiasingPass(target_format=transparency.target_format)
 	msaa_enabled = transparency.sample_count == 4
 	ao_enabled, ao_method = False, "compose"
 	hzb = HZB()
@@ -243,13 +246,19 @@ def render_frame(*, profiler=None):
 			transparent_batches.draw(render, name)
 	record_transparency(commands, transparency, transparent_batches.passes, draw_transparent)
 	output = RenderContext.screen()
+	if aa_pass.mode in ("lxaa", "faaa"):
+		aa_pass.resize((width, height))
+		output = aa_pass.color_attachment()
+	aa_output = output
 	if ao_enabled and ao_method == "pass":
 		ao_pass.resize((width, height))
 		output = ao_pass.color_attachment()
 	transparency.compose(commands, output)
 	if ao_enabled and ao_method == "pass":
 		ao_pass.update_camera(camera, sample_count=transparency.sample_count)
-		ao_pass.record(commands, transparency.depth, RenderContext.screen())
+		ao_pass.record(commands, transparency.depth, aa_output)
+	if aa_pass.mode in ("lxaa", "faaa"):
+		aa_pass.record(commands, RenderContext.screen(), aa_pass.mode)
 	RenderContext.submit(commands.finish())
 	return True
 
@@ -262,7 +271,7 @@ def run_scene():
 		required_gpu_features=["indirect-first-instance"])
 	init_scene()
 	settings = RenderingSettings(transparency, on_msaa_changed=set_msaa_enabled,
-		on_ssao_changed=set_ao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_pass)
+		on_ssao_changed=set_ao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_pass, aa_pass=aa_pass)
 	RenderContext.event_handlers["mouse_scroll"].append(scroll_callback)
 	RenderContext.event_handlers["char"].append(on_char)
 	RenderContext.event_handlers["key"].append(settings.handle_key)

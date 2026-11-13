@@ -20,6 +20,21 @@ def make_renderer(**overrides):
 	return renderer
 
 
+def test_antialiasing_modes_disable_msaa_for_postprocess():
+	renderer = make_renderer(sample_count=4)
+	renderer.set_sample_count = lambda count: setattr(renderer, "sample_count", count)
+	aa = SimpleNamespace(mode="off")
+	panel = FilterSettings(renderer, aa_pass=aa)
+	panel.set_aa_mode("lxaa")
+	assert renderer.sample_count == 1 and aa.mode == "lxaa"
+	panel.set_aa_mode("faaa")
+	assert renderer.sample_count == 1 and aa.mode == "faaa"
+	panel.set_aa_mode("msaa")
+	assert renderer.sample_count == 4 and aa.mode == "msaa"
+	panel.set_aa_mode("off")
+	assert renderer.sample_count == 1 and aa.mode == "off"
+
+
 def test_filter_reset_restores_all_startup_values():
 	options = BilateralFilter(kernel_size=9, spatial_sigma=4, depth_sigma=0.12,
 		transmittance_sigma=0.7, min_depth_sigma=0.03)
