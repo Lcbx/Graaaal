@@ -223,7 +223,7 @@ class TransparencyPass:
 		if frame_fields is None: frame_fields = {}
 		if not isinstance(frame_fields, Mapping):
 			raise TypeError("frame_fields must map names to (WGSL type, default) pairs")
-		reserved = {"view", "proj", "camera_position", "clip", "grazing", "noise_footprint_balance", "noise_anchor"}
+		reserved = {"view", "proj", "camera_position", "clip", "grazing", "noise_footprint_balance", "noise_anchor", "_graaal_key_frame"}
 		self.frame_fields = {}
 		for name, spec in frame_fields.items():
 			if not isinstance(name, str) or not name.isascii() or not name.isidentifier() or name in reserved:
@@ -1121,11 +1121,11 @@ class TransparencyPass:
 
 	def _setup_keyed(self, size):
 		self.band_counts = self.band_payloads = self.band_proxy = self.band_clear_targets = None
-		count = size[0]*size[1]*5
+		count = size[0]*size[1]*self.sample_count*5
 		if count*4 > RenderContext.device.limits["max-storage-buffer-binding-size"]:
 			raise ValueError("Min-key optical sums exceed max-storage-buffer-binding-size")
 		self.optical = GpuBuffer(None, BufferUsage.STORAGE | BufferUsage.COPY_DST | BufferUsage.COPY_SRC, dtype=np.uint32, count=count, label="tail_optical")
-		self.key_resolve_shader = Shader(filepath=str(SHADERS / "stochastic_key_resolve.shader"))
+		self.key_resolve_shader = Shader(filepath=str(SHADERS / "stochastic_key_resolve.shader"), params={"sample_count": self.sample_count})
 		self.key_resolve_pipeline = ComputePipeline(self.key_resolve_shader, entry="resolve", layout=self._pipeline_layout(self.key_resolve_shader, "resolve"))
 		self.key_resolve_targets = self.key_resolve_shader.bind_group(1, optical=self.optical, transmission=self.transmittance, coverage=self.tail_coverage)
 		for geometry in self._transparent_geometries: self._bind_targets(geometry)
@@ -1133,7 +1133,7 @@ class TransparencyPass:
 			tail_coverage=self.tail_coverage, winner_color=self.winner_color)
 		color = self.winner_color.view(dimension="2d-array") if self.sample_count > 1 else self.winner_color
 		self.compose_frame = self._frame_group(self.compose_shader)
-		self.compose_resources = self.compose_shader.bind_group(1, main_color=self.main_color, transmittance=self.transmittance,
+		self.compose_resources = self.compose_shader.bind_group(1, optical=self.optical, main_color=self.main_color, transmittance=self.transmittance,
 			winner_color=color, first_color=color, opaque_depth=self.depth, transparent_depth=self.transparent_depth,
 			transparent_guide=self.transparent_guide, bilateral=self.bilateral_uniforms, nearest_alpha=self.nearest_alpha,
 			nearest_color=self.nearest_color.view(dimension="2d-array") if self.sample_count > 1 else self.nearest_color,
@@ -1343,7 +1343,7 @@ class TransparencyPass:
 		self._require_targets()
 		if self.keyed_tail:
 			commands.clear_buffer(self.optical)
-			self.uniforms.content["key_frame"] = (int(self.uniforms.content["key_frame"].flat[0])+1) & 0xffffffff
+			self.uniforms.content["_graaal_key_frame"] = (int(self.uniforms.content["_graaal_key_frame"].flat[0])+1) & 0xffffffff
 			self.uniforms.upload_changed()
 			@contextmanager
 			def optical_scope():

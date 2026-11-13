@@ -11,9 +11,14 @@ texture<1, 2> coverage: texture_storage_2d<r32float, write>;
 fn resolve(@builtin(global_invocation_id) id: vec3u) {
 	let size = textureDimensions(transmission);
 	if any(id.xy >= size) { return; }
-	let value = optical[id.y*size.x+id.x];
-	let tau = vec3f(vec3u(value.red, value.green, value.blue))*(1.0/1048576.0);
-	let s = f32(value.coverage)*(1.0/1048576.0);
-	textureStore(transmission, vec2i(id.xy), vec4f(exp(-tau), exp(-f32(value.scalar)*(1.0/1048576.0))));
-	textureStore(coverage, vec2i(id.xy), vec4f(s, 0.0, 0.0, 0.0));
+	var t = vec4f(0.0);
+	var s = 0.0;
+	for (var sample = 0u; sample < {{PARAMS.get("sample_count", 1)}}u; sample += 1u) {
+		let value = optical[(id.y*size.x+id.x)*{{PARAMS.get("sample_count", 1)}}u+sample];
+		let tau = vec3f(vec3u(value.red, value.green, value.blue))*(1.0/1048576.0);
+		t += vec4f(exp(-tau), exp(-f32(value.scalar)*(1.0/1048576.0)));
+		s += f32(value.coverage)*(1.0/1048576.0);
+	}
+	textureStore(transmission, vec2i(id.xy), t/{{PARAMS.get("sample_count", 1)}}.0);
+	textureStore(coverage, vec2i(id.xy), vec4f(s/{{PARAMS.get("sample_count", 1)}}.0, 0.0, 0.0, 0.0));
 }

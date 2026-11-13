@@ -47,7 +47,7 @@ storage<3, 10, read_write> optical: array<Optical>;
 
 fn keyed_u(input: VertexOutput, pixel: vec2u, front: bool) -> f32 {
 	let info = metadata[input.instance];
-	var seed = hash_u32(frame.key_frame ^ 0x9e3779b9u);
+	var seed = hash_u32(frame._graaal_key_frame ^ 0x9e3779b9u);
 	seed = hash_u32(seed ^ hash_u32(pixel.x ^ 0x85ebca6bu));
 	seed = hash_u32(seed ^ hash_u32(pixel.y ^ 0xc2b2ae35u));
 	seed = hash_u32(seed ^ hash_u32(input.instance ^ 0x27d4eb2fu));
@@ -67,13 +67,14 @@ fn tail_optical(input: VertexOutput, @builtin(front_facing) front: bool) -> @loc
 	let material = get_material(input.instance);
 	let alpha = raster_opacity(input.instance, material, input.uv, lod, input.world);
 	if material.surface.z == 1.0 || (!front && material.flags.y == 0u) { discard; }
-	if is_exact_nearest(input, 0u) || input.position.z >= raster_opaque_depth(vec2i(input.position.xy), 0u) { discard; }
 	let p = max(alpha.x, max(alpha.y, alpha.z));
 	if p <= 0.0 { discard; }
-	let index = u32(input.position.y)*textureDimensions(opaque_depth).x+u32(input.position.x);
 	let value = -log(max(vec3f(1.0)-alpha, vec3f(1e-14)));
 	let amounts = vec4u(u32(round(min(value.x, 32.0)*1048576.0)), u32(round(min(value.y, 32.0)*1048576.0)),
 		u32(round(min(value.z, 32.0)*1048576.0)), u32(round(p*1048576.0)));
+	for (var sample = 0u; sample < {{GUIDE_SAMPLES}}u; sample += 1u) {
+	if is_exact_nearest(input, sample) || input.position.z >= raster_opaque_depth(vec2i(input.position.xy), sample) { continue; }
+	let index = (u32(input.position.y)*textureDimensions(opaque_depth).x+u32(input.position.x))*{{GUIDE_SAMPLES}}u+sample;
 	var red = atomicLoad(&optical[index].red);
 	loop {
 		let result = atomicCompareExchangeWeak(&optical[index].red, red, red+min(amounts.x, 0xffffffffu-red));
@@ -105,6 +106,7 @@ fn tail_optical(input: VertexOutput, @builtin(front_facing) front: bool) -> @loc
 		if result.exchanged { break; }
 		coverage = result.old_value;
 	}
+	}
 	return vec4f(0.0);
 }
 
@@ -114,7 +116,11 @@ fn select_keyed(input: VertexOutput, @builtin(front_facing) front: bool) -> KeyO
 	let material = get_material(input.instance);
 	let alpha = raster_opacity(input.instance, material, input.uv, lod, input.world);
 	if material.surface.z == 1.0 || (!front && material.flags.y == 0u) { discard; }
-	if is_exact_nearest(input, 0u) || input.position.z >= raster_opaque_depth(vec2i(input.position.xy), 0u) { discard; }
+	var visible = false;
+	for (var sample = 0u; sample < {{GUIDE_SAMPLES}}u; sample += 1u) {
+		visible = visible || (!is_exact_nearest(input, sample) && input.position.z < raster_opaque_depth(vec2i(input.position.xy), sample));
+	}
+	if !visible { discard; }
 	let p = max(alpha.x, max(alpha.y, alpha.z));
 	if p <= 0.0 { discard; }
 	let u = keyed_u(input, vec2u(input.position.xy), front);

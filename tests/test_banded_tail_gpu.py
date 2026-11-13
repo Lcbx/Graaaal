@@ -8,6 +8,42 @@ from graaal.Math import Camera
 from graaal.RenderContext import RenderContext, RenderPipeline, Shader, Texture, TextureUsage
 
 
+@pytest.mark.parametrize("mask", [1, 14])
+def test_min_key_opaque_msaa_coverage_is_per_sample(factory, mask):
+	renderer = factory(sample_count=4, layers=3, tail_allocation="min_key", winner_coupling="complement", kawase_passes=0,
+		frame_fields={"key_frame": ("f32", 2.0)})
+	usage = TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING
+	color = Texture((32, 32), format="rgba16float", usage=usage, sample_count=4)
+	depth = Texture((32, 32), format="depth32float", usage=usage, sample_count=4)
+	renderer.transparency.set_opaque_inputs(color, depth)
+	shader = Shader(source='''
+<Output> @location(0) color: vec4f;
+<Output> @builtin(frag_depth) depth: f32;
+<Output> @builtin(sample_mask) mask: u32;
+@vertex fn vertex(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+	return vec4f(vec2f(f32((i << 1u) & 2u), f32(i & 2u))*2.0-1.0, 0.0, 1.0);
+}
+@fragment fn fragment() -> Output {
+	return Output(vec4f(0.0, 0.2, 0.3, 1.0), 0.2, MASKu);
+}
+'''.replace("MASK", str(mask)))
+	pipeline = RenderPipeline(shader, cull_mode="none", depth_test="always", sample_count=4)
+	output = Texture((32, 32), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
+	commands = RenderContext.commands()
+	with commands.render_pass(color=color.color_attachment(clear=(0, 0, 0, 1)), depth=depth.depth_attachment(clear=1)) as draw:
+		draw.set_pipeline(pipeline)
+		draw.draw(3)
+	renderer.record(commands, (32, 32), Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 55), output.color_attachment())
+	RenderContext.submit(commands.finish())
+	oit = renderer.transparency
+	optical = np.frombuffer(RenderContext.device.queue.read_buffer(oit.optical.handle), dtype=np.uint32).reshape(32, 32, 4, 5)
+	for sample in range(4):
+		if mask & (1 << sample): np.testing.assert_array_equal(optical[:, :, sample], 0)
+		else: assert np.all(optical[:, :, sample, 4] > 0)
+	assert np.all(read(oit.key_payload_a, np.uint32)[..., 0] > 0)
+	assert float(oit.uniforms.content["key_frame"].flat[0]) == 2.0
+
+
 @pytest.mark.parametrize("samples", [1, 4])
 def test_min_key_tail_winners_and_optical_depth(factory, samples):
 	renderer = factory(sample_count=samples, layers=3, alpha=0.5, tail_allocation="min_key", winner_coupling="complement", kawase_passes=0)

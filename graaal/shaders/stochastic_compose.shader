@@ -1,5 +1,13 @@
 #set RECONSTRUCT_MODE = "compose"
 #include "stochastic_reconstruction.shaderlib"
+#if PARAMS.get("keyed_tail", false)
+<KeyOptical> red: u32;
+<KeyOptical> green: u32;
+<KeyOptical> blue: u32;
+<KeyOptical> scalar: u32;
+<KeyOptical> coverage: u32;
+storage<1, 15, read> optical: array<KeyOptical>;
+#endif
 #if not PARAMS.srgb_surface
 #include "utils_color.shaderlib"
 #endif
@@ -29,7 +37,12 @@ fn present_linear(color: vec3f) -> vec4f {
 
 fn compose_sample(pixel: vec2i, sample: u32) -> vec3f {
 	let dimensions = vec2i(textureDimensions(transmittance));
+#if PARAMS.get("keyed_tail", false)
+	let value = optical[(u32(pixel.y)*u32(dimensions.x)+u32(pixel.x))*{{PARAMS.get("sample_count", 1)}}u+sample];
+	let t = exp(-vec4f(f32(value.red), f32(value.green), f32(value.blue), f32(value.scalar))*(1.0/1048576.0));
+#else
 	let t = tail_t(pixel, sample);
+#endif
 #if PARAMS.get("exact_nearest", false)
 	if bilateral.kernel.y == 11u { return vec3f(t.a); }
 	if bilateral.kernel.y == 10u { return vec3f(select(0.0, 1.0, sample_texture_load(nearest_alpha, pixel, sample).a > 0.0)); }

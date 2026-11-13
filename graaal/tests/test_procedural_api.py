@@ -238,7 +238,7 @@ def test_invalid_custom_frame_fields_leave_uniforms_unchanged(updates):
 
 
 def test_custom_frame_schema_rejects_reserved_names_and_malformed_specs():
-    for spec in ({"view": ("f32", 0)}, {"time": "f32"}, {"other-field": ("f32", 0)}):
+    for spec in ({"view": ("f32", 0)}, {"_graaal_key_frame": ("u32", 0)}, {"time": "f32"}, {"other-field": ("f32", 0)}):
         with pytest.raises((TypeError, ValueError)):
             transparency.TransparencyPass(materials=None, base_textures=None, vertices=None, frame_fields=spec)
 

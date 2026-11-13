@@ -1,13 +1,12 @@
 # Engine backlog and explicit exclusions
 
 * add proper monitoring and logging
-* add bindless materials
+* make SSAO respect normals
+* add FXAA
 * implement Forward+ / tiled shading
 * add compute light binning
 * implement ramp / toon shading
 * implement shadow maps
-* add SSAO
-* add FXAA
 * make wgpu-py Canvas use msaa for main buffer (?)
 * implement grid-based ambient probes
 * experiment with a kuwahara material
