@@ -104,8 +104,8 @@ class RenderingSettings:
 		self.set_aa_mode("msaa" if enabled else "off")
 
 	def set_aa_mode(self, mode):
-		if mode not in ("off", "msaa", "lxaa", "faaa"): raise ValueError("Unknown antialiasing mode")
-		if mode in ("lxaa", "faaa") and self.aa_pass is None: raise ValueError("Postprocess AA requires an AntialiasingPass")
+		if mode not in ("off", "msaa", "lxaa", "faaa", "ddaa2"): raise ValueError("Unknown antialiasing mode")
+		if mode in ("lxaa", "faaa", "ddaa2") and self.aa_pass is None: raise ValueError("Postprocess AA requires an AntialiasingPass")
 		sample_count = 4 if mode == "msaa" else 1
 		if self.renderer.sample_count != sample_count:
 			if self.on_msaa_changed is not None:
@@ -250,27 +250,37 @@ class RenderingSettings:
 				"There is no smoothing across frames, so some noise can remain during camera movement.")
 
 	def draw_general_rendering_options(self, imgui):
-		modes = ("off", "msaa", "lxaa", "faaa") if self.aa_pass is not None else ("off", "msaa")
-		changed, index = imgui.combo("Antialiasing (M)", modes.index(self.aa_mode), ("Off", "MSAA 4x", "LXAA", "FAAA")[:len(modes)])
+		modes = ("off", "msaa", "lxaa", "faaa", "ddaa2") if self.aa_pass is not None else ("off", "msaa")
+		changed, index = imgui.combo("Antialiasing (M)", modes.index(self.aa_mode), ("Off", "MSAA 4x", "LXAA", "FAAA", "DDAA2")[:len(modes)])
 		banded = getattr(self.renderer, "banded_tail", False)
 		_item_tooltip("4x samples opaque/MASK geometry and the exact nearest layer; optical transmission and both tail winners stay at 1x."
 			if self.renderer.keyed_tail else "4x samples opaque/MASK geometry, transmission and the exact nearest layer. Banded tail estimation stays at 1x. Linear HDR is resolved before tone mapping."
 			if banded else "4x samples geometry, opacity and winner selection at four positions per pixel. Reconstruction resolves linear HDR before tone mapping; no temporal accumulation.")
 		if changed: self.set_aa_mode(modes[index])
-		if self.aa_pass is not None and self.aa_mode in ("lxaa", "faaa"):
+		if self.aa_pass is not None and self.aa_mode in ("lxaa", "faaa", "ddaa2"):
 			options = self.aa_pass.settings
 			if self.aa_mode == "lxaa":
 				changed, value = imgui.slider_float("LXAA edge threshold", options.lxaa_edge_threshold, 0.0, 1.0, "%.3f")
 				if changed: options = replace(options, lxaa_edge_threshold=value)
 				changed, value = imgui.checkbox("LXAA line check", options.lxaa_line_check)
 				if changed: options = replace(options, lxaa_line_check=value)
-			else:
+			elif self.aa_mode == "faaa":
 				changed, value = imgui.slider_float("FAAA edge threshold", options.faaa_edge_threshold, 1.0, 9.0, "%.2f")
 				if changed: options = replace(options, faaa_edge_threshold=value)
 				changed, value = imgui.slider_int("FAAA quality", options.faaa_quality, 1, 9)
 				if changed: options = replace(options, faaa_quality=value)
 				changed, value = imgui.checkbox("FAAA show edges", options.faaa_show_edges)
 				if changed: options = replace(options, faaa_show_edges=value)
+			else:
+				changed, value = imgui.slider_float("DDAA2 diffusion strength", options.ddaa2_strength, 0.0, 10.0, "%.2f")
+				if changed: options = replace(options, ddaa2_strength=value)
+				changed, value = imgui.slider_float("DDAA2 minimum edge threshold", options.ddaa2_threshold_min, 0.0, 1.0, "%.4f")
+				if changed: options = replace(options, ddaa2_threshold_min=value)
+				changed, value = imgui.slider_float("DDAA2 relative edge threshold", options.ddaa2_threshold_max, 0.0, 1.0, "%.4f")
+				if changed: options = replace(options, ddaa2_threshold_max=value)
+				changed, value = imgui.slider_int("DDAA2 edge search steps", options.ddaa2_edge_steps, 0, 5)
+				_item_tooltip("Each step searches three pixels in each direction; zero disables edge search.")
+				if changed: options = replace(options, ddaa2_edge_steps=value)
 			self.aa_pass.set_settings(options)
 		changed, enabled = imgui.checkbox("SSAO (A)", self.ssao_enabled)
 		_item_tooltip("Screen-space ambient occlusion from the main depth buffer. A toggles SSAO; O selects the compose or separate-pass implementation.")

@@ -15,20 +15,30 @@ class AntialiasingSettings:
 	faaa_edge_threshold: float = 5.0
 	faaa_quality: int = 5
 	faaa_show_edges: bool = False
+	ddaa2_strength: float = 3.0
+	ddaa2_threshold_min: float = 0.0625
+	ddaa2_threshold_max: float = 0.166
+	ddaa2_edge_steps: int = 5
 
 	def __post_init__(self):
 		if not np.isfinite(self.lxaa_edge_threshold) or not 0 <= self.lxaa_edge_threshold <= 1: raise ValueError("LXAA threshold must be between 0 and 1")
 		if not np.isfinite(self.faaa_edge_threshold) or not 1 <= self.faaa_edge_threshold <= 9: raise ValueError("FAAA threshold must be between 1 and 9")
 		if type(self.faaa_quality) is not int or not 1 <= self.faaa_quality <= 9: raise ValueError("FAAA quality must be an integer between 1 and 9")
 		if type(self.lxaa_line_check) is not bool or type(self.faaa_show_edges) is not bool: raise ValueError("AA switches must be boolean")
+		if not np.isfinite(self.ddaa2_strength) or not 0 <= self.ddaa2_strength <= 10: raise ValueError("DDAA2 strength must be between 0 and 10")
+		if not all(np.isfinite(value) and 0 <= value <= 1 for value in (self.ddaa2_threshold_min, self.ddaa2_threshold_max)): raise ValueError("DDAA2 thresholds must be between 0 and 1")
+		if type(self.ddaa2_edge_steps) is not int or not 0 <= self.ddaa2_edge_steps <= 5: raise ValueError("DDAA2 edge steps must be an integer between 0 and 5")
 
 
 class AntialiasingPass:
-	"""Apply LXAA or FAAA to a single-sample color target."""
+	"""Apply LXAA, FAAA or DDAA2 to a final, opaque single-sample color target.
+
+	The pass preserves each pixel's alpha and expects opaque input.
+	"""
 	def __init__(self, *, target_format=None, settings=None):
 		self.target_format = target_format or getattr(RenderContext, "presentation_format", "rgba8unorm")
 		self.shader = Shader(filepath=str(Path(__file__).with_name("shaders") / "antialiasing.shader"), params={"srgb_surface": self.target_format.endswith("-srgb")})
-		self.pipelines = {mode: RenderPipeline(self.shader, vertex_entry="fullscreen", fragment_entry=mode, depth_test=None, depth_write=False, cull_mode="none", label=mode) for mode in ("lxaa", "faaa")}
+		self.pipelines = {mode: RenderPipeline(self.shader, vertex_entry="fullscreen", fragment_entry=mode, depth_test=None, depth_write=False, cull_mode="none", label=mode) for mode in ("lxaa", "faaa", "ddaa2")}
 		self.uniforms = self.shader.uniform_buffer("aa_settings")
 		self.settings = None
 		self.set_settings(settings if settings is not None else AntialiasingSettings())
@@ -36,12 +46,13 @@ class AntialiasingPass:
 		self.size = self.source = None
 
 	def set_settings(self, settings):
-		"""Set the LXAA and FAAA controls."""
+		"""Set the antialiasing controls."""
 		if not isinstance(settings, AntialiasingSettings): raise TypeError("Expected AntialiasingSettings")
 		if settings == self.settings: return False
 		self.settings = settings
 		self.uniforms.content["values"] = (settings.lxaa_edge_threshold, settings.faaa_edge_threshold, 0, 0)
-		self.uniforms.content["flags"] = (int(settings.lxaa_line_check), settings.faaa_quality, int(settings.faaa_show_edges), 0)
+		self.uniforms.content["flags"] = (int(settings.lxaa_line_check), settings.faaa_quality, int(settings.faaa_show_edges), settings.ddaa2_edge_steps)
+		self.uniforms.content["ddaa2"] = (settings.ddaa2_strength, settings.ddaa2_threshold_min, settings.ddaa2_threshold_max, 0)
 		self.uniforms.upload_changed()
 		return True
 
@@ -62,8 +73,8 @@ class AntialiasingPass:
 		return self.source.color_attachment(clear=clear)
 
 	def record(self, commands, output, mode):
-		"""Record LXAA or FAAA to a single-sample output attachment."""
-		if mode not in self.pipelines: raise ValueError("Antialiasing mode must be lxaa or faaa")
+		"""Record LXAA, FAAA or DDAA2 to a single-sample output attachment."""
+		if mode not in self.pipelines: raise ValueError("Antialiasing mode must be lxaa, faaa or ddaa2")
 		if self.source is None: raise RuntimeError("Resize antialiasing targets first")
 		if output.format != self.target_format or output.sample_count != 1: raise ValueError("Antialiasing output must match the target format and be single-sample")
 		bindings = self.shader.bind_group(0, aa_settings=self.uniforms, scene_color=self.source)

@@ -29,10 +29,27 @@ def test_antialiasing_modes_disable_msaa_for_postprocess():
 	assert renderer.sample_count == 1 and aa.mode == "lxaa"
 	panel.set_aa_mode("faaa")
 	assert renderer.sample_count == 1 and aa.mode == "faaa"
+	panel.set_aa_mode("ddaa2")
+	assert renderer.sample_count == 1 and aa.mode == "ddaa2"
 	panel.set_aa_mode("msaa")
 	assert renderer.sample_count == 4 and aa.mode == "msaa"
 	panel.set_aa_mode("off")
 	assert renderer.sample_count == 1 and aa.mode == "off"
+
+
+def test_transparency_msaa_shortcut_updates_antialiasing_mode(monkeypatch):
+	renderer = make_renderer(sample_count=1)
+	renderer.set_sample_count = lambda count: setattr(renderer, "sample_count", count)
+	aa = SimpleNamespace(mode="off")
+	monkeypatch.setattr(scene, "transparency", renderer, raising=False)
+	monkeypatch.setattr(scene, "msaa_enabled", False)
+	panel = FilterSettings(renderer, on_msaa_changed=scene.set_msaa_enabled, aa_pass=aa)
+	monkeypatch.setattr(scene, "settings", panel, raising=False)
+	panel.set_aa_mode("ddaa2")
+	scene.on_char(ord("m"))
+	assert renderer.sample_count == 4 and panel.aa_mode == aa.mode == "msaa"
+	scene.on_char(ord("m"))
+	assert renderer.sample_count == 1 and panel.aa_mode == aa.mode == "off"
 
 
 def test_filter_reset_restores_all_startup_values():

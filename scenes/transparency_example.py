@@ -204,7 +204,7 @@ def on_char(code):
 		transparency.set_grazing_fade(replace(options, enabled=not options.enabled))
 		print(f"Grazing fade: {not options.enabled}, {options.start_angle:g} to {options.end_angle:g} degrees")
 	elif chr(code).lower() == "m":
-		set_msaa_enabled(not msaa_enabled)
+		settings.set_msaa_enabled(not msaa_enabled)
 		print(f"MSAA: {transparency.sample_count}x")
 	elif chr(code).lower() == "a":
 		settings.set_ssao_enabled(not ao_enabled)
@@ -246,7 +246,7 @@ def render_frame(*, profiler=None):
 			transparent_batches.draw(render, name)
 	record_transparency(commands, transparency, transparent_batches.passes, draw_transparent)
 	output = RenderContext.screen()
-	if aa_pass.mode in ("lxaa", "faaa"):
+	if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
 		aa_pass.resize((width, height))
 		output = aa_pass.color_attachment()
 	aa_output = output
@@ -257,7 +257,7 @@ def render_frame(*, profiler=None):
 	if ao_enabled and ao_method == "pass":
 		ao_pass.update_camera(camera, sample_count=transparency.sample_count)
 		ao_pass.record(commands, transparency.depth, aa_output)
-	if aa_pass.mode in ("lxaa", "faaa"):
+	if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
 		aa_pass.record(commands, RenderContext.screen(), aa_pass.mode)
 	RenderContext.submit(commands.finish())
 	return True

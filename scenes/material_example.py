@@ -223,7 +223,7 @@ def run_scene():
 				adapter.sync()
 				commands = RenderContext.commands("material_example")
 				output = RenderContext.screen()
-				if aa_pass.mode in ("lxaa", "faaa"):
+				if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
 					aa_pass.resize(RenderContext.window_dimensions)
 					output = aa_pass.color_attachment()
 				aa_output = output
@@ -235,7 +235,7 @@ def run_scene():
 				if ao_enabled and ao_method == "pass":
 					ao_pass.update_camera(camera, sample_count=renderer.transparency.sample_count)
 					ao_pass.record(commands, renderer.transparency.depth, aa_output)
-				if aa_pass.mode in ("lxaa", "faaa"):
+				if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
 					aa_pass.record(commands, RenderContext.screen(), aa_pass.mode)
 				RenderContext.submit(commands.finish())
 				gui.render(draw_controls)
