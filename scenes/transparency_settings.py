@@ -203,10 +203,174 @@ class FilterSettings:
 				changed, value = imgui.drag_float(label, getattr(self.renderer.grazing_fade, name), 0.5, 0.0, 90.0, "%.2f")
 				if changed: self.set_grazing_angle(name, value)
 
+	def draw_tuning_guide(self, imgui):
+		if not getattr(self.renderer, "banded_tail", False) and imgui.collapsing_header("Tuning guide"):
+			imgui.text_wrapped("Start with the reconstruction view. Increase the confidence budget, or bilateral spread/kernel size, to smooth noise; "
+				"reduce depth and transmittance tolerances if colors bleed across edges.")
+			imgui.text_wrapped("Use 1 x 1 to inspect the raw stochastic result. Bilateral filters use fixed kernels; confidence filters expose a support budget. "
+				"Slope correction is always enabled. Certain opaque interiors bypass blur. "
+				"Filter support shows whether edge rejection leaves too few neighbors.")
+			imgui.text_wrapped("Filter controls smooth reconstruction; noise controls choose winners; grazing fade reduces opacity at steep view angles. "
+				"There is no smoothing across frames, so some noise can remain during camera movement.")
+
+	def draw_rendering_options(self, imgui):
+		changed, index = imgui.combo("Tail allocation", int(getattr(self.renderer, "banded_tail", False)), ("Stochastic nearest wins", "Banded + dual Kawase (experimental)"))
+		_item_tooltip("Banded captures the exact nearest layer, selects a complementary pair with shared screen noise, then blurs the tail. WebGPU atomic ordering can change between frames; thick tails use an approximate opacity-weighted color mix.")
+		if changed:
+			self.controls.set_tail_allocation(("stochastic", "banded")[index])
+			self.sync_debug_view(self.renderer)
+		banded = getattr(self.renderer, "banded_tail", False)
+		views = self.sync_debug_view(self.renderer)
+		imgui.begin_disabled(banded)
+		changed, enabled = imgui.checkbox("Exact nearest layer", self.renderer.exact_nearest)
+		_item_tooltip("Shade the nearest visible transparent fragment deterministically, and sample only the remaining tail. Adds capture and shading passes; every nonzero opacity is eligible.")
+		if changed: self.controls.set_exact_nearest(enabled)
+		imgui.end_disabled()
+		labels = tuple(self.debug_view_label(self.renderer, view) for view in views)
+		changed, index = imgui.combo("Diagnostic view", views.index(self.renderer.debug_view), labels)
+		help_text = DEBUG_VIEW_HELP[views[index]]
+		if views[index] == "winner" and banded and self.renderer.banded_proxy:
+			help_text = "Signed unblurred residual, displayed as 0.5 + 0.5 * residual: neutral grey is zero. Display clips outside [-1, 1]; the actual float filtering remains signed and unclamped."
+		if views[index] == "filter_support" and self.renderer.reconstruction in ("push_pull", "atrous"):
+			help_text = "Local expected-winner weight divided by the target budget. Dark pixels prefer the broader pyramid estimate; white pixels trust the local estimate."
+			if self.renderer.reconstruction == "atrous": help_text = "Final retained unit-peak acceptance D divided by the budget, clamped to one. Includes rejection from every cascade pass."
+		_item_tooltip(help_text)
+		if changed: self.renderer.set_debug_view(views[index])
+		changed, index = imgui.combo("MSAA (M)", int(self.renderer.sample_count == 4), ("Off (1x)", "4x"))
+		_item_tooltip("4x samples opaque/MASK geometry, transmission and the exact nearest layer. Banded tail estimation stays at 1x. Linear HDR is resolved before tone mapping."
+			if banded else "4x samples geometry, opacity and winner selection at four positions per pixel. Reconstruction resolves linear HDR before tone mapping; no temporal accumulation.")
+		if changed: self.controls.set_sample_count((1, 4)[index])
+		return banded
+
+	def draw_banded_tail_options(self, imgui):
+		imgui.separator_text("Tail estimation")
+		changed, enabled = imgui.checkbox("Proxy residual", self.renderer.banded_proxy)
+		_item_tooltip("Accumulate opacity-weighted texture albedo at full resolution and blur only the signed shading residual. The proxy is restored locally; thick-tail mixing remains approximate.")
+		if changed: self.controls.set_banded_options(proxy=enabled)
+		changed, enabled = imgui.checkbox("Shade one pixel per 2 x 2 block", self.renderer.banded_subset)
+		_item_tooltip("Fixed spatial mask, compact payloads, and one lighting invocation per block. Increases noise; compare one additional blur pair. Alpha derivatives still run before the allocation discard.")
+		if changed: self.controls.set_banded_options(subset=enabled)
+		imgui.separator_text("Dual Kawase tail blur")
+		changed, passes = imgui.slider_int("Down/up pairs", self.renderer.kawase_passes, 0, 8)
+		_item_tooltip("Each pair adds one half-resolution downsample and one upsample. Zero shows the unblurred tail. Color and allocation confidence are blurred together; the nearest layer stays sharp. Blur is not depth-guided and can bleed across tail edges.")
+		if changed: self.controls.set_kawase_passes(passes)
+		changed, value = imgui.drag_float("Screen noise cell size (px at 1x)", self.renderer.noise_scale, 0.05, 0.25, 4.0, "%.3g")
+		if changed and np.isfinite(value): self.renderer.set_noise_scale(max(0.25, min(4.0, value)))
+		self.draw_grazing()
+		imgui.text_wrapped("Left/Right changes blur pairs. F hides/shows settings. Tail noise is shared in screen space; per-surface noise controls do not apply.")
+
+	def draw_winner_options(self, imgui):
+		changed, count = imgui.input_int("Winner draws", self.renderer.winner_count)
+		_item_tooltip("Any positive draw count in Fill mode; Average supports one or two. Choose Object hash or Anchored blue and Fill before increasing beyond two. Each attempt adds selection and shading work; silhouettes are unchanged.")
+		if changed:
+			try: self.controls.set_winner_count(max(1, count))
+			except ValueError as error: self.message = str(error)
+		if self.renderer.winner_count > 1:
+			if self.renderer.winner_mix == "average":
+				changed, index = imgui.combo("Winner pairing", ("complement", "independent").index(self.renderer.winner_coupling), ("Complemented (one tile)", "Independent"))
+				_item_tooltip("Complement the same fully remapped threshold for B. Fill always uses independent retries.")
+				if changed: self.controls.set_winner_coupling(("complement", "independent")[index])
+			if self.renderer.noise_mode not in FILL_NOISE_MODES:
+				imgui.text_wrapped("Fill requires Object hash or Anchored blue noise.")
+			changed, index = imgui.combo("Winner mix", ("average", "fill").index(self.renderer.winner_mix), ("Average", "Fill holes (experimental)"))
+			_item_tooltip("Fill retries only empty samples, compensating neighbour weights. Audited for default-source object hash and anchored blue only; other modes retain averaging.")
+			if changed:
+				try: self.controls.set_winner_mix(("average", "fill")[index])
+				except ValueError as error: self.message = str(error)
+		changed, enabled = imgui.checkbox("Force single contributor", self.renderer.force_single_contributor)
+		_item_tooltip("Exactly count nonzero visible contributors. A sole contributor is accepted deterministically and weighted by its opacity. Adds a small count attachment; disabled by default.")
+		if changed: self.controls.set_force_single_contributor(enabled)
+
+	def draw_noise_options(self, imgui):
+		imgui.separator_text("Noise sampling")
+		changed, index = imgui.combo("Noise sampling (N)", NOISE_MODES.index(self.renderer.noise_mode), NOISE_LABELS)
+		_item_tooltip("UV modes point-sample two surface-anchored octaves and use object hashing when UVs are degenerate. "
+			"Stochastic pick uses an independent surface hash as selector; CDF lerp is the smoother alternative. "
+			"Correlated hierarchy uses re-ranked parent levels with one shared origin. Triplanar uses object-space projections "
+			"and smooth normal weights, ignoring UVs. Bayer is an ordered comparison with possible crosshatching. ")
+		if changed:
+			if self.renderer.winner_mix == "fill" and NOISE_MODES[index] not in FILL_NOISE_MODES:
+				if self.renderer.winner_count > 2: self.controls.set_winner_count(2)
+				self.controls.set_winner_mix("average")
+			self.renderer.set_noise_mode(NOISE_MODES[index])
+		changed, value = imgui.drag_float("Noise cell size at 1x (px)", self.renderer.noise_scale, 0.05, 0.25, 4.0, "%.3g")
+		_item_tooltip("Base width at 1x; 4x MSAA halves the effective width. "
+			"Size is approximate and cells can stretch at grazing angles. Larger values give coarser, more stable grain. [ / ] also adjust it.")
+		if changed and np.isfinite(value): self.renderer.set_noise_scale(max(0.25, min(4.0, value)))
+		imgui.text(f"Target cell size: {self.renderer.effective_noise_scale:.3g} px ({self.renderer.sample_count}x MSAA)")
+		imgui.separator_text("UV footprint balancing")
+		changed, enabled = imgui.checkbox("Enable UV footprint balancing", self.renderer.noise_footprint_balancing)
+		_item_tooltip("UV shader feature, enabled by default at strength one. Shader variants are cached.")
+		if changed: self.controls.set_noise_footprint_balancing(enabled)
+		if self.renderer.noise_footprint_balancing:
+			changed, value = imgui.slider_float("UV footprint balance", self.renderer.noise_footprint_balance, 0.0, 1.0, "%.2f")
+			_item_tooltip("0: maximum derivative (current sizing). 0.5: geometric mean/area. 1: minimum derivative. "
+				"Finer grain reduces the long cells at tilt but makes the compressed axis subpixel. UV modes only.")
+			if changed: self.renderer.set_noise_footprint_balance(value)
+			if not self.renderer.noise_mode.startswith("uv_"):
+				imgui.text_wrapped("Select a UV noise mode to see the effect of footprint balancing.")
+		if self.renderer.noise_mode == "anchored_blue": self.draw_surface_anchor_options(imgui)
+
+	def draw_surface_anchor_options(self, imgui):
+		imgui.separator_text("Surface anchor")
+		changed, value = imgui.drag_float("Anchor target (px)", self.renderer.noise_anchor_pixels, 0.5, 8.0, 64.0, "%.1f")
+		_item_tooltip("Coarse rest-space anchor grid, sized by projected area. Grain itself remains pixel-sized.")
+		if changed: self.renderer.set_noise_anchor(value, self.renderer.noise_anchor_subdivisions)
+		changed, value = imgui.slider_int("Shift subdivisions", self.renderer.noise_anchor_subdivisions, 1, 32)
+		_item_tooltip("Finer rest cells select independent tile shifts without changing the anchor. More subdivisions reduce layer correlation but add seams. Layers within one fine cell can still share thresholds.")
+		if changed: self.renderer.set_noise_anchor(self.renderer.noise_anchor_pixels, value)
+
+	def draw_reconstruction_options(self, imgui):
+		imgui.separator_text("Reconstruction")
+		implementations = ("atrous", "push_pull", "fragment", "compute")
+		changed, index = imgui.combo("Filter implementation", implementations.index(self.renderer.reconstruction), ("A-trous cascade", "Confidence pyramid", "Bilateral fragment", "Bilateral compute"))
+		_item_tooltip("A-trous uses full-resolution dilated tents and retained support. Push-pull keeps the downsampled comparison. Bilateral modes retain fixed kernels and optional stacked passes.")
+		if changed: self.controls.set_reconstruction(implementations[index])
+		if self.renderer.reconstruction in ("push_pull", "atrous"):
+			options = self.renderer.confidence_filter
+			cascade = self.renderer.reconstruction == "atrous"
+			changed, target = imgui.drag_float("Support budget D" if cascade else "Target expected winners", options.target_winners, 0.25, 0.25, 32.0, "%.2f")
+			_item_tooltip("Unit-peak retained acceptance budget. Four corresponds to about nine nominal effective samples for a broad unrestricted tent; edge rejection changes that relationship." if cascade else "Expected acceptance budget. Higher budgets prefer broader estimates.")
+			if changed and np.isfinite(target): self.controls.set_confidence_filter(replace(options, target_winners=max(0.25, target)))
+			if cascade:
+				changed, index = imgui.combo("Cascade passes", self.renderer.confidence_filter.cascade_passes-1, ("1", "2", "3", "4"))
+				if changed: self.controls.set_confidence_filter(replace(self.renderer.confidence_filter, cascade_passes=index+1))
+			else:
+				changed, index = imgui.combo("Pyramid levels", self.renderer.confidence_filter.levels-2, ("2", "3"))
+				if changed: self.controls.set_confidence_filter(replace(self.renderer.confidence_filter, levels=index+2))
+		else:
+			changed, count = imgui.input_int("Reconstruction passes", self.renderer.reconstruction_passes)
+			_item_tooltip("Stack bilateral passes on weighted color/validity. Opacity is applied once; 1 x 1 bypasses all passes.")
+			if changed: self.controls.set_reconstruction_passes(max(1, count))
+
+	def draw_filter_options(self, imgui):
+		for index, (name, label, step, minimum, maximum) in enumerate(SETTINGS):
+			if name == "spatial_sigma" and self.renderer.reconstruction == "atrous": continue
+			if name != "kernel_size" and self.renderer.bilateral_filter.kernel_size == 1: continue
+			value = getattr(self.renderer.bilateral_filter, name)
+			label = ("> " if index == self.selected else "") + label + "###" + name
+			if name == "kernel_size":
+				if self.renderer.reconstruction in ("push_pull", "atrous"):
+					changed, enabled = imgui.checkbox("Enable reconstruction", value != 1)
+					value = 3 if enabled else 1
+				else:
+					changed, selection = imgui.combo(label, KERNEL_SIZES.index(value), ("1 x 1 (off)", "3 x 3", "5 x 5", "9 x 9"))
+					value = KERNEL_SIZES[selection]
+			else:
+				changed, value = imgui.drag_float(label, value, step, minimum, maximum or 0.0, "%.6g")
+			_item_tooltip("Disable to inspect the raw stochastic result. Confidence reconstruction uses 3 x 3 gathers at each scale." if name == "kernel_size" and self.renderer.reconstruction in ("push_pull", "atrous") else SETTING_HELP[name])
+			if changed:
+				self.selected = index
+				self.set_value(name, value)
+		imgui.separator()
+		if imgui.button("Reset filter (Home)"): self.reset()
+		imgui.text_wrapped("Drag values or Ctrl+click to type. Shift gives fine keyboard steps. F hides/shows this window.")
+		if self.message: imgui.text_wrapped(self.message)
+
 	def draw(self):
 		from imgui_bundle import imgui
 
-		views = self.sync_debug_view(self.renderer)
+		self.sync_debug_view(self.renderer)
 		io = imgui.get_io()
 		imgui.set_next_window_pos((io.display_size.x-12, 12), imgui.Cond_.always, (1, 0))
 		imgui.set_next_window_bg_alpha(0.65)
@@ -219,173 +383,23 @@ class FilterSettings:
 			imgui.text(f"{fps:.0f} FPS | {1000/fps:.2f} ms" if fps > 0 else "FPS: --")
 		finally:
 			imgui.end()
-		if not self.visible:
-			return
+		if not self.visible: return
 		imgui.set_next_window_pos(self.position, imgui.Cond_.first_use_ever)
 		imgui.set_next_window_size((460, 560), imgui.Cond_.first_use_ever)
 		expanded, self.visible = imgui.begin("Transparency settings", self.visible)
 		try:
-			if not expanded:
-				return
+			if not expanded: return
 			imgui.text_disabled("Hover a setting or diagnostic view for an explanation.")
-			if not getattr(self.renderer, "banded_tail", False) and imgui.collapsing_header("Tuning guide"):
-				imgui.text_wrapped("Start with the reconstruction view. Increase the confidence budget, or bilateral spread/kernel size, to smooth noise; "
-					"reduce depth and transmittance tolerances if colors bleed across edges.")
-				imgui.text_wrapped("Use 1 x 1 to inspect the raw stochastic result. Bilateral filters use fixed kernels; confidence filters expose a support budget. "
-					"Slope correction is always enabled. Certain opaque interiors bypass blur. "
-					"Filter support shows whether edge rejection leaves too few neighbors.")
-				imgui.text_wrapped("Filter controls smooth reconstruction; noise controls choose winners; grazing fade reduces opacity at steep view angles. "
-					"There is no smoothing across frames, so some noise can remain during camera movement.")
+			self.draw_tuning_guide(imgui)
 			imgui.separator_text("Rendering")
-			changed, index = imgui.combo("Tail allocation", int(getattr(self.renderer, "banded_tail", False)), ("Stochastic nearest wins", "Banded + dual Kawase (experimental)"))
-			_item_tooltip("Banded captures the exact nearest layer, selects a complementary pair with shared screen noise, then blurs the tail. WebGPU atomic ordering can change between frames; thick tails use an approximate opacity-weighted color mix.")
-			if changed:
-				self.controls.set_tail_allocation(("stochastic", "banded")[index])
-				views = self.sync_debug_view(self.renderer)
-			banded = getattr(self.renderer, "banded_tail", False)
-			imgui.begin_disabled(banded)
-			changed, enabled = imgui.checkbox("Exact nearest layer", self.renderer.exact_nearest)
-			_item_tooltip("Shade the nearest visible transparent fragment deterministically, and sample only the remaining tail. Adds capture and shading passes; every nonzero opacity is eligible.")
-			if changed: self.controls.set_exact_nearest(enabled)
-			imgui.end_disabled()
-			labels = tuple(self.debug_view_label(self.renderer, view) for view in views)
-			changed, index = imgui.combo("Diagnostic view", views.index(self.renderer.debug_view), labels)
-			help_text = DEBUG_VIEW_HELP[views[index]]
-			if views[index] == "winner" and banded and self.renderer.banded_proxy:
-				help_text = "Signed unblurred residual, displayed as 0.5 + 0.5 * residual: neutral grey is zero. Display clips outside [-1, 1]; the actual float filtering remains signed and unclamped."
-			if views[index] == "filter_support" and self.renderer.reconstruction in ("push_pull", "atrous"):
-				help_text = "Local expected-winner weight divided by the target budget. Dark pixels prefer the broader pyramid estimate; white pixels trust the local estimate."
-				if self.renderer.reconstruction == "atrous": help_text = "Final retained unit-peak acceptance D divided by the budget, clamped to one. Includes rejection from every cascade pass."
-			_item_tooltip(help_text)
-			if changed:
-				self.renderer.set_debug_view(views[index])
-			changed, index = imgui.combo("MSAA (M)", int(self.renderer.sample_count == 4), ("Off (1x)", "4x"))
-			_item_tooltip("4x samples opaque/MASK geometry, transmission and the exact nearest layer. Banded tail estimation stays at 1x. Linear HDR is resolved before tone mapping."
-				if banded else "4x samples geometry, opacity and winner selection at four positions per pixel. Reconstruction resolves linear HDR before tone mapping; no temporal accumulation.")
-			if changed:
-				self.controls.set_sample_count((1, 4)[index])
-			if banded:
-				imgui.separator_text("Tail estimation")
-				changed, enabled = imgui.checkbox("Proxy residual", self.renderer.banded_proxy)
-				_item_tooltip("Accumulate opacity-weighted texture albedo at full resolution and blur only the signed shading residual. The proxy is restored locally; thick-tail mixing remains approximate.")
-				if changed: self.controls.set_banded_options(proxy=enabled)
-				changed, enabled = imgui.checkbox("Shade one pixel per 2 x 2 block", self.renderer.banded_subset)
-				_item_tooltip("Fixed spatial mask, compact payloads, and one lighting invocation per block. Increases noise; compare one additional blur pair. Alpha derivatives still run before the allocation discard.")
-				if changed: self.controls.set_banded_options(subset=enabled)
-				imgui.separator_text("Dual Kawase tail blur")
-				changed, passes = imgui.slider_int("Down/up pairs", self.renderer.kawase_passes, 0, 8)
-				_item_tooltip("Each pair adds one half-resolution downsample and one upsample. Zero shows the unblurred tail. Color and allocation confidence are blurred together; the nearest layer stays sharp. Blur is not depth-guided and can bleed across tail edges.")
-				if changed: self.controls.set_kawase_passes(passes)
-				changed, value = imgui.drag_float("Screen noise cell size (px at 1x)", self.renderer.noise_scale, 0.05, 0.25, 4.0, "%.3g")
-				if changed and np.isfinite(value): self.renderer.set_noise_scale(max(0.25, min(4.0, value)))
-				self.draw_grazing()
-				imgui.text_wrapped("Left/Right changes blur pairs. F hides/shows settings. Tail noise is shared in screen space; per-surface noise controls do not apply.")
-				return
-			changed, count = imgui.input_int("Winner draws", self.renderer.winner_count)
-			_item_tooltip("Any positive draw count in Fill mode; Average supports one or two. Choose Object hash or Anchored blue and Fill before increasing beyond two. Each attempt adds selection and shading work; silhouettes are unchanged.")
-			if changed:
-				try: self.controls.set_winner_count(max(1, count))
-				except ValueError as error: self.message = str(error)
-			if self.renderer.winner_count > 1:
-				if self.renderer.winner_mix == "average":
-					changed, index = imgui.combo("Winner pairing", ("complement", "independent").index(self.renderer.winner_coupling), ("Complemented (one tile)", "Independent"))
-					_item_tooltip("Complement the same fully remapped threshold for B. Fill always uses independent retries.")
-					if changed: self.controls.set_winner_coupling(("complement", "independent")[index])
-				if self.renderer.noise_mode not in FILL_NOISE_MODES:
-					imgui.text_wrapped("Fill requires Object hash or Anchored blue noise.")
-				changed, index = imgui.combo("Winner mix", ("average", "fill").index(self.renderer.winner_mix), ("Average", "Fill holes (experimental)"))
-				_item_tooltip("Fill retries only empty samples, compensating neighbour weights. Audited for default-source object hash and anchored blue only; other modes retain averaging.")
-				if changed:
-					try: self.controls.set_winner_mix(("average", "fill")[index])
-					except ValueError as error: self.message = str(error)
-			changed, enabled = imgui.checkbox("Force single contributor", self.renderer.force_single_contributor)
-			_item_tooltip("Exactly count nonzero visible contributors. A sole contributor is accepted deterministically and weighted by its opacity. Adds a small count attachment; disabled by default.")
-			if changed: self.controls.set_force_single_contributor(enabled)
-			imgui.separator_text("Noise sampling")
-			changed, index = imgui.combo("Noise sampling (N)", NOISE_MODES.index(self.renderer.noise_mode), NOISE_LABELS)
-			_item_tooltip("UV modes point-sample two surface-anchored octaves and use object hashing when UVs are degenerate. "
-				"Stochastic pick uses an independent surface hash as selector; CDF lerp is the smoother alternative. "
-				"Correlated hierarchy uses re-ranked parent levels with one shared origin. Triplanar uses object-space projections "
-				"and smooth normal weights, ignoring UVs. Bayer is an ordered comparison with possible crosshatching. ")
-			if changed:
-				if self.renderer.winner_mix == "fill" and NOISE_MODES[index] not in FILL_NOISE_MODES:
-					if self.renderer.winner_count > 2: self.controls.set_winner_count(2)
-					self.controls.set_winner_mix("average")
-				self.renderer.set_noise_mode(NOISE_MODES[index])
-			changed, value = imgui.drag_float("Noise cell size at 1x (px)", self.renderer.noise_scale, 0.05, 0.25, 4.0, "%.3g")
-			_item_tooltip("Base width at 1x; 4x MSAA halves the effective width. "
-				"Size is approximate and cells can stretch at grazing angles. Larger values give coarser, more stable grain. [ / ] also adjust it.")
-			if changed and np.isfinite(value):
-				self.renderer.set_noise_scale(max(0.25, min(4.0, value)))
-			imgui.text(f"Target cell size: {self.renderer.effective_noise_scale:.3g} px ({self.renderer.sample_count}x MSAA)")
-			imgui.separator_text("UV footprint balancing")
-			changed, enabled = imgui.checkbox("Enable UV footprint balancing", self.renderer.noise_footprint_balancing)
-			_item_tooltip("UV shader feature, enabled by default at strength one. Shader variants are cached.")
-			if changed: self.controls.set_noise_footprint_balancing(enabled)
-			if self.renderer.noise_footprint_balancing:
-				changed, value = imgui.slider_float("UV footprint balance", self.renderer.noise_footprint_balance, 0.0, 1.0, "%.2f")
-				_item_tooltip("0: maximum derivative (current sizing). 0.5: geometric mean/area. 1: minimum derivative. "
-					"Finer grain reduces the long cells at tilt but makes the compressed axis subpixel. UV modes only.")
-				if changed: self.renderer.set_noise_footprint_balance(value)
-				if not self.renderer.noise_mode.startswith("uv_"):
-					imgui.text_wrapped("Select a UV noise mode to see the effect of footprint balancing.")
-			if self.renderer.noise_mode == "anchored_blue":
-				imgui.separator_text("Surface anchor")
-				changed, value = imgui.drag_float("Anchor target (px)", self.renderer.noise_anchor_pixels, 0.5, 8.0, 64.0, "%.1f")
-				_item_tooltip("Coarse rest-space anchor grid, sized by projected area. Grain itself remains pixel-sized.")
-				if changed: self.renderer.set_noise_anchor(value, self.renderer.noise_anchor_subdivisions)
-				changed, value = imgui.slider_int("Shift subdivisions", self.renderer.noise_anchor_subdivisions, 1, 32)
-				_item_tooltip("Finer rest cells select independent tile shifts without changing the anchor. More subdivisions reduce layer correlation but add seams. Layers within one fine cell can still share thresholds.")
-				if changed: self.renderer.set_noise_anchor(self.renderer.noise_anchor_pixels, value)
-			self.draw_grazing()
-			imgui.separator_text("Reconstruction")
-			implementations = ("atrous", "push_pull", "fragment", "compute")
-			changed, index = imgui.combo("Filter implementation", implementations.index(self.renderer.reconstruction), ("A-trous cascade", "Confidence pyramid", "Bilateral fragment", "Bilateral compute"))
-			_item_tooltip("A-trous uses full-resolution dilated tents and retained support. Push-pull keeps the downsampled comparison. Bilateral modes retain fixed kernels and optional stacked passes.")
-			if changed: self.controls.set_reconstruction(implementations[index])
-			if self.renderer.reconstruction in ("push_pull", "atrous"):
-				options = self.renderer.confidence_filter
-				cascade = self.renderer.reconstruction == "atrous"
-				changed, target = imgui.drag_float("Support budget D" if cascade else "Target expected winners", options.target_winners, 0.25, 0.25, 32.0, "%.2f")
-				_item_tooltip("Unit-peak retained acceptance budget. Four corresponds to about nine nominal effective samples for a broad unrestricted tent; edge rejection changes that relationship." if cascade else "Expected acceptance budget. Higher budgets prefer broader estimates.")
-				if changed and np.isfinite(target): self.controls.set_confidence_filter(replace(options, target_winners=max(0.25, target)))
-				if cascade:
-					changed, index = imgui.combo("Cascade passes", self.renderer.confidence_filter.cascade_passes-1, ("1", "2", "3", "4"))
-					if changed: self.controls.set_confidence_filter(replace(self.renderer.confidence_filter, cascade_passes=index+1))
-				else:
-					changed, index = imgui.combo("Pyramid levels", self.renderer.confidence_filter.levels-2, ("2", "3"))
-					if changed: self.controls.set_confidence_filter(replace(self.renderer.confidence_filter, levels=index+2))
+			if self.draw_rendering_options(imgui):
+				self.draw_banded_tail_options(imgui)
 			else:
-				changed, count = imgui.input_int("Reconstruction passes", self.renderer.reconstruction_passes)
-				_item_tooltip("Stack bilateral passes on weighted color/validity. Opacity is applied once; 1 x 1 bypasses all passes.")
-				if changed: self.controls.set_reconstruction_passes(max(1, count))
-			for index, (name, label, step, minimum, maximum) in enumerate(SETTINGS):
-				if name == "spatial_sigma" and self.renderer.reconstruction == "atrous": continue
-				if name != "kernel_size" and self.renderer.bilateral_filter.kernel_size == 1:
-					continue
-				value = getattr(self.renderer.bilateral_filter, name)
-				label = ("> " if index == self.selected else "") + label + "###" + name
-				if name == "kernel_size":
-					if self.renderer.reconstruction in ("push_pull", "atrous"):
-						changed, enabled = imgui.checkbox("Enable reconstruction", value != 1)
-						value = 3 if enabled else 1
-					else:
-						changed, selection = imgui.combo(label, KERNEL_SIZES.index(value), ("1 x 1 (off)", "3 x 3", "5 x 5", "9 x 9"))
-						value = KERNEL_SIZES[selection]
-				else:
-					changed, value = imgui.drag_float(label, value, step, minimum, maximum or 0.0, "%.6g")
-				_item_tooltip("Disable to inspect the raw stochastic result. Confidence reconstruction uses 3 x 3 gathers at each scale." if name == "kernel_size" and self.renderer.reconstruction in ("push_pull", "atrous") else SETTING_HELP[name])
-				if changed:
-					self.selected = index
-					self.set_value(name, value)
-			imgui.separator()
-			if imgui.button("Reset filter (Home)"):
-				self.reset()
-			imgui.text_wrapped("Drag values or Ctrl+click to type. Shift gives fine keyboard steps. F hides/shows this window.")
-			if self.message:
-				imgui.text_wrapped(self.message)
+				self.draw_winner_options(imgui)
+				self.draw_noise_options(imgui)
+				self.draw_grazing()
+				self.draw_reconstruction_options(imgui)
+				self.draw_filter_options(imgui)
 		finally:
 			imgui.end()
 			self.sync_debug_view(self.renderer)
-
-
