@@ -1,4 +1,5 @@
 """Screen-space ambient occlusion as an independent depth-aware pass."""
+from dataclasses import dataclass, asdict
 from operator import index
 from pathlib import Path
 
@@ -10,14 +11,35 @@ from .RenderContext import RenderContext, RenderPipeline, Shader, Texture, Textu
 SHADERS = Path(__file__).with_name("shaders")
 
 
+@dataclass(frozen=True)
+class AmbientOcclusionSettings:
+	"""Sampling and strength controls for screen-space ambient occlusion."""
+	radius: float = 0.25
+	sample_count: int = 8
+	turns: float = 5.0
+	bias: float = 0.05
+	falloff: float = 1.0
+	strength: float = 3.0
+
+	def __post_init__(self):
+		if type(self.sample_count) is not int or not 1 <= self.sample_count <= 64:
+			raise ValueError("AO sample_count must be an integer from 1 to 64")
+		for name in ("radius", "turns", "bias", "falloff", "strength"):
+			value = getattr(self, name)
+			if not np.isfinite(value) or value < 0:
+				raise ValueError(f"AO {name} must be finite and nonnegative")
+
+
 class AmbientOcclusionPass:
 	"""Composite ambient occlusion over a color target using the opaque depth buffer."""
-	def __init__(self, *, target_format=None):
+	def __init__(self, *, target_format=None, settings=None):
 		self.target_format = target_format or getattr(RenderContext, "presentation_format", "rgba8unorm")
 		self.srgb_surface = self.target_format.endswith("-srgb")
 		self.size = None
 		self.source = None
 		self._camera_ready = False
+		self.settings = settings if settings is not None else AmbientOcclusionSettings()
+		if not isinstance(self.settings, AmbientOcclusionSettings): raise TypeError("Expected AmbientOcclusionSettings")
 		self.sample_count = None
 		self._activate_sample_count(1)
 
@@ -28,6 +50,7 @@ class AmbientOcclusionPass:
 			return False
 		self.shader = Shader(filepath=str(SHADERS / "ambient_occlusion.shader"), params={
 			"sample_count": count,
+			"ao": asdict(self.settings),
 			"srgb_surface": self.srgb_surface,
 			"source_srgb_encoded": not self.srgb_surface,
 		})
@@ -37,6 +60,16 @@ class AmbientOcclusionPass:
 			cull_mode="none", label="ambient_occlusion")
 		self.sample_count = count
 		self._camera_ready = False
+		return True
+
+	def set_settings(self, settings):
+		"""Set the AO sampling and strength controls."""
+		if not isinstance(settings, AmbientOcclusionSettings): raise TypeError("Expected AmbientOcclusionSettings")
+		if settings == self.settings: return False
+		self.settings = settings
+		count = self.sample_count
+		self.sample_count = None
+		self._activate_sample_count(count)
 		return True
 
 	def resize(self, size):

@@ -280,7 +280,7 @@ def run_scene():
 		required_gpu_features=["indirect-first-instance"])
 	init_scene()
 	settings = RenderingSettings(transparency, on_msaa_changed=set_msaa_enabled,
-		on_ssao_changed=set_ao_enabled, ssao_enabled=ao_enabled)
+		on_ssao_changed=set_ao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_pass)
 	RenderContext.event_handlers["mouse_scroll"].append(scroll_callback)
 	RenderContext.event_handlers["char"].append(on_char)
 	RenderContext.event_handlers["key"].append(settings.handle_key)

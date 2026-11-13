@@ -1,3 +1,4 @@
+#set ao = PARAMS.get("ao", {})
 fn ambient_occlusion_position(pixel: vec2i, depth: f32, projection: mat4x4f, clip: vec2f) -> vec3f {
 	let dimensions = vec2f(textureDimensions(opaque_depth));
 	let uv = (vec2f(pixel)+vec2f(0.5))/dimensions;
@@ -18,8 +19,8 @@ fn ambient_occlusion(pixel: vec2i, sample: u32, depth: f32, projection: mat4x4f,
 	if depth >= 1.0 { return 1.0; }
 	let pixel_f = vec2f(pixel);
 	let noise = fract(52.9829189*fract(dot(pixel_f, vec2f(0.06711056, 0.00583715))));
-	let radius_ws = 0.25;
-	let sample_count = 8.0;
+	let radius_ws = f32({{ao.get("radius", 0.25)}});
+	let sample_count = f32({{ao.get("sample_count", 8)}});
 	let inv_sample_count = 1.0/sample_count;
 	let projection_scale = abs(vec2f(projection[0][0], projection[1][1]));
 	let distance_scale = select(1.0/max(-position.z, 1e-6), 1.0, projection[3][3] > 0.5);
@@ -29,8 +30,8 @@ fn ambient_occlusion(pixel: vec2i, sample: u32, depth: f32, projection: mat4x4f,
 	var occlusion = 0.0;
 	var alpha = 0.5*inv_sample_count;
 	var angle = noise;
-	let angle_increment = 5.0*inv_sample_count*6.283186;
-	for (var i = 0u; i < 8u; i += 1u) {
+	let angle_increment = f32({{ao.get("turns", 5.0)}})*inv_sample_count*6.283186;
+	for (var i = 0u; i < {{ao.get("sample_count", 8)}}u; i += 1u) {
 		alpha += inv_sample_count;
 		angle += angle_increment;
 		let uv2 = uv+vec2f(cos(angle), sin(angle))*radius_uv*alpha;
@@ -40,10 +41,10 @@ fn ambient_occlusion(pixel: vec2i, sample: u32, depth: f32, projection: mat4x4f,
 			if neighbor_depth < 1.0 {
 				let delta = ambient_occlusion_position(neighbor_pixel, neighbor_depth, projection, clip)-position;
 				let vv = dot(delta, delta);
-				let vn = dot(delta, normal)-0.05;
-				occlusion += max(1.0-vv, 0.0)*max(vn, 0.0);
+				let vn = dot(delta, normal)-f32({{ao.get("bias", 0.05)}});
+				occlusion += max(1.0-vv*f32({{ao.get("falloff", 1.0)}}), 0.0)*max(vn, 0.0);
 			}
 		}
 	}
-	return clamp(1.0-occlusion*inv_sample_count*3.0, 0.0, 1.0);
+	return clamp(1.0-occlusion*inv_sample_count*f32({{ao.get("strength", 3.0)}}), 0.0, 1.0);
 }

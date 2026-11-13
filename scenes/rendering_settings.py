@@ -80,7 +80,7 @@ class RenderingSettings:
 	"""Live rendering controls for a TransparencyPass or MaterialRenderer."""
 
 	def __init__(self, renderer, *, visible=True, position=(12, 12), on_msaa_changed=None,
-		on_ssao_changed=None, ssao_enabled=False):
+		on_ssao_changed=None, ssao_enabled=False, ao_pass=None):
 		self.controls = renderer
 		self.renderer = getattr(renderer, "transparency", renderer)
 		self.defaults = self.renderer.bilateral_filter
@@ -90,6 +90,7 @@ class RenderingSettings:
 		self.message = ""
 		self.on_msaa_changed = on_msaa_changed
 		self.on_ssao_changed = on_ssao_changed
+		self.ao_pass = ao_pass
 		self.ssao_enabled = ssao_enabled
 		if self.on_ssao_changed is not None:
 			self.on_ssao_changed(ssao_enabled)
@@ -249,6 +250,22 @@ class RenderingSettings:
 		changed, enabled = imgui.checkbox("SSAO (A)", self.ssao_enabled)
 		_item_tooltip("Screen-space ambient occlusion from the main depth buffer. A toggles SSAO; O selects the compose or separate-pass implementation.")
 		if changed: self.set_ssao_enabled(enabled)
+
+	def draw_ambient_occlusion_options(self, imgui):
+		if not self.ssao_enabled or not hasattr(self.renderer, "ambient_occlusion_settings"): return
+		imgui.separator_text("Ambient occlusion")
+		options = self.renderer.ambient_occlusion_settings
+		for name, label, step in (("radius", "Radius", 0.01), ("turns", "Spiral turns", 0.1), ("bias", "Bias", 0.005), ("falloff", "Falloff", 0.1), ("strength", "Strength", 0.1)):
+			changed, value = imgui.drag_float(label, getattr(options, name), step, 0.0, 0.0, "%.4g")
+			if changed and np.isfinite(value):
+				options = replace(options, **{name: max(0.0, value)})
+				self.renderer.set_ambient_occlusion_settings(options)
+				if self.ao_pass is not None: self.ao_pass.set_settings(options)
+		changed, count = imgui.slider_int("AO samples", options.sample_count, 1, 64)
+		if changed:
+			options = replace(options, sample_count=count)
+			self.renderer.set_ambient_occlusion_settings(options)
+			if self.ao_pass is not None: self.ao_pass.set_settings(options)
 
 	def draw_transparency_options(self, imgui):
 		modes = ("stochastic", "banded", "min_key")
@@ -428,6 +445,7 @@ class RenderingSettings:
 			imgui.text_disabled("Hover a setting or diagnostic view for an explanation.")
 			imgui.separator_text("Rendering")
 			self.draw_general_rendering_options(imgui)
+			self.draw_ambient_occlusion_options(imgui)
 			self.draw_tuning_guide(imgui)
 			imgui.separator_text("Transparency")
 			if self.draw_transparency_options(imgui):

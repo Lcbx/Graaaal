@@ -128,7 +128,7 @@ def run_scene():
 		ao_enabled = enabled
 		renderer.set_ambient_occlusion(enabled and ao_method == "compose")
 	settings = RenderingSettings(renderer, visible=False, position=(370, 12),
-		on_msaa_changed=set_msaa_enabled, on_ssao_changed=set_ssao_enabled, ssao_enabled=ao_enabled)
+		on_msaa_changed=set_msaa_enabled, on_ssao_changed=set_ssao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_pass)
 	def set_alternate_color(enabled):
 		nonlocal alternate
 		alternate = enabled

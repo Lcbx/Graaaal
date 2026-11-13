@@ -4,7 +4,7 @@ The caller owns geometry, camera, command recording, output and submission.
 No window, asset file, ECS world, or ImGui context is created by this module.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from contextlib import contextmanager
 from operator import index
 from pathlib import Path
@@ -13,6 +13,7 @@ from collections.abc import Mapping
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from .AmbientOcclusionPass import AmbientOcclusionSettings
 from .DrawBatches import RenderShader, ShaderPass
 from .RenderContext import (
     BindGroup,
@@ -232,6 +233,7 @@ class TransparencyPass:
 				raise ValueError(f"Frame field {name!r} requires a WGSL type and default")
 			self.frame_fields[name] = (spec[0], spec[1])
 		self._frame_types = {name: spec[0] for name, spec in self.frame_fields.items()}
+		self.ambient_occlusion_settings = AmbientOcclusionSettings()
 		self._shader_sets = {}
 		self._geometry_shaders = {}
 		self._reconstruction_shaders = {}
@@ -329,7 +331,7 @@ class TransparencyPass:
 		return self._pipeline_layouts[key]
 
 	def _shader_set(self, count):
-		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix, self.reconstruction, self.reconstruction_passes > 1, self.complemented_winners, self.exact_nearest, self.tail_allocation, self._banded_flags)
+		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix, self.reconstruction, self.reconstruction_passes > 1, self.complemented_winners, self.exact_nearest, self.tail_allocation, self._banded_flags, self.ambient_occlusion_settings)
 		if key not in self._shader_sets:
 			geometry, shading, compose = self._custom_shaders
 			params = {**self._banded_params(count), "material_source": self._material_source, "sample_count": count,
@@ -340,7 +342,7 @@ class TransparencyPass:
 				self._geometry_shader(count),
 				shading or Shader(filepath=str(SHADERS / "stochastic_shade.shader"), params=dict(params, sample_count=(count if self.banded_tail_msaa else 1) if self.banded_tail else count, banded_tail=self.banded_tail and not self.keyed_tail, keyed_tail=self.keyed_tail)),
 				compose or Shader(filepath=str(SHADERS / "stochastic_compose.shader"),
-					params={**self._banded_params(count), "srgb_surface": self.target_format.endswith("-srgb"), "sample_count": count,
+					params={**self._banded_params(count), "ao": asdict(self.ambient_occlusion_settings), "srgb_surface": self.target_format.endswith("-srgb"), "sample_count": count,
 						"winner_count": min(self.winner_count, 2), "force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix,
 						"compute_reconstruction": self.reconstruction != "fragment", "filter_input": self.reconstruction_passes > 1 and self.reconstruction not in ("push_pull", "atrous"),
 						"frame_fields": self._frame_types, "exact_nearest": self.exact_nearest, "banded_tail": self.banded_tail, "keyed_tail": self.keyed_tail}),
@@ -824,6 +826,16 @@ class TransparencyPass:
 			for stream, settings in enumerate(self._winner_settings):
 				settings.content["info"] = (stream, int(stream > 0 and options.kernel_size != 1), self.winner_count, 0)
 				settings.upload_changed()
+
+	def set_ambient_occlusion_settings(self, settings):
+		"""Set the composed ambient occlusion sampling and strength controls."""
+		if not isinstance(settings, AmbientOcclusionSettings): raise TypeError("Expected AmbientOcclusionSettings")
+		if settings == self.ambient_occlusion_settings: return False
+		if self._custom_shaders[2] is not None: raise ValueError("AO settings require the default compose shader")
+		self.ambient_occlusion_settings = settings
+		self._activate_shaders(self.sample_count)
+		self._rebuild_geometry(preserve_targets=True)
+		return True
 
 	def set_ambient_occlusion(self, enabled):
 		"""Enable screen-space ambient occlusion in the composed output."""
