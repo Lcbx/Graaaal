@@ -6,12 +6,12 @@ import numpy as np
 import pytest
 
 from scenes.material_example import make_instances, make_world, sphere_vertices
-from numpyecs.DefaultMaterial import DefaultMaterialShader
-from numpyecs.EcsMaterials import EcsMaterialAdapter
-from numpyecs.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
-from numpyecs.Materials import MaterialBinding, MaterialLibrary, MaterialShader
-from numpyecs.Math import Camera
-from numpyecs.RenderContext import (BindGroupLayout, BufferUsage, ComputePipeline,
+from graaal.DefaultMaterial import DefaultMaterialShader
+from graaal.EcsMaterials import EcsMaterialAdapter
+from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+from graaal.Materials import MaterialBinding, MaterialLibrary, MaterialShader
+from graaal.Math import Camera
+from graaal.RenderContext import (BindGroupLayout, BufferUsage, ComputePipeline,
 	GpuBuffer, PipelineLayout, RenderContext, Shader, Texture, TextureUsage, wgpu)
 
 
@@ -23,7 +23,7 @@ def test_example_pools_pack_scalar_lanes_and_preserve_shader_declarations():
 	assert headers.nbytes == 80 and shared.nbytes == 512 and overrides.nbytes == 192
 	np.testing.assert_array_equal(ids, [0, 1, 2, 2, 3, 4])
 	assert len(set(offsets)) == 6
-	source, _ = Shader.__new__(Shader)._render_source(None, str(Path(__file__).resolve().parents[1]/"src/shaders/stochastic_geometry.shader"), None, None, {"material_library": library})
+	source, _ = Shader.__new__(Shader)._render_source(None, str(Path(__file__).resolve().parents[1]/"graaal/shaders/stochastic_geometry.shader"), None, None, {"material_library": library})
 	assert "struct Materials" in source and "struct InstanceOverrides" in source
 	assert "fn vertex_3" in source and "fn shade_3" in source
 	assert "struct Params3" in source

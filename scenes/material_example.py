@@ -12,13 +12,13 @@ from math import cos, sin
 
 import numpy as np
 
-from numpyecs.DefaultMaterial import DefaultMaterialShader
-from numpyecs.ECS import ECS
-from numpyecs.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
-from numpyecs.MaterialRenderer import MaterialMesh, DrawInstance, MaterialRenderer
-from numpyecs.Math import Camera, Vec3
-from numpyecs.RenderContext import RenderContext
-from numpyecs.TransparencyData import VERTEX_DTYPE
+from graaal.DefaultMaterial import DefaultMaterialShader
+from graaal.ECS import ECS
+from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
+from graaal.MaterialRenderer import MaterialMesh, DrawInstance, MaterialRenderer
+from graaal.Math import Camera, Vec3
+from graaal.RenderContext import RenderContext
+from graaal.TransparencyData import VERTEX_DTYPE
 from scenes.transparency_settings import FilterSettings
 
 
@@ -103,7 +103,7 @@ def make_world():
 
 
 def run_scene():
-	from numpyecs.ImGui import ImGui
+	from graaal.ImGui import ImGui
 	from imgui_bundle import imgui
 
 	RenderContext.init_window(1100, 760, "Materials | M: MSAA | D: default | F: transparency | Space: orbit",

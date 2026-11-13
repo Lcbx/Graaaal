@@ -1,7 +1,7 @@
 """Rotating triangle: press 1 for no MSAA or 4 for 4x MSAA."""
 
 def run_scene():
-	from numpyecs.RenderContext import (
+	from graaal.RenderContext import (
 		RenderContext,
 		RenderPipeline,
 		Shader,

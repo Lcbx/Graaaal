@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 from pygltflib import GLTF2
 
-from numpyecs.Assets import load_gltf_first_mesh, load_gltf_scene, read_gltf_accessor
+from graaal.Assets import load_gltf_first_mesh, load_gltf_scene, read_gltf_accessor
 
 
 @pytest.mark.parametrize("source", ["external", "data", "glb"])

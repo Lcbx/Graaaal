@@ -18,12 +18,12 @@ from pathlib import Path
 
 import numpy as np
 
-from numpyecs.Assets import DEFAULT_BLUE_NOISE_PATH, load_blue_noise
-from numpyecs.DrawBatches import DrawBatches, FrustumCuller, HiZCuller, ShaderPass
-from numpyecs.HZB import HZB
-from numpyecs.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
-from numpyecs.Math import Camera, Vec3
-from numpyecs.RenderContext import (
+from graaal.Assets import DEFAULT_BLUE_NOISE_PATH, load_blue_noise
+from graaal.DrawBatches import DrawBatches, FrustumCuller, HiZCuller, ShaderPass
+from graaal.HZB import HZB
+from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
+from graaal.Math import Camera, Vec3
+from graaal.RenderContext import (
     BufferUsage,
     GpuBuffer,
     Mesh,
@@ -32,9 +32,9 @@ from numpyecs.RenderContext import (
     Texture,
     TextureUsage,
 )
-from numpyecs.TextureProcessing import build_material_texture_array
-from numpyecs.TransparencyData import load_transparency_scene as load_transparency_data
-from numpyecs.TransparencyPass import BilateralFilter, ConfidenceFilter, FILL_NOISE_MODES, GrazingFade, NOISE_MODES, TransparencyPass
+from graaal.TextureProcessing import build_material_texture_array
+from graaal.TransparencyData import load_transparency_scene as load_transparency_data
+from graaal.TransparencyPass import BilateralFilter, ConfidenceFilter, FILL_NOISE_MODES, GrazingFade, NOISE_MODES, TransparencyPass
 from scenes.transparency_settings import FilterSettings, NOISE_LABELS
 
 
@@ -230,7 +230,7 @@ def render_frame(*, profiler=None):
 
 def run_scene():
 	global settings, angle
-	from numpyecs.ImGui import ImGui
+	from graaal.ImGui import ImGui
 
 	RenderContext.init_window(1200, 900, "Stochastic transparency | M: MSAA | F: settings | D: debug | Space: orbit",
 		required_gpu_features=["indirect-first-instance"])

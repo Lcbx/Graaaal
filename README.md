@@ -1,34 +1,34 @@
 # Graaal game engine
 
 Install the checkout from its repository root with `pip install -e .`.
-The Python package is `numpyecs`; core simulation needs only NumPy. GPU rendering,
+The Python package is `graaal`; core simulation needs only NumPy. GPU rendering,
 glTF/image loading, UI, and bundled scenes use the `render`, `assets`, `ui`, and
 `examples` extras. Install development dependencies with
 `pip install -e ".[render,assets,ui,examples,test]"`.
 
 RenderContext manages windows, events, presentation, and GPU resources through
 one shared device. Systems are ordinary functions; command order is explicit.
-Import the manager with `from numpyecs.RenderContext import RenderContext`.
+Import the manager with `from graaal.RenderContext import RenderContext`.
 
 Public subsystem modules and classes use PascalCase; internal helpers, functions,
 and attributes use snake_case. Constants use UPPER_SNAKE_CASE.
 
 | Guide | Contents |
 | --- | --- |
-| [ECS API](src/ECS_API.md) | Components, arrays, queries, lifetimes, commands, and scheduling |
+| [ECS API](graaal/ECS_API.md) | Components, arrays, queries, lifetimes, commands, and scheduling |
 | [Scenes](scenes/README.md) | Running interactive examples and their controls |
-| [Transparency](src/stochastic_transparency.md) | Pass order, reconstruction, and technique limits |
-| [Dictionary materials](src/materials.md) | Plain WGSL materials, shared parameters, instance overrides, and Jinja inheritance |
+| [Transparency](graaal/stochastic_transparency.md) | Pass order, reconstruction, and technique limits |
+| [Dictionary materials](graaal/materials.md) | Plain WGSL materials, shared parameters, instance overrides, and Jinja inheritance |
 | [Benchmarks](scenes/benchmarks/README.md) | Reproduction commands and diagnostic options |
 
 ## Modules and useful APIs
 
-Import modules as `numpyecs.<Module>`. This non-exhaustive overview covers useful
+Import modules as `graaal.<Module>`. This non-exhaustive overview covers useful
 classes, methods, and helpers; the linked guides explain their contracts.
 
 | CPU module | Useful APIs and purpose |
 | --- | --- |
-| [ECS](src/ECS_API.md) | `component`, `array_field`, `columns` define data; `ECS.register/create/add/set/remove/delete` manage it; `ECS.query` joins stores. `ComponentAccessor.version/touch` track edits; `ComponentSelection.read/assign` gather and write; accessor `edit_dense` borrows store columns. |
+| [ECS](graaal/ECS_API.md) | `component`, `array_field`, `columns` define data; `ECS.register/create/add/set/remove/delete` manage it; `ECS.query` joins stores. `ComponentAccessor.version/touch` track edits; `ComponentSelection.read/assign` gather and write; accessor `edit_dense` borrows store columns. |
 | `ecs_commands`, `ecs_schedule` | Re-exported by `ECS`: `CommandBuffer.flush/clear` apply or discard deferred edits; `DeferredEntities.resolve` retrieves created IDs; `Scheduler.add/compile/run` orders synchronous systems. |
 | `Math` | `Vec2/Vec3/Vec4` are NumPy vectors; `Camera.view/projection/direction` supplies camera values; `extract_frustum_planes` derives culling planes. |
 | `Assets` | `load_gltf_scene` returns static triangle lists, materials and images; `read_gltf_accessor` reads attributes; `load_gltf_first_mesh_interleaved` loads one local-space primitive; `load_blue_noise` returns CPU thresholds. |
@@ -48,9 +48,9 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | `DrawBatches` | `DrawBatches.register_mesh/register_lod_group/register_shader`, `sync`, `write_instances`, `create_visibility`, `draw` manage shared draws. `RenderShader` maps names to `ShaderPass`; `Visibility.all_visible/write` prepares visibility; `FrustumCuller.record` and `HiZCuller.record` record GPU culling. |
 | `EcsDrawing` | `EcsDrawAdapter.sync` extracts ECS mesh references; `mesh_field` returns attributes in draw order. |
 | `HZB` | `HZB.resize` allocates `.depth_texture` and pyramid; `build` records reductions; `.view` feeds Hi-Z culling. |
-| [TransparencyPass](src/stochastic_transparency.md#useful-apis) | `TransparencyPass.resize/update_frame/create_geometry_passes` prepares inputs; `opaque_pass/guide_pass/transmittance_pass/selection_pass/shade_winner/compose` records stages. `TransparencyTargets`, `BilateralFilter`, `GrazingFade` configure resources and settings. |
+| [TransparencyPass](graaal/stochastic_transparency.md#useful-apis) | `TransparencyPass.resize/update_frame/create_geometry_passes` prepares inputs; `opaque_pass/guide_pass/transmittance_pass/selection_pass/shade_winner/compose` records stages. `TransparencyTargets`, `BilateralFilter`, `GrazingFade` configure resources and settings. |
 | `TextureProcessing` | `get_default_blue_noise` shares a GPU tile; `build_material_texture_array` generates alpha-aware mips; `build_correlated_noise_hierarchy` builds ranked noise levels. These helpers upload and submit GPU work when creating textures. |
-| [Materials](src/materials.md#useful-apis) | `MaterialShader` defines shader families; `MaterialBinding` selects dictionaries/overrides; `MaterialLibrary.pack` produces CPU tables, while renderer Jinja2 templates generate hook dispatch. |
+| [Materials](graaal/materials.md#useful-apis) | `MaterialShader` defines shader families; `MaterialBinding` selects dictionaries/overrides; `MaterialLibrary.pack` produces CPU tables, while renderer Jinja2 templates generate hook dispatch. |
 | `DefaultMaterial` | `DefaultMaterialShader` supplies lit opaque/transparent defaults, validation, and shader hooks. |
 | `MaterialRenderer` | `MaterialMesh` describes geometry; `DrawInstance` is a direct-draw input; `MaterialRenderer.update/update_transforms/record/set_sample_count` uploads arrays and records rendering. |
 | `EcsMaterials` | `MaterialInstance` and `MaterialTransform` are components; `EcsMaterialAdapter.sync/touch_materials` extracts changes and invalidates edited dictionaries. |
@@ -58,7 +58,7 @@ classes, methods, and helpers; the linked guides explain their contracts.
 
 Simulation, math, asset-data, packing, grouping, and utility modules import without
 graphics dependencies. Asset decoders load their optional dependencies when called.
-Built-in engine shaders are in `src/shaders/` and included in the installed
+Built-in engine shaders are in `graaal/shaders/` and included in the installed
 package. `scenes/shaders/` contains only scene-specific examples. `Shader(filepath=...)`
 looks up shader includes beside the supplied file, then in the engine shader
 directory. `Geometry.make_cube_mesh()`
@@ -68,7 +68,7 @@ creates a GPU mesh and requires an initialized backend.
 
 ```python
 import numpy as np
-from numpyecs.ECS import ECS, component, array_field, columns
+from graaal.ECS import ECS, component, array_field, columns
 
 @component
 class Position:
@@ -98,7 +98,7 @@ request can partially apply. Declared fields are touched on exit, including afte
 exceptions; writes are not rolled back. Compact multicomponent stores containing
 holes first. General joins between independently ordered stores still gather.
 
-See the [ECS reference](src/ECS_API.md) for full contracts and array usage.
+See the [ECS reference](graaal/ECS_API.md) for full contracts and array usage.
 
 ## Shared draws and independent visibility
 
@@ -110,9 +110,9 @@ The following recording example assumes a compatible `mesh`, `pipeline`,
 pipeline for the target attachments; this example uses a color-only pass.
 
 ```python
-from numpyecs.RenderContext import RenderContext
-from numpyecs.DrawBatches import DrawBatches, RenderShader, ShaderPass, FrustumCuller
-from numpyecs.InstanceData import MESH_INSTANCE_DTYPE
+from graaal.RenderContext import RenderContext
+from graaal.DrawBatches import DrawBatches, RenderShader, ShaderPass, FrustumCuller
+from graaal.InstanceData import MESH_INSTANCE_DTYPE
 
 draws = DrawBatches(MESH_INSTANCE_DTYPE)
 draws.register_mesh(1, mesh)
@@ -141,7 +141,7 @@ or unprepared results raise `RuntimeError` when drawn or accessed.
 Use `visibility.all_visible(lod=0)` for CPU/direct preparation, or
 `visibility.write(uint32_indices, indirect_records)` for a custom culler;
 `INDIRECT_DTYPE` describes those command records. For Hi-Z culling, create `HZB`
-(from `numpyecs.HZB`), call `resize(size)`, render occluder depth into
+(from `graaal.HZB`), call `resize(size)`, render occluder depth into
 `hzb.depth_texture`, call `hzb.build(commands)`, then call
 `HiZCuller().record(commands, main_view, hzb_view=hzb.view)` to refine that view's
 frustum results.
@@ -282,9 +282,9 @@ there is no tail-MSAA UI toggle. Select `tail_allocation="stochastic"` for the
 earlier noise, winner-count and bilateral/confidence filtering options.
 No temporal accumulation is used.
 
-The [transparency guide](src/stochastic_transparency.md) covers pass order,
+The [transparency guide](graaal/stochastic_transparency.md) covers pass order,
 custom targets, noise choices, shader contracts and limitations. The
-[material guide](src/materials.md) covers dictionary materials and vertex hooks;
+[material guide](graaal/materials.md) covers dictionary materials and vertex hooks;
 [transparency_example.py](scenes/transparency_example.py) shows a full frame.
 
 ## Examples and diagnostics
@@ -292,9 +292,9 @@ custom targets, noise choices, shader contracts and limitations. The
 From any directory after installation:
 
 ```powershell
-python -m numpyecs
-python -m numpyecs --offscreen --frames 1
-python -m numpyecs --window --frames 120
+python -m graaal
+python -m graaal --offscreen --frames 1
+python -m graaal --window --frames 120
 ```
 
 The first command needs only NumPy. GPU modes load packaged shaders and use
@@ -311,6 +311,6 @@ Enable counters with `RenderContext.enable_statistics()` and inspect them throug
 grouping, and visibility; arenas report active/capacity bytes. Counters do not
 measure GPU execution time or synchronize the GPU.
 
-From the repository root run `python -m pytest tests src/tests -p no:cacheprovider`.
+From the repository root run `python -m pytest tests graaal/tests -p no:cacheprovider`.
 Tests cover CPU-only imports, mutation/lifetimes, multiple views, explicit layouts,
 MSAA, custom materials, and offscreen GPU readback.

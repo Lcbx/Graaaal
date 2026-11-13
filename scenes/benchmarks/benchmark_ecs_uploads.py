@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'graaal'))
 sys.path.insert(1, str(Path(__file__).resolve().parents[2]))
 
 
@@ -25,7 +25,7 @@ def main():
     if args.frames < 1:
         parser.error('frames must be positive')
 
-    from numpyecs.RenderContext import RenderContext, GpuBuffer
+    from graaal.RenderContext import RenderContext, GpuBuffer
     from scenes.direct_draw_example import CubeInstances, run_scene
 
     original_loop, original_upload, original_update = RenderContext.window_loop, GpuBuffer.upload, CubeInstances.update

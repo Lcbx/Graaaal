@@ -4,8 +4,8 @@ from functools import partial
 
 import numpy as np
 import pytest
-from numpyecs import ECS as api
-from numpyecs.ECS import ECS, Scheduler, component
+from graaal import ECS as api
+from graaal.ECS import ECS, Scheduler, component
 
 
 @component

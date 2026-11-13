@@ -21,6 +21,6 @@ This directory contains data, not a Python module. Useful public helpers include
 
 | API | Result and requirements |
 | --- | --- |
-| `numpyecs.Assets.load_blue_noise(path=None)` | Returns a contiguous 2-D `float32` threshold array using `(sample + 0.5) / 65536`, without sRGB conversion. The packaged NPY needs only NumPy; custom uint16 PNG loading also needs Pillow. |
-| `numpyecs.TextureProcessing.get_default_blue_noise()` | Uploads thresholds to an `r32float` texture and reuses it while active on the same RenderContext device/generation. Requires an initialized GPU backend. |
+| `graaal.Assets.load_blue_noise(path=None)` | Returns a contiguous 2-D `float32` threshold array using `(sample + 0.5) / 65536`, without sRGB conversion. The packaged NPY needs only NumPy; custom uint16 PNG loading also needs Pillow. |
+| `graaal.TextureProcessing.get_default_blue_noise()` | Uploads thresholds to an `r32float` texture and reuses it while active on the same RenderContext device/generation. Requires an initialized GPU backend. |
 | `TransparencyPass(..., blue_noise=texture)` / `MaterialRenderer(..., blue_noise=texture)` | Accepts a caller-supplied texture; omitting it uses the shared default. |

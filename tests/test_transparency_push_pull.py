@@ -5,12 +5,12 @@ import numpy as np
 import pytest
 
 from test_transparency_multiple_winners import factory, read, render
-from numpyecs.TransparencyPass import BilateralFilter, ConfidenceFilter, TransparencyPass
-from numpyecs.RenderContext import BindingInfo, BufferUsage, GpuBuffer, RenderContext, Texture, TextureUsage
-from numpyecs.Math import Camera
-from numpyecs.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
-from numpyecs.DefaultMaterial import DefaultMaterialShader
-from numpyecs.TransparencyData import VERTEX_DTYPE
+from graaal.TransparencyPass import BilateralFilter, ConfidenceFilter, TransparencyPass
+from graaal.RenderContext import BindingInfo, BufferUsage, GpuBuffer, RenderContext, Texture, TextureUsage
+from graaal.Math import Camera
+from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+from graaal.DefaultMaterial import DefaultMaterialShader
+from graaal.TransparencyData import VERTEX_DTYPE
 
 
 @pytest.mark.parametrize("samples", [1, 4])

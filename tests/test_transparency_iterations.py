@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 
 from test_transparency_multiple_winners import factory, read, render
-from numpyecs.RenderContext import RenderContext
-from numpyecs.TransparencyPass import TransparencyPass
+from graaal.RenderContext import RenderContext
+from graaal.TransparencyPass import TransparencyPass
 
 
 def source_ids(oit):

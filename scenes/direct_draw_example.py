@@ -5,7 +5,7 @@ from math import cos, sin
 
 import numpy as np
 
-from numpyecs.ECS import ECS, columns, component
+from graaal.ECS import ECS, columns, component
 
 
 @component
@@ -75,7 +75,7 @@ class CubeInstances:
 
 
 def run_scene():
-	from numpyecs.RenderContext import (
+	from graaal.RenderContext import (
 	    BufferUsage,
 	    create_depth_framebuffer,
 	    create_depth_sampler,
@@ -86,11 +86,11 @@ def run_scene():
 	    RenderPipeline,
 	    Shader,
 	)
-	from numpyecs.Math import Camera, Vec3
+	from graaal.Math import Camera, Vec3
 	from pyrr import Quaternion
-	from numpyecs.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale
-	from numpyecs.Geometry import make_cube_mesh
-	from numpyecs.Assets import load_gltf_first_mesh_interleaved
+	from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale
+	from graaal.Geometry import make_cube_mesh
+	from graaal.Assets import load_gltf_first_mesh_interleaved
 
 	world = ECS()
 	positions, velocities, rotations, scales, tints = world.register(

@@ -8,13 +8,13 @@ from pathlib import Path
 
 import numpy as np
 
-from numpyecs.Assets import DEFAULT_BLUE_NOISE_PATH, load_blue_noise
-from numpyecs.DefaultMaterial import DefaultMaterialShader
-from numpyecs.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
-from numpyecs.Math import Camera
-from numpyecs.RenderContext import RenderContext, Texture, TextureUsage
-from numpyecs.TransparencyData import VERTEX_DTYPE
-from numpyecs.TransparencyPass import BilateralFilter, ConfidenceFilter
+from graaal.Assets import DEFAULT_BLUE_NOISE_PATH, load_blue_noise
+from graaal.DefaultMaterial import DefaultMaterialShader
+from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+from graaal.Math import Camera
+from graaal.RenderContext import RenderContext, Texture, TextureUsage
+from graaal.TransparencyData import VERTEX_DTYPE
+from graaal.TransparencyPass import BilateralFilter, ConfidenceFilter
 from scenes.benchmarks.diagnose_anchored_noise import NoiseProbe
 
 
@@ -157,7 +157,7 @@ def main():
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	try:
 		# Readback is confined to this diagnostic.
-		from numpyecs import TransparencyPass as transparency
+		from graaal import TransparencyPass as transparency
 		original = transparency.Texture
 		transparency.Texture = lambda *a, usage, **kw: original(*a, usage=usage | (TextureUsage.COPY_SRC if kw.get("sample_count", 1) == 1 else 0), **kw)
 		noise = noise_comparison(args.size)

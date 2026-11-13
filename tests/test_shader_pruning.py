@@ -3,12 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from numpyecs.Materials import MaterialLibrary
-from numpyecs.RenderContext import Shader, ShaderSource
+from graaal.Materials import MaterialLibrary
+from graaal.RenderContext import Shader, ShaderSource
 from scenes.material_example import make_instances
 
 
-SHADERS = Path(__file__).resolve().parents[1] / "src" / "shaders"
+SHADERS = Path(__file__).resolve().parents[1] / "graaal" / "shaders"
 
 def load_shader(name, **params):
 	loader = Shader.__new__(Shader)
@@ -40,7 +40,7 @@ def test_material_library_only_emits_stage_hooks():
 
 
 def test_material_parameter_decoder_matches_packed_lanes():
-	from numpyecs.Materials import MaterialShader
+	from graaal.Materials import MaterialShader
 	shader = MaterialShader(source='''
 #extends "material_surface.shaderlib"
 #block parameters

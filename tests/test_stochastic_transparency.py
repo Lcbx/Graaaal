@@ -9,12 +9,12 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from numpyecs.RenderContext import RenderContext, Texture, TextureUsage
-from numpyecs.Assets import gltf_node_matrix, load_blue_noise
-from numpyecs import TransparencyData as transparency_data
-from numpyecs import TextureProcessing as texture_processing
+from graaal.RenderContext import RenderContext, Texture, TextureUsage
+from graaal.Assets import gltf_node_matrix, load_blue_noise
+from graaal import TransparencyData as transparency_data
+from graaal import TextureProcessing as texture_processing
 from scenes import transparency_example as scene
-from numpyecs import TransparencyPass as transparency
+from graaal import TransparencyPass as transparency
 
 
 def test_bundled_blue_noise_loads_as_deterministic_linear_thresholds():

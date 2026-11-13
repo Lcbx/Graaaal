@@ -10,9 +10,9 @@ from pathlib import Path
 
 import numpy as np
 
-from numpyecs.Math import Camera
-from numpyecs.RenderContext import BufferUsage, ComputePipeline, GpuBuffer, RenderContext, Shader
-from numpyecs.TextureProcessing import get_default_blue_noise, build_correlated_noise_hierarchy
+from graaal.Math import Camera
+from graaal.RenderContext import BufferUsage, ComputePipeline, GpuBuffer, RenderContext, Shader
+from graaal.TextureProcessing import get_default_blue_noise, build_correlated_noise_hierarchy
 
 
 class NoiseProbe:

@@ -5,13 +5,13 @@ from pathlib import Path
 
 import numpy as np
 
-from numpyecs.DefaultMaterial import DefaultMaterialShader
-from numpyecs.GpuProfiler import GpuProfiler
-from numpyecs.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
-from numpyecs.Math import Camera
-from numpyecs.RenderContext import RenderContext, Texture, TextureUsage
-from numpyecs.TransparencyData import VERTEX_DTYPE
-from numpyecs import TransparencyPass as transparency_module
+from graaal.DefaultMaterial import DefaultMaterialShader
+from graaal.GpuProfiler import GpuProfiler
+from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+from graaal.Math import Camera
+from graaal.RenderContext import RenderContext, Texture, TextureUsage
+from graaal.TransparencyData import VERTEX_DTYPE
+from graaal import TransparencyPass as transparency_module
 
 
 VARIANTS = {

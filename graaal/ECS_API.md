@@ -26,13 +26,13 @@ Related documents: [engine guide](../README.md) and
 - [Diagnostics reference](#diagnostics-reference)
 - [API inventory and errors](#api-inventory-and-error-reference)
 
-Import the public API from `numpyecs.ECS`.
+Import the public API from `graaal.ECS`.
 
 ## Named batches and explicit writes
 
 ```python
 import numpy as np
-from numpyecs.ECS import ECS, component, columns
+from graaal.ECS import ECS, component, columns
 
 @component
 class Position:
@@ -163,7 +163,7 @@ These definitions are shared by the remaining examples. Every call to
 `example_world()` returns a new world with three moving entities.
 
 ```python
-from numpyecs.ECS import (
+from graaal.ECS import (
 	ECS, Scheduler, CommandBuffer, CommandError, component, array_field, columns,
 	Entity, Index, entity_index, entity_generation, as_entities, as_rows,
 )

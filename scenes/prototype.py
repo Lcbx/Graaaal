@@ -8,7 +8,7 @@ imported without initializing a graphics device.
 from dataclasses import dataclass
 from enum import IntFlag, auto
 
-from numpyecs.ECS import ECS, Entity, component
+from graaal.ECS import ECS, Entity, component
 
 
 @component
@@ -155,8 +155,8 @@ def draw_actors(cache):
 
 
 def run_scene():
-	from numpyecs.ImGui import ImGui
-	from numpyecs.RenderContext import RenderContext
+	from graaal.ImGui import ImGui
+	from graaal.RenderContext import RenderContext
 
 	world = create_world()
 	actors = world.query(Damageable, Attributes, ActorMetadata)

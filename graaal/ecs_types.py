@@ -46,7 +46,7 @@ def array_field(dtype: Any, *, shape: Sequence[int] = ()) -> Any:
 	if any(size <= 0 for size in shape): raise ValueError("Field dimensions must be positive")
 	base = np.dtype(dtype)
 	if base.hasobject and shape: raise TypeError("Shaped object fields are not supported")
-	return dataclass_field(metadata={"numpyecs.dtype": np.dtype((base, shape)) if shape else base})
+	return dataclass_field(metadata={"graaal.dtype": np.dtype((base, shape)) if shape else base})
 
 
 Entity                  = np.uint64
@@ -165,7 +165,7 @@ def _component_fields(component_cls: type[Any]) -> tuple[tuple[str, Any], ...]:
 	hints = get_type_hints(component_cls)
 	if is_dataclass(component_cls):
 		return tuple(
-			(field.name, field.metadata.get("numpyecs.dtype", hints.get(field.name, field.type)))
+			(field.name, field.metadata.get("graaal.dtype", hints.get(field.name, field.type)))
 			for field in dataclass_fields(component_cls)
 			if get_origin(hints.get(field.name, field.type)) is not ClassVar
 		)

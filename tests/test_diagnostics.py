@@ -4,15 +4,15 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from numpyecs.Diagnostics import get_draw_counts, get_shader_sources
+from graaal.Diagnostics import get_draw_counts, get_shader_sources
 
 
 @pytest.fixture
 def renderer_types(monkeypatch):
 	class DrawBatches: pass
 	class MaterialRenderer: pass
-	monkeypatch.setitem(sys.modules, "numpyecs.DrawBatches", NS(DrawBatches=DrawBatches))
-	monkeypatch.setitem(sys.modules, "numpyecs.MaterialRenderer", NS(MaterialRenderer=MaterialRenderer))
+	monkeypatch.setitem(sys.modules, "graaal.DrawBatches", NS(DrawBatches=DrawBatches))
+	monkeypatch.setitem(sys.modules, "graaal.MaterialRenderer", NS(MaterialRenderer=MaterialRenderer))
 	return DrawBatches, MaterialRenderer
 
 

@@ -6,12 +6,12 @@ if __name__ == "__main__":
 	from pathlib import Path
 	from importlib import import_module
 
-	import numpyecs
+	import graaal
 
 	parser = ArgumentParser(
 		prog='main.py',
-		description='Graaaal, game engine on top of numpy and wgpu',
-		epilog='link: https://github.com/Lcbx/Graaaal')
+		description='Graal, game engine on top of numpy and wgpu',
+		epilog='link: https://github.com/Lcbx/Graaal')
 	parser.add_argument('scene', nargs='?', help='set scene script (to run or compile)')
 	parser.add_argument('-t', '--test', nargs='?', const=True, default=False, help='launches unit tests or a single test if specified by name')
 	parser.add_argument('-c', '--compile', action='store_true', help='compile scene into standalone executable')
@@ -34,20 +34,17 @@ if __name__ == "__main__":
 		pytest_args = test_paths
 
 
-		# run particular test
-		if type(args.test) is str and (
+		# run particular test without importing unrelated test modules
+		if isinstance(args.test, str) and (
 			test_name := args.test.split('::')[-1] ).startswith('test'):
-			module_path = [ tp for tp in test_paths
-				if hasattr((mod := import_module( to_module(tp) )), test_name)
+			import ast
+			module_paths = [ tp for tp in test_paths
+				if any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == test_name
+					for node in ast.parse(Path(tp).read_text(encoding='utf-8')).body)
 			]
-
-			if not module_path:
-				print(f'could not find "{args.test}" test. candidates:')
-				from pprint import pp 
-				pp( list(f for m in module_path for f in m.__dict__ ))
-				exit(1)
-
-			pytest_args = [ f'{module_path[0]}::{test_name}']
+			if not module_paths:
+				parser.error(f'could not find "{test_name}" test')
+			pytest_args = [ f'{module_paths[0]}::{test_name}']
 		ret = pytest.main(['-qs', *pytest_args] )
 		exit(ret)
 			
@@ -57,14 +54,14 @@ if __name__ == "__main__":
 		scene = args.scene
 		if args.compile:
 			from subprocess import run
-			cwd = numpyecs.__path__[0]
-			run( f'py -m mypyc -m numpyecs.ECS', cwd=cwd)
-			run( f'py -m mypyc -m numpyecs.RenderContext', cwd=cwd)
-			run( f'py -m mypyc -m numpyecs.Math', cwd=cwd)
-			run( f'py -m mypyc -m numpyecs.DrawBatches', cwd=cwd)
+			cwd = graaal.__path__[0]
+			run( f'py -m mypyc -m graaal.ECS', cwd=cwd)
+			run( f'py -m mypyc -m graaal.RenderContext', cwd=cwd)
+			run( f'py -m mypyc -m graaal.Math', cwd=cwd)
+			run( f'py -m mypyc -m graaal.DrawBatches', cwd=cwd)
 			if scene: run( f'py -m nuitka --output-dir=build --standalone {scene}'.split(' ') )
 		else:
-			from numpyecs.RenderContext import RenderContext
+			from graaal.RenderContext import RenderContext
 			if args.frames is not None:
 				window_loop = RenderContext.window_loop
 				frames = 0

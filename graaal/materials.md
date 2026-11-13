@@ -23,7 +23,7 @@ frequency, color, displacement amplitude and speed, plus an animation pause.
 ## Useful APIs
 
 This non-exhaustive map covers the material modules. Import from
-`numpyecs.<Module>`; CPU packing needs no initialized GPU device.
+`graaal.<Module>`; CPU packing needs no initialized GPU device.
 
 | Module | Classes and methods |
 | --- | --- |
@@ -48,12 +48,12 @@ the renderer's `target_format`. Run from the repository root to resolve the glas
 template. See [material_example.py](../scenes/material_example.py) for complete setup.
 
 ```python
-from numpyecs.ECS import ECS
-from numpyecs.Math import Vec3
-from numpyecs.DefaultMaterial import DefaultMaterialShader
-from numpyecs.MaterialRenderer import MaterialMesh, MaterialRenderer
-from numpyecs.RenderContext import RenderContext
-from numpyecs.EcsMaterials import (
+from graaal.ECS import ECS
+from graaal.Math import Vec3
+from graaal.DefaultMaterial import DefaultMaterialShader
+from graaal.MaterialRenderer import MaterialMesh, MaterialRenderer
+from graaal.RenderContext import RenderContext
+from graaal.EcsMaterials import (
     MaterialInstance, MaterialTransform, EcsMaterialAdapter,
 )
 

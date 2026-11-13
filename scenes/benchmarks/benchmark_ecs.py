@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from numpyecs.ECS import ECS, Entity, Index, NO_ENTITY, component, entity_index, columns
+from graaal.ECS import ECS, Entity, Index, NO_ENTITY, component, entity_index, columns
 
 
 @component
@@ -115,7 +115,7 @@ def main():
 	if args.entities < 100 or args.repeat < 1 or args.loops < 1:
 		parser.error("entities must be >= 100; repeat and loops must be positive")
 	n, repeat, loops = args.entities, args.repeat, args.loops
-	source = args.implementation or Path(__file__).resolve().parents[2] / "src" / "ECS.py"
+	source = args.implementation or Path(__file__).resolve().parents[2] / "graaal" / "ECS.py"
 	if args.implementation:
 		spec = importlib.util.spec_from_file_location("_benchmark_ecs_snapshot", source)
 		module = importlib.util.module_from_spec(spec)

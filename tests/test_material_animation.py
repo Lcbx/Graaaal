@@ -4,14 +4,14 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from numpyecs.DefaultMaterial import DefaultMaterialShader
-from numpyecs.EcsMaterials import EcsMaterialAdapter
-from numpyecs.Materials import MaterialBinding, MaterialLibrary
-from numpyecs.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
-from numpyecs.Math import Camera
-from numpyecs.RenderContext import RenderContext, Texture, TextureUsage
-from numpyecs.TransparencyData import VERTEX_DTYPE
-from numpyecs.TransparencyPass import BilateralFilter
+from graaal.DefaultMaterial import DefaultMaterialShader
+from graaal.EcsMaterials import EcsMaterialAdapter
+from graaal.Materials import MaterialBinding, MaterialLibrary
+from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+from graaal.Math import Camera
+from graaal.RenderContext import RenderContext, Texture, TextureUsage
+from graaal.TransparencyData import VERTEX_DTYPE
+from graaal.TransparencyPass import BilateralFilter
 from scenes.material_example import make_world
 
 

@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from numpyecs.RenderContext import Shader, ShaderSource
+from graaal.RenderContext import Shader, ShaderSource
 
 
 def render(source, **params):

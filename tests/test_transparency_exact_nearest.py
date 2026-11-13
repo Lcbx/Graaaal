@@ -91,7 +91,7 @@ def test_exact_nearest_requires_boolean(factory, value):
 
 
 def test_low_level_custom_shaders_reject_exact_nearest_before_allocating():
-	from numpyecs.TransparencyPass import TransparencyPass
+	from graaal.TransparencyPass import TransparencyPass
 	with pytest.raises(ValueError, match="default shader set"):
 		TransparencyPass(materials=None, base_textures=None, vertices=None, geometry_shader=object(), shading_shader=object(), exact_nearest=True)
 

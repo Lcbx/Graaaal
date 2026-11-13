@@ -5,7 +5,7 @@ import weakref
 
 import numpy as np
 import pytest
-from numpyecs import RenderContext as rc
+from graaal import RenderContext as rc
 
 
 def test_read_only_depth_descriptor_omits_load_store_operations():

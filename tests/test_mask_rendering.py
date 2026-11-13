@@ -2,11 +2,11 @@
 import numpy as np
 import pytest
 
-from numpyecs.DefaultMaterial import DefaultMaterialShader
-from numpyecs.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
-from numpyecs.Math import Camera
-from numpyecs.RenderContext import RenderContext, Texture, TextureUsage
-from numpyecs.TransparencyData import VERTEX_DTYPE
+from graaal.DefaultMaterial import DefaultMaterialShader
+from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+from graaal.Math import Camera
+from graaal.RenderContext import RenderContext, Texture, TextureUsage
+from graaal.TransparencyData import VERTEX_DTYPE
 from test_transparency_multiple_winners import read, render
 from test_transparency_exact_nearest import encoded
 
@@ -93,7 +93,7 @@ def test_default_material_route_resolves_shared_defaults_and_instance_mode():
 
 
 def test_route_uses_uploaded_values_when_shared_material_is_not_dirty():
-	from numpyecs.Materials import MaterialBinding, MaterialLibrary
+	from graaal.Materials import MaterialBinding, MaterialLibrary
 	shader = DefaultMaterialShader(transparent=True)
 	material = {"alpha_mode": 1}
 	binding = MaterialBinding(shader, material)
@@ -108,8 +108,8 @@ def test_route_uses_uploaded_values_when_shared_material_is_not_dirty():
 
 
 def test_ecs_mask_mode_edit_updates_route_and_keeps_surface_identity():
-	from numpyecs.ECS import ECS
-	from numpyecs.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
+	from graaal.ECS import ECS
+	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	mesh = MaterialMesh(quad(), unlit())
 	material = {"alpha_mode": 1, "base_color": (1, 1, 1, .75), "emission": (1, 0, 0)}

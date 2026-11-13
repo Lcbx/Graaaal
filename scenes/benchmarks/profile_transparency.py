@@ -11,9 +11,9 @@ from pathlib import Path
 from time import perf_counter
 import numpy as np
 
-from numpyecs.GpuProfiler import GpuProfiler
-from numpyecs.RenderContext import BufferUsage, ComputePipeline, GpuBuffer, RenderContext, Shader, Texture, TextureUsage
-from numpyecs.TransparencyPass import SHADERS
+from graaal.GpuProfiler import GpuProfiler
+from graaal.RenderContext import BufferUsage, ComputePipeline, GpuBuffer, RenderContext, Shader, Texture, TextureUsage
+from graaal.TransparencyPass import SHADERS
 from scenes import transparency_example as scene
 
 

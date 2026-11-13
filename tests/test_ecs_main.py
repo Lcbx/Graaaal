@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from numpyecs.ECS import *
+from graaal.ECS import *
 
 
 def test_create_entities() -> None:

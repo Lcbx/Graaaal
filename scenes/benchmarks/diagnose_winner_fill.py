@@ -8,8 +8,8 @@ import argparse
 import json
 from pathlib import Path
 import numpy as np
-from numpyecs.RenderContext import RenderContext
-from numpyecs.TransparencyPass import NOISE_MODES
+from graaal.RenderContext import RenderContext
+from graaal.TransparencyPass import NOISE_MODES
 from scenes.benchmarks.diagnose_anchored_noise import NoiseProbe
 
 

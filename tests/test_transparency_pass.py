@@ -4,10 +4,10 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from numpyecs.RenderContext import BufferUsage, GpuBuffer, RenderContext, Texture, TextureUsage
-from numpyecs.Math import Camera
-from numpyecs.InstanceData import MESH_INSTANCE_DTYPE, pack_scale, pack_quaternion
-from numpyecs.TransparencyPass import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE, TransparencyPass
+from graaal.RenderContext import BufferUsage, GpuBuffer, RenderContext, Texture, TextureUsage
+from graaal.Math import Camera
+from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_scale, pack_quaternion
+from graaal.TransparencyPass import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE, TransparencyPass
 
 
 @pytest.mark.parametrize("noise_mode", ["uv_blue_lerp", "uv_blue_correlated"])

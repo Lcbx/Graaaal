@@ -1,11 +1,11 @@
 from pathlib import Path
 import numpy as np
 import pytest
-from numpyecs import DrawBatches as db
-from numpyecs import TransparencyPass as tp
-from numpyecs import RenderContext as rc
-from numpyecs.InstanceData import MESH_INSTANCE_DTYPE, pack_scale, pack_quaternion
-from numpyecs.Math import Camera
+from graaal import DrawBatches as db
+from graaal import TransparencyPass as tp
+from graaal import RenderContext as rc
+from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_scale, pack_quaternion
+from graaal.Math import Camera
 
 
 def read(texture, dtype, channels):

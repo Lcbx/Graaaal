@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from numpyecs.TransparencyPass import BilateralFilter, GrazingFade
+from graaal.TransparencyPass import BilateralFilter, GrazingFade
 from scenes import transparency_example as scene
 
 

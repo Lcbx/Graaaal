@@ -5,10 +5,10 @@ import gc
 
 import numpy as np
 
-from numpyecs import TextureProcessing as textures
-from numpyecs.Assets import DEFAULT_BLUE_NOISE_PATH
-from numpyecs.RenderContext import RenderContext, Texture, TextureUsage
-from numpyecs.MaterialRenderer import MaterialRenderer
+from graaal import TextureProcessing as textures
+from graaal.Assets import DEFAULT_BLUE_NOISE_PATH
+from graaal.RenderContext import RenderContext, Texture, TextureUsage
+from graaal.MaterialRenderer import MaterialRenderer
 from scenes.material_example import make_instances
 
 

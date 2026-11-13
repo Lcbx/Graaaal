@@ -22,7 +22,7 @@ reconstruction="fragment"`.
 
 ## Useful APIs
 
-Import from `numpyecs.TransparencyPass`. This overview is non-exhaustive; initialize
+Import from `graaal.TransparencyPass`. This overview is non-exhaustive; initialize
 RenderContext before constructing GPU resources.
 
 | Class or method | Purpose |

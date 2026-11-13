@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from numpyecs.RenderContext import *
+from graaal.RenderContext import *
 from pyrr import Matrix44 as Mat4
 
 

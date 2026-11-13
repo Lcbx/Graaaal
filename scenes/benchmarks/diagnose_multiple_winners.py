@@ -10,12 +10,12 @@ from time import perf_counter
 
 import numpy as np
 
-from numpyecs.DefaultMaterial import DefaultMaterialShader
-from numpyecs.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
-from numpyecs.Math import Camera
-from numpyecs.RenderContext import RenderContext, Texture, TextureUsage, wgpu
-from numpyecs.TransparencyData import VERTEX_DTYPE
-from numpyecs.TransparencyPass import BilateralFilter, NOISE_MODES
+from graaal.DefaultMaterial import DefaultMaterialShader
+from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+from graaal.Math import Camera
+from graaal.RenderContext import RenderContext, Texture, TextureUsage, wgpu
+from graaal.TransparencyData import VERTEX_DTYPE
+from graaal.TransparencyPass import BilateralFilter, NOISE_MODES
 from scenes.benchmarks.diagnose_anchored_noise import NoiseProbe, pixel_samples
 
 

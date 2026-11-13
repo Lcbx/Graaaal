@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from numpyecs.ECS import ECS, NO_ENTITY, component, entity_index
+from graaal.ECS import ECS, NO_ENTITY, component, entity_index
 
 
 @component

@@ -4,8 +4,8 @@ import pytest
 
 from test_transparency_multiple_winners import factory, read, render
 from test_transparency_exact_nearest import encoded
-from numpyecs.Math import Camera
-from numpyecs.RenderContext import RenderContext, RenderPipeline, Shader, Texture, TextureUsage
+from graaal.Math import Camera
+from graaal.RenderContext import RenderContext, RenderPipeline, Shader, Texture, TextureUsage
 
 
 @pytest.mark.parametrize("samples", [1, 4])

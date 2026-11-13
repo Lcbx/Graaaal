@@ -4,7 +4,7 @@ import statistics
 import time
 import tracemalloc
 import numpy as np
-from numpyecs.ECS import ECS, component, columns, array_field
+from graaal.ECS import ECS, component, columns, array_field
 
 
 @component

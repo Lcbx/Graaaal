@@ -5,7 +5,7 @@ from types import ModuleType
 
 import numpy as np
 
-from numpyecs.ECS import ECS, component
+from graaal.ECS import ECS, component
 from scenes.direct_draw_example import CubeInstances
 from scenes import prototype
 

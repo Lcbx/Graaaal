@@ -4,7 +4,7 @@ import scenes.benchmarks.raylib_benchmark_loop as loop
 import numpy as np
 from pyray import *
 
-from numpyecs.ECS import *
+from graaal.ECS import *
 
 
 @component

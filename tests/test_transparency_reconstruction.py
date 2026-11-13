@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 
 from test_transparency_multiple_winners import factory, read, render
-from numpyecs.RenderContext import RenderContext, Texture, TextureUsage
-from numpyecs.GpuProfiler import GpuProfiler
+from graaal.RenderContext import RenderContext, Texture, TextureUsage
+from graaal.GpuProfiler import GpuProfiler
 
 
 @pytest.mark.parametrize("samples", [1, 4])

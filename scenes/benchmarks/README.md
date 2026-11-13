@@ -12,7 +12,7 @@ chosen by the caller; benchmarking does not modify the engine's defaults.
 ```powershell
 python -m scenes.benchmarks.benchmark_ecs --entities 100000 --repeat 11 --loops 50 --output ecs_cpu.json
 python -m scenes.benchmarks.benchmark_ecs_uploads --frames 120 --output ecs_uploads.json
-python src/tests/benchmark_array_access.py
+python graaal/tests/benchmark_array_access.py
 ```
 
 `benchmark_ecs` reports query and mutation timings, gather/scatter costs and
@@ -66,6 +66,6 @@ camera-motion stability. Results depend on GPU, drivers, resolution and scene.
 part of the package extras. These interactive scripts are separate from the
 WGPU scene benchmarks.
 
-For the underlying ECS and rendering APIs, see [ECS](../../src/ECS_API.md),
-[transparency](../../src/stochastic_transparency.md) and
+For the underlying ECS and rendering APIs, see [ECS](../../graaal/ECS_API.md),
+[transparency](../../graaal/stochastic_transparency.md) and
 [interactive scenes](../README.md).

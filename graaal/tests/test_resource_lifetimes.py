@@ -2,8 +2,8 @@ from types import SimpleNamespace as NS
 from unittest.mock import Mock
 import numpy as np
 import pytest
-from numpyecs import RenderContext as rc
-from numpyecs.MeshArena import MeshArena
+from graaal import RenderContext as rc
+from graaal.MeshArena import MeshArena
 
 
 @pytest.fixture
@@ -82,7 +82,7 @@ def test_resource_close_is_idempotent_and_rejects_use(device):
 
 
 def test_unload_unused_mesh_and_reuse_retained_draw_registry(device):
-    from numpyecs.DrawBatches import DrawBatches, RenderShader, ShaderPass
+    from graaal.DrawBatches import DrawBatches, RenderShader, ShaderPass
     arena = MeshArena()
     vertices = np.zeros(3, dtype=[("position", "f4", 3)])
     mesh = rc.Mesh(vertices, np.arange(3, dtype=np.uint32), arena=arena)

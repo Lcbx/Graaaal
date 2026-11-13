@@ -1,4 +1,4 @@
-"""Installed-package examples: python -m numpyecs [--offscreen | --window]."""
+"""Installed-package examples: python -m graaal [--offscreen | --window]."""
 
 import argparse
 from pathlib import Path
@@ -31,7 +31,7 @@ def render_example(*, window=False, frames=1):
     from .InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
 
     if window:
-        RenderContext.init_window(640, 480, "NumPy ECS procedural example",
+        RenderContext.init_window(640, 480, "Graaal ECS procedural example",
             required_gpu_features=["indirect-first-instance"])
     else:
         RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])

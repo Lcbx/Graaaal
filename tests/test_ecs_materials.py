@@ -2,12 +2,12 @@
 from unittest.mock import Mock
 import numpy as np
 
-from numpyecs.ECS import ECS
-from numpyecs.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
-from numpyecs.Math import Vec3
-from numpyecs.Materials import MaterialShader
-from numpyecs.MaterialRenderer import MaterialRenderer, MaterialMesh
-from numpyecs.RenderContext import RenderContext, Texture, TextureUsage
+from graaal.ECS import ECS
+from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
+from graaal.Math import Vec3
+from graaal.Materials import MaterialShader
+from graaal.MaterialRenderer import MaterialRenderer, MaterialMesh
+from graaal.RenderContext import RenderContext, Texture, TextureUsage
 from scenes.material_example import make_world, sphere_vertices
 
 
@@ -43,7 +43,7 @@ def test_minimal_jinja_shader_requires_no_default_material_fields():
 	world.add(entity, MaterialInstance(r.meshes[0]), MaterialTransform())
 	adapter = EcsMaterialAdapter(r, world)
 	assert adapter.sync()
-	from numpyecs.Math import Camera
+	from graaal.Math import Camera
 	output = Texture((32, 32), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	commands = RenderContext.commands()
 	r.record(commands, (32, 32), Camera((0, 0, 4), (0, 0, 0), (0, 1, 0), 50), output.color_attachment())
@@ -88,7 +88,7 @@ def test_ecs_versions_mutations_spawn_despawn_and_compaction(monkeypatch):
 	new_ids = refs[new].surface_id
 	assert len(new_ids) == 2 and len(set(map(int, new_ids))) == 2
 	assert new_ids.min() > max(initial.values())
-	from numpyecs.Math import Camera
+	from graaal.Math import Camera
 	camera = Camera((0, 1.3, 9), (0, 1.3, 0), (0, 1, 0), 50)
 	output = Texture((48, 48), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	def render():

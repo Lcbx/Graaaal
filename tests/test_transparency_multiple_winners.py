@@ -4,12 +4,12 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from numpyecs import TransparencyPass as transparency
-from numpyecs.DefaultMaterial import DefaultMaterialShader
-from numpyecs.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
-from numpyecs.Math import Camera
-from numpyecs.RenderContext import RenderContext, Texture, TextureUsage
-from numpyecs.TransparencyData import VERTEX_DTYPE
+from graaal import TransparencyPass as transparency
+from graaal.DefaultMaterial import DefaultMaterialShader
+from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+from graaal.Math import Camera
+from graaal.RenderContext import RenderContext, Texture, TextureUsage
+from graaal.TransparencyData import VERTEX_DTYPE
 
 
 def read(texture, dtype=np.float16):

@@ -13,9 +13,9 @@ import sys
 
 import numpy as np
 
-from numpyecs.RenderContext import BufferUsage, ComputePipeline, GpuBuffer, RenderContext, Shader
-from numpyecs.TextureProcessing import get_default_blue_noise, build_correlated_noise_hierarchy
-from numpyecs.TransparencyPass import NOISE_MODES
+from graaal.RenderContext import BufferUsage, ComputePipeline, GpuBuffer, RenderContext, Shader
+from graaal.TextureProcessing import get_default_blue_noise, build_correlated_noise_hierarchy
+from graaal.TransparencyPass import NOISE_MODES
 
 
 def autocorrelation_width(image, axis, oversample):

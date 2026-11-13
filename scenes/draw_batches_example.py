@@ -4,16 +4,16 @@ from math import cos, sin
 import numpy as np
 from pyrr import Quaternion
 
-from numpyecs.Assets import load_gltf_first_mesh_interleaved
-from numpyecs.Diagnostics import WatchTimer
-from numpyecs.DrawBatches import DrawBatches, FrustumCuller, HiZCuller, standard_render_shader
-from numpyecs.HZB import HZB
-from numpyecs.ECS import ECS, Scheduler, component
-from numpyecs.EcsDrawing import EcsDrawAdapter
-from numpyecs.Geometry import make_cube_mesh
-from numpyecs.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale
-from numpyecs.Math import Camera, Vec3, Vec4
-from numpyecs.RenderContext import Mesh, RenderContext, Shader, get_time
+from graaal.Assets import load_gltf_first_mesh_interleaved
+from graaal.Diagnostics import WatchTimer
+from graaal.DrawBatches import DrawBatches, FrustumCuller, HiZCuller, standard_render_shader
+from graaal.HZB import HZB
+from graaal.ECS import ECS, Scheduler, component
+from graaal.EcsDrawing import EcsDrawAdapter
+from graaal.Geometry import make_cube_mesh
+from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale
+from graaal.Math import Camera, Vec3, Vec4
+from graaal.RenderContext import Mesh, RenderContext, Shader, get_time
 
 
 @component

@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 root = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(root / 'src'))
+sys.path.insert(0, str(root / 'graaal'))
 sys.path.insert(1, str(root))
 from scenes.benchmarks import benchmark_ecs as benchmark
 

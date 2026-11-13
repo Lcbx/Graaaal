@@ -28,9 +28,9 @@ cleans up the context afterward.
 | `msaa_example.py` | Minimal full-window rotating triangle; 1 selects single sampling and 4 selects 4x MSAA. |
 
 These files are runnable examples rather than a stable scene API. For reusable
-components, see the [engine guide](../README.md), [ECS reference](../src/ECS_API.md),
-[material guide](../src/materials.md), and
-[transparency guide](../src/stochastic_transparency.md).
+components, see the [engine guide](../README.md), [ECS reference](../graaal/ECS_API.md),
+[material guide](../graaal/materials.md), and
+[transparency guide](../graaal/stochastic_transparency.md).
 
 ## Transparency settings and controls
 
@@ -88,13 +88,13 @@ edges, but the 1x banded tail can miss subpixel details. Stochastic modes can
 still show spatial grain and motion shimmer. For controls from Python, use
 `set_tail_allocation()`, `set_kawase_passes()`, `set_banded_options()`,
 `set_winner_count()`, `set_noise_mode()`, `set_reconstruction()` and
-`set_debug_view()` as documented in the [transparency guide](../src/stochastic_transparency.md).
+`set_debug_view()` as documented in the [transparency guide](../graaal/stochastic_transparency.md).
 
 The transparency scene loads `resources/small_scene.glb`, with
 `Simple_foliage.001` treated as MASK. It supports static glTF node transforms,
 base color, roughness/metallic and emission. Normal maps, skinning, animation,
 material extensions and sampler overrides are not covered by this example.
-The [blue-noise data and license](../src/data/blue_noise/README.md) are bundled.
+The [blue-noise data and license](../graaal/data/blue_noise/README.md) are bundled.
 
 ## Scene tests and benchmarks
 
@@ -102,7 +102,7 @@ For untracked in-place edits to ECS object fields, call `touch()` so dependent
 readers can observe them. Run the import, scene-state and cache tests with:
 
 ```powershell
-python -m pytest tests/test_scenes.py tests/test_scene_caches.py src/tests/test_library_boundaries.py -q -p no:cacheprovider
+python -m pytest tests/test_scenes.py tests/test_scene_caches.py graaal/tests/test_library_boundaries.py -q -p no:cacheprovider
 ```
 
 See [benchmarks](benchmarks/README.md) for CLI usage of diagnostic scripts.

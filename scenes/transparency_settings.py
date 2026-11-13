@@ -9,7 +9,7 @@ from dataclasses import replace
 import glfw
 import numpy as np
 
-from numpyecs.TransparencyPass import DEBUG_VIEWS, FILL_NOISE_MODES, KERNEL_SIZES, NOISE_MODES
+from graaal.TransparencyPass import DEBUG_VIEWS, FILL_NOISE_MODES, KERNEL_SIZES, NOISE_MODES
 
 
 # name, displayed label, increment, minimum, maximum

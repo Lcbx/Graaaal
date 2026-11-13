@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 
 from test_transparency_multiple_winners import factory, read, render
-from numpyecs.TransparencyPass import ConfidenceFilter
-from numpyecs.RenderContext import RenderContext, Texture, TextureUsage
+from graaal.TransparencyPass import ConfidenceFilter
+from graaal.RenderContext import RenderContext, Texture, TextureUsage
 
 
 def cascade_reference(pair, passes, budget, active=None):
@@ -59,7 +59,7 @@ def test_cascade_matches_cpu_sums_and_selection(factory, samples, passes):
 
 
 def test_isolated_winner_is_a_translated_unit_peak_tent(factory, monkeypatch):
-	from numpyecs import TransparencyPass as transparency
+	from graaal import TransparencyPass as transparency
 	original = transparency.Texture
 	monkeypatch.setattr(transparency, "Texture", lambda *args, usage, **kwargs: original(*args, usage=usage | TextureUsage.COPY_DST, **kwargs))
 	renderer = factory(alpha=0.1, winner_count=1, reconstruction="atrous", confidence_filter=ConfidenceFilter(target_winners=1e6))
@@ -83,7 +83,7 @@ def test_isolated_winner_is_a_translated_unit_peak_tent(factory, monkeypatch):
 
 
 def test_rejected_mass_and_overlap_match_composite_weights(factory, monkeypatch):
-	from numpyecs import TransparencyPass as transparency
+	from graaal import TransparencyPass as transparency
 	original = transparency.Texture
 	monkeypatch.setattr(transparency, "Texture", lambda *args, usage, **kwargs: original(*args, usage=usage | TextureUsage.COPY_DST, **kwargs))
 	renderer = factory(alpha=0.1, winner_count=1, reconstruction="atrous", confidence_filter=ConfidenceFilter(target_winners=1e6))

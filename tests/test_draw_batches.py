@@ -14,8 +14,8 @@ import numpy as np
 import pytest
 
 
-from numpyecs.ECS import ECS, Entity, component
-from numpyecs.RenderContext import BindGroup
+from graaal.ECS import ECS, Entity, component
+from graaal.RenderContext import BindGroup
 
 
 class Buffer:
@@ -110,9 +110,9 @@ def check(d):
 @pytest.fixture
 def m(monkeypatch):
 	# Load a separate package so mocked resources cannot leak into real GPU tests.
-	prefix = "_numpyecs_drawing_under_test"
+	prefix = "_SRC_drawing_under_test"
 	package = types.ModuleType(prefix)
-	package.__path__ = [str(Path(__file__).resolve().parents[1] / "src")]
+	package.__path__ = [str(Path(__file__).resolve().parents[1] / "graaal")]
 	monkeypatch.setitem(sys.modules, prefix, package)
 	rc = types.ModuleType(f"{prefix}.RenderContext")
 	for name in ("Texture", "Mesh", "ComputePipeline"):

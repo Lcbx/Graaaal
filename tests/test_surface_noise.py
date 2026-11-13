@@ -3,10 +3,10 @@
 import numpy as np
 import pytest
 
-from numpyecs.Assets import load_blue_noise
-from numpyecs.RenderContext import BufferUsage, ComputePipeline, GpuBuffer, RenderContext, RenderPipeline, Shader, Texture, TextureUsage
-from numpyecs.TextureProcessing import build_correlated_noise_hierarchy
-from numpyecs import TextureProcessing as texture_processing
+from graaal.Assets import load_blue_noise
+from graaal.RenderContext import BufferUsage, ComputePipeline, GpuBuffer, RenderContext, RenderPipeline, Shader, Texture, TextureUsage
+from graaal.TextureProcessing import build_correlated_noise_hierarchy
+from graaal import TextureProcessing as texture_processing
 
 
 @pytest.fixture
@@ -372,11 +372,11 @@ def _native_sample_positions(count):
 @pytest.mark.parametrize("count", [1, 4])
 @pytest.mark.parametrize("thresholds", [("indirect-first-instance",)], indirect=True)
 def test_gpu_anchored_selection_matches_one_field_at_native_msaa_positions(thresholds, monkeypatch, count):
-	from numpyecs import TransparencyPass as transparency
-	from numpyecs.DefaultMaterial import DefaultMaterialShader
-	from numpyecs.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
-	from numpyecs.Math import Camera
-	from numpyecs.TransparencyData import VERTEX_DTYPE
+	from graaal import TransparencyPass as transparency
+	from graaal.DefaultMaterial import DefaultMaterialShader
+	from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+	from graaal.Math import Camera
+	from graaal.TransparencyData import VERTEX_DTYPE
 	sample_positions = _native_sample_positions(count)
 	assert len(np.unique(sample_positions, axis=0)) == count
 	def readable_texture(*args, usage, **kwargs):

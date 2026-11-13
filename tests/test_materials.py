@@ -3,12 +3,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from numpyecs.Materials import MaterialBinding, MaterialLibrary, MaterialShader, Parameter
-from numpyecs.DefaultMaterial import DefaultMaterialShader
-from numpyecs.MaterialRenderer import MaterialRenderer, MaterialMesh, DrawInstance
-from numpyecs.RenderContext import RenderContext, Texture, TextureUsage, Shader, RenderPipeline
-from numpyecs.TransparencyData import VERTEX_DTYPE
-from numpyecs.Math import Camera
+from graaal.Materials import MaterialBinding, MaterialLibrary, MaterialShader, Parameter
+from graaal.DefaultMaterial import DefaultMaterialShader
+from graaal.MaterialRenderer import MaterialRenderer, MaterialMesh, DrawInstance
+from graaal.RenderContext import RenderContext, Texture, TextureUsage, Shader, RenderPipeline
+from graaal.TransparencyData import VERTEX_DTYPE
+from graaal.Math import Camera
 from scenes.material_example import make_instances, sphere_vertices
 
 
@@ -57,7 +57,7 @@ def test_jinja_material_keeps_default_features_and_adds_typed_parameters(tmp_pat
 	return vec3f(p.custom);
 #endblock
 ''')
-	source = Shader.__new__(Shader)._render_source(None, str(Path(__file__).resolve().parents[1]/"src/shaders/stochastic_geometry.shader"), None, None, {"material_library": MaterialLibrary([shader])})[0]
+	source = Shader.__new__(Shader)._render_source(None, str(Path(__file__).resolve().parents[1]/"graaal/shaders/stochastic_geometry.shader"), None, None, {"material_library": MaterialLibrary([shader])})[0]
 	assert "return vec3f(p.custom)" in source
 	assert "fn default_lighting_0" in source
 	assert "fn opacity_0" in source
@@ -93,7 +93,7 @@ def test_child_template_owns_defaults_scopes_and_route_dependent_values(tmp_path
 	library = MaterialLibrary([transparent])
 	packed = library.pack([MaterialBinding(transparent, overrides={"rim_power": 5, "grazing_fade": True})])
 	assert packed[2].size > 0
-	source = Shader.__new__(Shader)._render_source(None, str(Path(__file__).resolve().parents[1]/"src/shaders/stochastic_geometry.shader"), None, None, {"material_library": library})[0]
+	source = Shader.__new__(Shader)._render_source(None, str(Path(__file__).resolve().parents[1]/"graaal/shaders/stochastic_geometry.shader"), None, None, {"material_library": library})[0]
 	assert "rim_power: f32" in source
 	assert "parameter(" not in source  # declarations never reach WGSL
 

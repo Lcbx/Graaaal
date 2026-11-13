@@ -10,10 +10,10 @@ import wgpu
 from imgui_bundle import imgui
 import wgpu.utils.imgui as backend_module
 
-from numpyecs.ImGui import ImGui
-from numpyecs.RenderContext import RenderContext
+from graaal.ImGui import ImGui
+from graaal.RenderContext import RenderContext
 from scenes.prototype import ActorCache, Damageable, Attributes, ActorMetadata, create_world, draw_actors
-from numpyecs.TransparencyPass import BilateralFilter, GrazingFade
+from graaal.TransparencyPass import BilateralFilter, GrazingFade
 from scenes.transparency_settings import FilterSettings
 
 
@@ -151,7 +151,7 @@ def test_both_scenes_render_real_imgui_draw_data_to_gpu(monkeypatch):
 	world = create_world()
 	cache = ActorCache(world, world.query(Damageable, Attributes, ActorMetadata))
 	cache.update()
-	from numpyecs.TransparencyPass import ConfidenceFilter
+	from graaal.TransparencyPass import ConfidenceFilter
 	renderer = NS(exact_nearest=False, bilateral_filter=BilateralFilter(), confidence_filter=ConfidenceFilter(), debug_view="final", sample_count=1, winner_count=2, winner_mix="average", reconstruction="push_pull",
 		reconstruction_passes=1, winner_coupling="complement", noise_mode="anchored_blue", noise_anchor_pixels=24, noise_anchor_subdivisions=4,
 		noise_scale=1, effective_noise_scale=1, noise_footprint_balance=0,

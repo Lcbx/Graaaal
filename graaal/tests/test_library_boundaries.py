@@ -14,12 +14,12 @@ class BlockOptional(importlib.abc.MetaPathFinder):
             raise ModuleNotFoundError(name)
 sys.meta_path.insert(0, BlockOptional())
 before = list(sys.path)
-import numpyecs
-from numpyecs import ECS, Math, Assets, TransparencyData, DrawList, InstanceData
-from numpyecs import draw_compiler, draw_layout, utils
+import graaal
+from graaal import ECS, Math, Assets, TransparencyData, DrawList, InstanceData
+from graaal import draw_compiler, draw_layout, utils
 from types import SimpleNamespace as NS
-from numpyecs.__main__ import simulate
-from numpyecs.Diagnostics import WatchTimer
+from graaal.__main__ import simulate
+from graaal.Diagnostics import WatchTimer
 with WatchTimer("cpu"): pass
 assert simulate().shape == (2, 3)
 assert sys.path == before

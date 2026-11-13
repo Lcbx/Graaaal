@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from numpyecs.Assets import load_blue_noise
+from graaal.Assets import load_blue_noise
 
 
 def uniform_tile(tile):

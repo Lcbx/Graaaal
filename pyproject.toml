@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "numpyecs"
+name = "graaal"
 version = "0.1.0"
 description = "NumPy-based ECS and procedural game rendering"
 requires-python = ">=3.11"
@@ -17,11 +17,11 @@ examples = ["pyrr>=0.10"]
 test = ["pytest>=8.3"]
 
 [tool.setuptools]
-packages = ["numpyecs"]
-package-dir = {numpyecs = "src"}
+packages = ["graaal"]
+package-dir = {graaal = "graaal"}
 
 [tool.setuptools.package-data]
-numpyecs = ["shaders/*.shader", "shaders/*.shaderlib", "data/blue_noise/*"]
+graaal = ["shaders/*.shader", "shaders/*.shaderlib", "data/*.otf", "data/blue_noise/*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "src/tests"]
+testpaths = ["tests", "graaal/tests"]

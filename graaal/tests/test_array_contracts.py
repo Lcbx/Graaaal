@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from numpyecs.ECS import ECS, array_field, component, columns
+from graaal.ECS import ECS, array_field, component, columns
 
 
 @component
@@ -109,7 +109,7 @@ def test_multicomponent_dense_edit_requires_compaction_and_invalidates_selection
 
 
 def test_default_instance_packing_produces_the_shader_bit_layout():
-    from numpyecs.InstanceData import make_instances, MESH_INSTANCE_DTYPE
+    from graaal.InstanceData import make_instances, MESH_INSTANCE_DTYPE
     position = dict(x=[1, 2], y=[3, 4], z=[5, 6])
     rotation = dict(x=[0, 0], y=[0, 0], z=[0, 0], w=[1, 1])
     scale = dict(x=[1, 2], y=[1, 3], z=[1, 4])

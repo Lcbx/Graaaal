@@ -1,7 +1,7 @@
 [gd_resource type="ShaderMaterial" load_steps=5 format=3 uid="uid://cxaf2rs3spo8y"]
 
-[ext_resource type="Shader" path="res://src/bullet_impact/impact.gdshader" id="1_w11eo"]
-[ext_resource type="Texture2D" uid="uid://l2ludw03gpvs" path="res://src/bullet_impact/noise.tres" id="2_3psxh"]
+[ext_resource type="Shader" path="res://graaal/bullet_impact/impact.gdshader" id="1_w11eo"]
+[ext_resource type="Texture2D" uid="uid://l2ludw03gpvs" path="res://graaal/bullet_impact/noise.tres" id="2_3psxh"]
 
 [sub_resource type="Curve" id="Curve_adjwp"]
 bake_resolution = 16

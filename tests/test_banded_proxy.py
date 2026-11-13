@@ -77,9 +77,9 @@ def test_thick_tail_uses_sum_normalization_and_sparse_confidence(factory, sample
 @pytest.mark.parametrize("samples", [1, 4])
 @pytest.mark.parametrize("tail_msaa", [False, True])
 def test_proxy_point_cancellation_with_animated_custom_lighting(samples, tail_msaa):
-	from numpyecs.DefaultMaterial import DefaultMaterialShader
-	from numpyecs.MaterialRenderer import MaterialRenderer
-	from numpyecs.RenderContext import RenderContext, Texture, TextureUsage
+	from graaal.DefaultMaterial import DefaultMaterialShader
+	from graaal.MaterialRenderer import MaterialRenderer
+	from graaal.RenderContext import RenderContext, Texture, TextureUsage
 	from scenes.benchmarks.profile_banded_tail import make_scene
 	from test_material_animation import ANIMATED_SOURCE
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])

@@ -1,6 +1,6 @@
 """Shared utility contracts for capacity growth and per-instance caching."""
 
-from numpyecs.utils import cache_last, higher_pow2
+from graaal.utils import cache_last, higher_pow2
 
 
 def test_higher_pow2() -> None:

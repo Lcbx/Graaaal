@@ -5,13 +5,13 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from numpyecs import DrawBatches as batches
-from numpyecs import RenderContext as rc
-from numpyecs import TransparencyPass as transparency
-from numpyecs.ECS import ECS, component, columns
-from numpyecs.draw_resources import _DrawResources
-from numpyecs.draw_culling import _CullingState, default_cull_shader
-from numpyecs.HZB import HZB
+from graaal import DrawBatches as batches
+from graaal import RenderContext as rc
+from graaal import TransparencyPass as transparency
+from graaal.ECS import ECS, component, columns
+from graaal.draw_resources import _DrawResources
+from graaal.draw_culling import _CullingState, default_cull_shader
+from graaal.HZB import HZB
 
 
 @pytest.fixture
@@ -264,7 +264,7 @@ def test_cull_camera_uses_explicit_keywords(draws):
 
 
 def test_gpu_array_batches_cull_in_compact_order_from_another_directory(monkeypatch, tmp_path):
-    from numpyecs.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
+    from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
 
     rc.RenderContext.setup_graphics_backend(True)
     monkeypatch.chdir(tmp_path)
