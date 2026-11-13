@@ -270,6 +270,7 @@ class TransparencyPass:
 		self.set_grazing_fade(grazing_fade if grazing_fade is not None else GrazingFade())
 		self.bilateral_uniforms = self.compose_shader.uniform_buffer("bilateral")
 		self.debug_view = "final"
+		self.ambient_occlusion = False
 		self.set_bilateral_filter(bilateral_filter if bilateral_filter is not None else BilateralFilter())
 		entry = "shade_keyed" if self.keyed_tail else "shade_bands" if self.banded_tail else "shade_winner"
 		self.shade_pipeline = ComputePipeline(self.shading_shader, entry=entry, layout=self._pipeline_layout(self.shading_shader, entry))
@@ -816,13 +817,22 @@ class TransparencyPass:
 		self.bilateral_uniforms.content["sigmas"] = (
 			options.spatial_sigma, options.depth_sigma, options.transmittance_sigma, options.min_depth_sigma,
 		)
-		self.bilateral_uniforms.content["kernel"] = (options.kernel_size//2, DEBUG_VIEWS.index(self.debug_view), 0, 0)
+		self.bilateral_uniforms.content["kernel"] = (options.kernel_size//2, DEBUG_VIEWS.index(self.debug_view), int(self.ambient_occlusion), 0)
 		self.bilateral_uniforms.upload_changed()
 		self.bilateral_filter = options
 		if self._winner_settings is not None:
 			for stream, settings in enumerate(self._winner_settings):
 				settings.content["info"] = (stream, int(stream > 0 and options.kernel_size != 1), self.winner_count, 0)
 				settings.upload_changed()
+
+	def set_ambient_occlusion(self, enabled):
+		"""Enable screen-space ambient occlusion in the composed output."""
+		if type(enabled) is not bool: raise ValueError("Ambient occlusion enabled must be boolean")
+		if enabled == self.ambient_occlusion: return False
+		self.ambient_occlusion = enabled
+		self.bilateral_uniforms.content["kernel"][..., 2] = int(enabled)
+		self.bilateral_uniforms.upload_changed()
+		return True
 
 	@property
 	def effective_noise_scale(self):

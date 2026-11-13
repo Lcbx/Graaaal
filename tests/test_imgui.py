@@ -14,7 +14,7 @@ from graaal.ImGui import ImGui
 from graaal.RenderContext import RenderContext
 from scenes.prototype import ActorCache, Damageable, Attributes, ActorMetadata, create_world, draw_actors
 from graaal.TransparencyPass import BilateralFilter, GrazingFade
-from scenes.transparency_settings import FilterSettings
+from scenes.rendering_settings import FilterSettings
 
 
 @pytest.fixture
@@ -153,7 +153,7 @@ def test_both_scenes_render_real_imgui_draw_data_to_gpu(monkeypatch):
 	cache.update()
 	from graaal.TransparencyPass import ConfidenceFilter
 	renderer = NS(exact_nearest=False, bilateral_filter=BilateralFilter(), confidence_filter=ConfidenceFilter(), debug_view="final", sample_count=1, winner_count=2, winner_mix="average", reconstruction="push_pull",
-		reconstruction_passes=1, winner_coupling="complement", noise_mode="anchored_blue", noise_anchor_pixels=24, noise_anchor_subdivisions=4,
+		reconstruction_passes=1, winner_coupling="complement", noise_mode="anchored_blue", noise_anchor_pixels=24, noise_anchor_subdivisions=4, tail_allocation="stochastic", keyed_tail=False,
 		noise_scale=1, effective_noise_scale=1, noise_footprint_balance=0,
 		noise_footprint_balancing=False, force_single_contributor=False, grazing_fade=GrazingFade())
 	settings = FilterSettings(renderer)
@@ -161,10 +161,11 @@ def test_both_scenes_render_real_imgui_draw_data_to_gpu(monkeypatch):
 		with ImGui() as gui:
 			def draw_banded():
 				renderer.banded_tail = True
+				renderer.tail_allocation = "banded"
 				renderer.kawase_passes = 2
 				renderer.banded_proxy, renderer.banded_subset, renderer.banded_tail_msaa = True, False, True
 				try: settings.draw()
-				finally: renderer.banded_tail = False
+				finally: renderer.banded_tail, renderer.tail_allocation = False, "stochastic"
 			for draw in (lambda: draw_actors(cache), settings.draw, draw_banded):
 				# A first-use window may defer layout for one frame.
 				for _ in range(2):

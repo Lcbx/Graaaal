@@ -1,7 +1,8 @@
-"""Shared transparency settings for the interactive scenes.
+"""Shared rendering and transparency controls for the interactive scenes.
 
-Pass a TransparencyPass or MaterialRenderer to FilterSettings, register
-handle_key with the key event, and call draw inside the ImGui frame.
+Pass a TransparencyPass or MaterialRenderer to RenderingSettings, register
+handle_key with the key event, and call draw inside the ImGui frame. Optional
+callbacks connect the MSAA and SSAO toggles to scene-specific rendering paths.
 F toggles visibility; visible=False starts with the settings hidden.
 """
 from dataclasses import replace
@@ -75,10 +76,11 @@ def _item_tooltip(text):
 			imgui.end_tooltip()
 
 
-class FilterSettings:
-	"""Live controls for a TransparencyPass or its owning MaterialRenderer."""
+class RenderingSettings:
+	"""Live rendering controls for a TransparencyPass or MaterialRenderer."""
 
-	def __init__(self, renderer, *, visible=True, position=(12, 12)):
+	def __init__(self, renderer, *, visible=True, position=(12, 12), on_msaa_changed=None,
+		on_ssao_changed=None, ssao_enabled=False):
 		self.controls = renderer
 		self.renderer = getattr(renderer, "transparency", renderer)
 		self.defaults = self.renderer.bilateral_filter
@@ -86,6 +88,30 @@ class FilterSettings:
 		self.visible = visible
 		self.position = position
 		self.message = ""
+		self.on_msaa_changed = on_msaa_changed
+		self.on_ssao_changed = on_ssao_changed
+		self.ssao_enabled = ssao_enabled
+		if self.on_ssao_changed is not None:
+			self.on_ssao_changed(ssao_enabled)
+		elif hasattr(self.controls, "set_ambient_occlusion"):
+			self.controls.set_ambient_occlusion(ssao_enabled)
+
+	def set_msaa_enabled(self, enabled):
+		if type(enabled) is not bool: raise ValueError("MSAA enabled must be boolean")
+		sample_count = 4 if enabled else 1
+		if self.renderer.sample_count == sample_count: return
+		if self.on_msaa_changed is not None:
+			self.on_msaa_changed(enabled)
+		else:
+			self.controls.set_sample_count(sample_count)
+
+	def set_ssao_enabled(self, enabled):
+		if type(enabled) is not bool: raise ValueError("SSAO enabled must be boolean")
+		self.ssao_enabled = enabled
+		if self.on_ssao_changed is not None:
+			self.on_ssao_changed(enabled)
+		elif hasattr(self.controls, "set_ambient_occlusion"):
+			self.controls.set_ambient_occlusion(enabled)
 
 	@staticmethod
 	def available_debug_views(renderer):
@@ -213,10 +239,21 @@ class FilterSettings:
 			imgui.text_wrapped("Filter controls smooth reconstruction; noise controls choose winners; grazing fade reduces opacity at steep view angles. "
 				"There is no smoothing across frames, so some noise can remain during camera movement.")
 
-	def draw_rendering_options(self, imgui):
+	def draw_general_rendering_options(self, imgui):
+		changed, index = imgui.combo("Antialiasing (M)", int(self.renderer.sample_count == 4), ("Off", "MSAA 4x"))
+		banded = getattr(self.renderer, "banded_tail", False)
+		_item_tooltip("4x samples opaque/MASK geometry and the exact nearest layer; optical transmission and both tail winners stay at 1x."
+			if self.renderer.keyed_tail else "4x samples opaque/MASK geometry, transmission and the exact nearest layer. Banded tail estimation stays at 1x. Linear HDR is resolved before tone mapping."
+			if banded else "4x samples geometry, opacity and winner selection at four positions per pixel. Reconstruction resolves linear HDR before tone mapping; no temporal accumulation.")
+		if changed: self.set_msaa_enabled(index == 1)
+		changed, enabled = imgui.checkbox("SSAO (A)", self.ssao_enabled)
+		_item_tooltip("Screen-space ambient occlusion from the main depth buffer. A toggles SSAO; O selects the compose or separate-pass implementation.")
+		if changed: self.set_ssao_enabled(enabled)
+
+	def draw_transparency_options(self, imgui):
 		modes = ("stochastic", "banded", "min_key")
 		changed, index = imgui.combo("Tail allocation", modes.index(self.renderer.tail_allocation), ("Stochastic nearest wins", "Banded + dual Kawase", "Min-key + dual Kawase"))
-		_item_tooltip("The min-key mode captures an exact nearest layer and selects two tail winners with independent per-fragment hashes and depth tests.")
+		_item_tooltip("Banded captures the exact nearest layer and selects a complementary pair with shared screen noise. Min-key selects two tail winners with independent per-fragment hashes and depth tests.")
 		if changed:
 			self.controls.set_tail_allocation(modes[index])
 			self.sync_debug_view(self.renderer)
@@ -237,11 +274,6 @@ class FilterSettings:
 			if self.renderer.reconstruction == "atrous": help_text = "Final retained unit-peak acceptance D divided by the budget, clamped to one. Includes rejection from every cascade pass."
 		_item_tooltip(help_text)
 		if changed: self.renderer.set_debug_view(views[index])
-		changed, index = imgui.combo("MSAA (M)", int(self.renderer.sample_count == 4), ("Off (1x)", "4x"))
-		_item_tooltip("4x samples opaque/MASK geometry and the exact nearest layer; optical transmission and both tail winners stay at 1x."
-			if self.renderer.keyed_tail else "4x samples opaque/MASK geometry, transmission and the exact nearest layer. Banded tail estimation stays at 1x. Linear HDR is resolved before tone mapping."
-			if banded else "4x samples geometry, opacity and winner selection at four positions per pixel. Reconstruction resolves linear HDR before tone mapping; no temporal accumulation.")
-		if changed: self.controls.set_sample_count((1, 4)[index])
 		return banded
 
 	def draw_banded_tail_options(self, imgui):
@@ -390,13 +422,15 @@ class FilterSettings:
 		if not self.visible: return
 		imgui.set_next_window_pos(self.position, imgui.Cond_.first_use_ever)
 		imgui.set_next_window_size((460, 560), imgui.Cond_.first_use_ever)
-		expanded, self.visible = imgui.begin("Transparency settings", self.visible)
+		expanded, self.visible = imgui.begin("Rendering settings", self.visible)
 		try:
 			if not expanded: return
 			imgui.text_disabled("Hover a setting or diagnostic view for an explanation.")
-			self.draw_tuning_guide(imgui)
 			imgui.separator_text("Rendering")
-			if self.draw_rendering_options(imgui):
+			self.draw_general_rendering_options(imgui)
+			self.draw_tuning_guide(imgui)
+			imgui.separator_text("Transparency")
+			if self.draw_transparency_options(imgui):
 				self.draw_banded_tail_options(imgui)
 			else:
 				self.draw_winner_options(imgui)
@@ -407,3 +441,6 @@ class FilterSettings:
 		finally:
 			imgui.end()
 			self.sync_debug_view(self.renderer)
+
+
+FilterSettings = RenderingSettings
