@@ -33,7 +33,7 @@ def run(size=(256, 192), matching_proxy=False):
 			renderer.set_sample_count(samples)
 			renderer.set_banded_options(tail_msaa=native_tail)
 			for pairs in (0, 1, 2):
-				renderer.set_kawase_passes(pairs)
+				renderer.transparency.set_kawase_passes(pairs)
 				for proxy in (False, True):
 					renderer.set_banded_options(proxy=proxy)
 					commands = RenderContext.commands()

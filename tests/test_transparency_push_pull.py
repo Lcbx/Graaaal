@@ -87,7 +87,7 @@ def test_push_pull_clears_resizes_and_preserves_constant_mean(factory, samples, 
 	renderer.instances[0].material["base_color"] = (1, 1, 1, 0.5)
 	render(renderer, (19, 13))
 	assert oit.reconstruction_color.size == (19, 13, samples)
-	renderer.set_confidence_filter(ConfidenceFilter(levels=5-levels, target_winners=8))
+	renderer.transparency.set_confidence_filter(ConfidenceFilter(levels=5-levels, target_winners=8))
 	render(renderer, (19, 13))
 	assert len(oit.pyramid) == 5-levels
 	before = render(renderer, (19, 13))
@@ -240,7 +240,7 @@ def test_confidence_gather_matches_cpu_reference(factory, samples, levels):
 	expected = acceptance*confidence_reference(pair, oit.bilateral_filter.spatial_sigma, 4, levels)
 	np.testing.assert_allclose(read(oit.reconstruction_color)[..., :3], expected, atol=0.0002)
 	textures = [level["pair"] for level in oit.pyramid]
-	renderer.set_confidence_filter(ConfidenceFilter(levels=levels, target_winners=8))
+	renderer.transparency.set_confidence_filter(ConfidenceFilter(levels=levels, target_winners=8))
 	assert textures == [level["pair"] for level in oit.pyramid]
 	render(renderer, (37, 29))
 	expected = acceptance*confidence_reference(pair, oit.bilateral_filter.spatial_sigma, 8, levels)

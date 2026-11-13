@@ -54,7 +54,7 @@ def test_mask_uses_cutoff_and_occludes_blended_geometry(samples, alpha):
 	# At most the one BLEND sheet is captured exactly; neither contributes a tail.
 	np.testing.assert_array_equal(read(renderer.transparency.band_payloads, np.uint32), 0)
 	for phase in (1, 3):
-		renderer.set_kawase_passes(phase)
+		renderer.transparency.set_kawase_passes(phase)
 		np.testing.assert_array_equal(render(renderer, (31, 23)), image)
 	mask.material["alpha_mode"] = 2
 	assert not np.array_equal(render(renderer, (31, 23)), image)

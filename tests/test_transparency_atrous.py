@@ -47,7 +47,7 @@ def test_cascade_matches_cpu_sums_and_selection(factory, samples, passes):
 	np.testing.assert_allclose(read(oit.pyramid[(passes-1)%2]["pair"], np.float32), states[-1], atol=1e-6)
 	np.testing.assert_allclose(read(oit.reconstruction_color)[..., :3], acceptance*expected[..., :3], atol=0.0005)
 	textures = [p["pair"] for p in oit.pyramid]
-	renderer.set_confidence_filter(ConfidenceFilter(cascade_passes=passes, target_winners=8))
+	renderer.transparency.set_confidence_filter(ConfidenceFilter(cascade_passes=passes, target_winners=8))
 	assert textures == [p["pair"] for p in oit.pyramid]
 	render(renderer, (37, 29))
 	expected, _ = cascade_reference(pair, passes, 8)

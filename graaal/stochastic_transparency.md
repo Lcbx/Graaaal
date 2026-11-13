@@ -51,14 +51,27 @@ RenderContext before constructing GPU resources.
 | `GrazingFade`, `set_grazing_fade` | Configure angular opacity fade; default enabled from 83 to 86 degrees. |
 | `TransparencyTargets` | Describes caller-owned color, depth, guide, transmittance and winner textures. |
 
+`record_transparency` records transparent passes after opaque rendering. Supply a
+callback that draws the named pass and the transparent geometry returned by
+`create_geometry_passes`:
+
+```python
+from graaal.transparency_utils import record_transparency
+
+record_transparency(commands, transparency, geometry, draw_transparent)
+```
+
+`draw_transparent(render, pass_name)` draws the requested pass; use the
+geometry's `nearest` and `guide` overrides for those names.
+
 ## Min-key tail
 
 The alternative `"min_key"` selector uses the same nearest and composition
 calls. Record its two selection passes after the transmission scope:
 
 ```python
-renderer.set_tail_allocation("min_key")
-renderer.set_kawase_passes(2)
+transparency.set_tail_allocation("min_key")
+transparency.set_kawase_passes(2)
 
 with transparency.transmittance_pass(commands) as render:
 	batches.draw(render, visibility, "transmittance")
@@ -79,7 +92,7 @@ banded tail winners, and dual Kawase reconstruction. These are the defaults.
 
 ```python
 renderer = MaterialRenderer(items)
-renderer.set_kawase_passes(3)
+renderer.transparency.set_kawase_passes(3)
 renderer.set_tail_allocation("stochastic")  # returns to fragment reconstruction
 ```
 
@@ -91,7 +104,7 @@ Custom materials and lighting remain supported; the proxy need not equal them.
 
 ```python
 renderer.set_banded_options(proxy=True, subset=True, tail_msaa=False)
-renderer.set_kawase_passes(3)
+renderer.transparency.set_kawase_passes(3)
 ```
 
 `subset=True` selects one fixed pixel in every 2x2 block for allocation/lighting

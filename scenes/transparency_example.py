@@ -35,6 +35,7 @@ from graaal.RenderContext import (
 )
 from graaal.TextureProcessing import build_material_texture_array
 from graaal.TransparencyData import load_transparency_scene as load_transparency_data
+from graaal.transparency_utils import record_transparency
 from graaal.TransparencyPass import BilateralFilter, ConfidenceFilter, FILL_NOISE_MODES, GrazingFade, NOISE_MODES, TransparencyPass
 from scenes.rendering_settings import FilterSettings, RenderingSettings, NOISE_LABELS
 
@@ -235,31 +236,12 @@ def render_frame(*, profiler=None):
 	# draw both lists directly from the frustum visibility prepared above.
 	with transparency.opaque_pass(commands) as render:
 		opaque_batches.draw(render, "main")
-	if transparency.exact_nearest:
-		with transparency.nearest_pass(commands) as render:
-			transparent_batches.draw(render, "main", pass_override=transparent_batches.passes.nearest)
-		transparency.shade_nearest(commands, transparent_batches.passes)
-	# The point estimator never samples a reconstruction guide.
-	if transparency.bilateral_filter.kernel_size != 1 and not transparency.banded_tail:
-		with transparency.guide_pass(commands) as render:
-			transparent_batches.draw(render, "main", pass_override=transparent_batches.passes.guide)
-	with transparency.transmittance_pass(commands) as render:
-		transparent_batches.draw(render, "transmittance")
-	if transparency.keyed_tail:
-		for stream in (0, 1):
-			with transparency.selection_pass(commands, stream=stream) as render:
-				transparent_batches.draw(render, transparency.selection_name(stream))
-		transparency.shade_winner(commands, transparent_batches.passes)
-	elif transparency.banded_tail:
-		if transparency.mixed_tail:
-			with transparency.tail_statistics_pass(commands) as render: transparent_batches.draw(render, "tail_statistics")
-		with transparency.banded_pass(commands) as render:
-			transparent_batches.draw(render, "bands")
-		transparency.shade_winner(commands, transparent_batches.passes)
-	for stream in range(0 if transparency.banded_tail else transparency.winner_count):
-		with transparency.selection_pass(commands, stream=stream) as render:
-			transparent_batches.draw(render, transparency.selection_name(stream))
-		transparency.shade_winner(commands, transparent_batches.passes, stream=stream)
+	def draw_transparent(render, name):
+		if name in ("nearest", "guide"):
+			transparent_batches.draw(render, "main", pass_override=getattr(transparent_batches.passes, name))
+		else:
+			transparent_batches.draw(render, name)
+	record_transparency(commands, transparency, transparent_batches.passes, draw_transparent)
 	output = RenderContext.screen()
 	if ao_enabled and ao_method == "pass":
 		ao_pass.resize((width, height))

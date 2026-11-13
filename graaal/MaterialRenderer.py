@@ -13,6 +13,7 @@ from .TransparencyData import VERTEX_DTYPE, SHADING_VERTEX_DTYPE, MATERIAL_DTYPE
 
 _DRAW_IDS = count(1)
 from .TransparencyPass import TransparencyPass
+from .transparency_utils import record_transparency
 
 
 @dataclass(eq=False)
@@ -151,18 +152,14 @@ class MaterialRenderer:
 		if self.transparency.set_sample_count(count):
 			self._register_passes()
 
-	def set_ambient_occlusion(self, enabled):
-		"""Enable or disable screen-space ambient occlusion."""
-		return self.transparency.set_ambient_occlusion(enabled)
+	def set_ambient_occlusion_settings(self, settings):
+		if self.transparency.set_ambient_occlusion_settings(settings): self._register_passes()
 
 	def set_exact_nearest(self, enabled):
 		if self.transparency.set_exact_nearest(enabled): self._register_passes()
 
 	def set_tail_allocation(self, mode):
 		if self.transparency.set_tail_allocation(mode): self._register_passes()
-
-	def set_kawase_passes(self, count):
-		return self.transparency.set_kawase_passes(count)
 
 	def set_banded_options(self, **options):
 		if self.transparency.set_banded_options(**options): self._register_passes()
@@ -183,9 +180,6 @@ class MaterialRenderer:
 
 	def set_winner_coupling(self, mode):
 		if self.transparency.set_winner_coupling(mode): self._register_passes()
-
-	def set_confidence_filter(self, options):
-		return self.transparency.set_confidence_filter(options)
 
 	def set_reconstruction(self, mode):
 		if self.transparency.set_reconstruction(mode): self._register_passes()
@@ -210,29 +204,7 @@ class MaterialRenderer:
 			# opaque geometry adds to those targets using their current contents.
 			with oit.opaque_pass(commands, load=external) as render:
 				self.draws.draw(render, self.visibility, "opaque")
-		if oit.exact_nearest:
-			with oit.nearest_pass(commands) as render:
-				self.draws.draw(render, self.visibility, "nearest")
-			oit.shade_nearest(commands, self.geometry[1])
-		for begin, name in ((oit.guide_pass, "guide"),
-			(oit.transmittance_pass, "transmittance")):
-			if name == "guide" and oit.banded_tail: continue
-			if name == "guide" and oit.bilateral_filter.kernel_size == 1: continue
-			with begin(commands) as render:
-				self.draws.draw(render, self.visibility, name)
-		if oit.keyed_tail:
-			for stream in (0, 1):
-				with oit.selection_pass(commands, stream=stream) as render:
-					self.draws.draw(render, self.visibility, oit.selection_name(stream))
-			oit.shade_winner(commands, self.geometry[1])
-		elif oit.banded_tail:
-			if oit.mixed_tail:
-				with oit.tail_statistics_pass(commands) as render: self.draws.draw(render, self.visibility, "tail_statistics")
-			with oit.banded_pass(commands) as render:
-				self.draws.draw(render, self.visibility, "bands")
-			oit.shade_winner(commands, self.geometry[1])
-		for stream in range(0 if oit.banded_tail else oit.winner_count):
-			with oit.selection_pass(commands, stream=stream) as render:
-				self.draws.draw(render, self.visibility, oit.selection_name(stream))
-			oit.shade_winner(commands, self.geometry[1], stream=stream)
+		def draw_transparent(render, name):
+			self.draws.draw(render, self.visibility, name)
+		record_transparency(commands, oit, self.geometry[1], draw_transparent)
 		oit.compose(commands, output)

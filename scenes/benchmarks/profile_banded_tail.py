@@ -114,7 +114,7 @@ def run(size=(1280, 720), frames=24, warmup=5, pairs=(1, 2, 3), samples=(1, 4), 
 				variant, sample_count, blur_pairs = configs[index]
 				renderer.set_banded_options(**VARIANTS[variant])
 				renderer.set_sample_count(sample_count)
-				renderer.set_kawase_passes(blur_pairs)
+				renderer.transparency.set_kawase_passes(blur_pairs)
 				key = (variant, sample_count, blur_pairs)
 				schedule.append(dict(round=trial, config=variant, msaa=sample_count, pairs=blur_pairs))
 				for frame in range(warmup+count):

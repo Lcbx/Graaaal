@@ -79,7 +79,7 @@ def layer_comparison(size, targets, reconstruction="atrous", support_seeds=0, ex
 			for coupling in ("complement", "independent"):
 				renderer.set_winner_coupling(coupling)
 				for target in targets:
-					renderer.set_confidence_filter(ConfidenceFilter(target_winners=target))
+					renderer.transparency.set_confidence_filter(ConfidenceFilter(target_winners=target))
 					commands = RenderContext.commands()
 					renderer.record(commands, (size, size), camera, output.color_attachment())
 					RenderContext.submit(commands.finish())
@@ -97,7 +97,7 @@ def layer_comparison(size, targets, reconstruction="atrous", support_seeds=0, ex
 		renderer.instances = items
 		for item in items: item.material["base_color"] = (1, 1, 1, 0.1)
 		renderer.set_winner_coupling("complement")
-		renderer.set_confidence_filter(ConfidenceFilter(target_winners=1e6))
+		renderer.transparency.set_confidence_filter(ConfidenceFilter(target_winners=1e6))
 		raw, filtered = [], []
 		rng = np.random.default_rng(771)
 		for seed in range(support_seeds):

@@ -157,7 +157,7 @@ def test_half_alpha_tail_is_constant_and_nearest_is_not_blurred(factory, samples
 	renderer = factory(sample_count=samples, alpha=0.5, layers=2, tail_allocation="banded", winner_coupling="complement", kawase_passes=0)
 	image = render(renderer, (43, 29))
 	for passes in (1, 3, 8, 0):
-		renderer.set_kawase_passes(passes)
+		renderer.transparency.set_kawase_passes(passes)
 		np.testing.assert_array_equal(render(renderer, (43, 29)), image)
 		np.testing.assert_allclose(read(renderer.transparency.reconstruction_color)[..., :3], np.broadcast_to((0, 0, 0.5), (samples, 29, 43, 3)), atol=0.001)
 		np.testing.assert_array_equal(read(renderer.transparency.nearest_color)[..., 0], 1)
@@ -170,7 +170,7 @@ def test_blur_reduces_sparse_tail_variance_and_resize_switching_clears(factory):
 	render(renderer, (128, 128))
 	oit = renderer.transparency
 	sharp = read(oit.reconstruction_color)[..., 2]
-	renderer.set_kawase_passes(3)
+	renderer.transparency.set_kawase_passes(3)
 	render(renderer, (128, 128))
 	blurred = read(oit.reconstruction_color)[..., 2]
 	assert blurred.std() < sharp.std()*0.2

@@ -2,7 +2,7 @@
 
 ## Project
 Python game engine built on wgpu and numpy. It has an ECS core and a set of rendering tools that each work on their own.
-see README.md for details.
+see README.md for details. Python IS installed in this environment.
 
 ## Ground rules
 - Each tool must work without the ECS or any other tool. ECS integration goes in an adapter, not in the tool.

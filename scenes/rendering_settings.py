@@ -94,8 +94,8 @@ class RenderingSettings:
 		self.ssao_enabled = ssao_enabled
 		if self.on_ssao_changed is not None:
 			self.on_ssao_changed(ssao_enabled)
-		elif hasattr(self.controls, "set_ambient_occlusion"):
-			self.controls.set_ambient_occlusion(ssao_enabled)
+		elif hasattr(self.renderer, "set_ambient_occlusion"):
+			self.renderer.set_ambient_occlusion(ssao_enabled)
 
 	def set_msaa_enabled(self, enabled):
 		if type(enabled) is not bool: raise ValueError("MSAA enabled must be boolean")
@@ -111,8 +111,8 @@ class RenderingSettings:
 		self.ssao_enabled = enabled
 		if self.on_ssao_changed is not None:
 			self.on_ssao_changed(enabled)
-		elif hasattr(self.controls, "set_ambient_occlusion"):
-			self.controls.set_ambient_occlusion(enabled)
+		elif hasattr(self.renderer, "set_ambient_occlusion"):
+			self.renderer.set_ambient_occlusion(enabled)
 
 	@staticmethod
 	def available_debug_views(renderer):
@@ -149,7 +149,7 @@ class RenderingSettings:
 
 	def adjust(self, direction, fine=False):
 		if getattr(self.renderer, "banded_tail", False):
-			self.controls.set_kawase_passes(max(0, min(8, self.renderer.kawase_passes+direction)))
+			self.renderer.set_kawase_passes(max(0, min(8, self.renderer.kawase_passes+direction)))
 			return
 		if SETTINGS[self.selected][0] == "spatial_sigma" and self.renderer.reconstruction == "atrous": self.move(direction)
 		name, _, step, _, _ = SETTINGS[self.selected]
@@ -166,7 +166,7 @@ class RenderingSettings:
 
 	def reset(self):
 		if getattr(self.renderer, "banded_tail", False):
-			self.controls.set_kawase_passes(1)
+			self.renderer.set_kawase_passes(1)
 			return
 		self.renderer.set_bilateral_filter(self.defaults)
 		self.sync_debug_view(self.renderer)
@@ -259,12 +259,12 @@ class RenderingSettings:
 			changed, value = imgui.drag_float(label, getattr(options, name), step, 0.0, 0.0, "%.4g")
 			if changed and np.isfinite(value):
 				options = replace(options, **{name: max(0.0, value)})
-				self.renderer.set_ambient_occlusion_settings(options)
+				self.controls.set_ambient_occlusion_settings(options)
 				if self.ao_pass is not None: self.ao_pass.set_settings(options)
 		changed, count = imgui.slider_int("AO samples", options.sample_count, 1, 64)
 		if changed:
 			options = replace(options, sample_count=count)
-			self.renderer.set_ambient_occlusion_settings(options)
+			self.controls.set_ambient_occlusion_settings(options)
 			if self.ao_pass is not None: self.ao_pass.set_settings(options)
 
 	def draw_transparency_options(self, imgui):
@@ -305,7 +305,7 @@ class RenderingSettings:
 		imgui.separator_text("Dual Kawase tail blur")
 		changed, passes = imgui.slider_int("Down/up pairs", self.renderer.kawase_passes, 0, 8)
 		_item_tooltip("Each pair adds one half-resolution downsample and one upsample. Zero shows the unblurred tail. Color and allocation confidence are blurred together; the nearest layer stays sharp. Blur is not depth-guided and can bleed across tail edges.")
-		if changed: self.controls.set_kawase_passes(passes)
+		if changed: self.renderer.set_kawase_passes(passes)
 		if not self.renderer.keyed_tail:
 			changed, value = imgui.drag_float("Screen noise cell size (px at 1x)", self.renderer.noise_scale, 0.05, 0.25, 4.0, "%.3g")
 			if changed and np.isfinite(value): self.renderer.set_noise_scale(max(0.25, min(4.0, value)))
@@ -384,13 +384,13 @@ class RenderingSettings:
 			cascade = self.renderer.reconstruction == "atrous"
 			changed, target = imgui.drag_float("Support budget D" if cascade else "Target expected winners", options.target_winners, 0.25, 0.25, 32.0, "%.2f")
 			_item_tooltip("Unit-peak retained acceptance budget. Four corresponds to about nine nominal effective samples for a broad unrestricted tent; edge rejection changes that relationship." if cascade else "Expected acceptance budget. Higher budgets prefer broader estimates.")
-			if changed and np.isfinite(target): self.controls.set_confidence_filter(replace(options, target_winners=max(0.25, target)))
+			if changed and np.isfinite(target): self.renderer.set_confidence_filter(replace(options, target_winners=max(0.25, target)))
 			if cascade:
 				changed, index = imgui.combo("Cascade passes", self.renderer.confidence_filter.cascade_passes-1, ("1", "2", "3", "4"))
-				if changed: self.controls.set_confidence_filter(replace(self.renderer.confidence_filter, cascade_passes=index+1))
+				if changed: self.renderer.set_confidence_filter(replace(self.renderer.confidence_filter, cascade_passes=index+1))
 			else:
 				changed, index = imgui.combo("Pyramid levels", self.renderer.confidence_filter.levels-2, ("2", "3"))
-				if changed: self.controls.set_confidence_filter(replace(self.renderer.confidence_filter, levels=index+2))
+				if changed: self.renderer.set_confidence_filter(replace(self.renderer.confidence_filter, levels=index+2))
 		else:
 			changed, count = imgui.input_int("Reconstruction passes", self.renderer.reconstruction_passes)
 			_item_tooltip("Stack bilateral passes on weighted color/validity. Opacity is applied once; 1 x 1 bypasses all passes.")

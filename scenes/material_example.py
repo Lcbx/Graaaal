@@ -126,7 +126,7 @@ def run_scene():
 	def set_ssao_enabled(enabled):
 		nonlocal ao_enabled
 		ao_enabled = enabled
-		renderer.set_ambient_occlusion(enabled and ao_method == "compose")
+		renderer.transparency.set_ambient_occlusion(enabled and ao_method == "compose")
 	settings = RenderingSettings(renderer, visible=False, position=(370, 12),
 		on_msaa_changed=set_msaa_enabled, on_ssao_changed=set_ssao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_pass)
 	def set_alternate_color(enabled):
@@ -144,7 +144,7 @@ def run_scene():
 			print(f"SSAO: {ao_enabled}")
 		elif chr(code).lower() == "o":
 			ao_method = "pass" if ao_method == "compose" else "compose"
-			renderer.set_ambient_occlusion(ao_enabled and ao_method == "compose")
+			renderer.transparency.set_ambient_occlusion(ao_enabled and ao_method == "compose")
 			print(f"SSAO path: {ao_method}")
 		elif chr(code) == " ": orbit = not orbit
 		elif chr(code).lower() == "d":
