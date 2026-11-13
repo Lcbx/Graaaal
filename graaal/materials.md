@@ -280,6 +280,16 @@ grazing_fade, grazing_start and grazing_end. Tint and opacity_multiplier have
 instance scope by default. Built-in scopes may change while retaining their
 types. These requirements and semantic checks belong to DefaultMaterialShader.
 
+Materials discard backfaces by default. Set `double_sided=True` in a built-in
+material dictionary to render both sides, for opaque, masked or blended materials:
+
+```python
+glass = DefaultMaterialShader(transparent=True, default_material={"double_sided": True})
+```
+
+Custom surface hooks control this through `Material.flags.y`: zero discards
+backfaces, one renders both sides. The generic surface template defaults to zero.
+
 Its alpha modes are 0 OPAQUE, 1 MASK, and 2 BLEND. Transparent-capable shaders
 default to BLEND; opaque shaders default to OPAQUE. `DefaultMaterialShader`
 routes each binding by its resolved `alpha_mode`: OPAQUE/MASK write opaque

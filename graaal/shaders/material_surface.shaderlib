@@ -18,7 +18,7 @@ fn surface_{{PREFIX}}(p: Params{{PREFIX}}) -> Material {
 	material.base_color = vec4f(1.0);
 	material.surface = vec4f(1.0, 0.0, 2.0, 0.5);
 	material.opacity_rgb = vec4f(1.0);
-	material.flags = vec4u(0u, 1u, 0u, 0u);
+	material.flags = vec4u(0u);
 	return material;
 #endblock
 }

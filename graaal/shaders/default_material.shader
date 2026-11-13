@@ -10,7 +10,7 @@
 <MaterialParameters> alpha_cutoff: f32 = 0.5;
 <MaterialParameters> alpha_mode: u32 = 2 if TRANSPARENT else 0;
 <MaterialParameters> texture_layer: u32 = 0;
-<MaterialParameters> double_sided: bool = true;
+<MaterialParameters> double_sided: bool = false;
 <MaterialParameters> grazing_fade: bool = false;
 <MaterialParameters> grazing_start: f32 = 70;
 <MaterialParameters> grazing_end: f32 = 85;
