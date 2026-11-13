@@ -98,10 +98,7 @@ orbit = False
 distance = 0.0
 
 
-def init_scene(path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_PATH, grazing_fade=None,
-	sample_count=1, winner_count=2, winner_mix="average", noise_mode="anchored_blue",
-	reconstruction="fragment", reconstruction_passes=1, winner_coupling="complement", confidence_filter=None, exact_nearest=False, tail_allocation="banded", kawase_passes=1,
-	banded_proxy=False, banded_subset=False, banded_tail_msaa=False):
+def init_scene(path=PATH, *, blue_noise_path=BLUE_NOISE_PATH, **transparency_options):
 	"""Initialize the example's global render data after device setup."""
 	global transparency, opaque_batches, transparent_batches, camera, hzb, center, radius, angle, orbit, distance
 	primitives, materials, images, vertices = load_transparency_scene(path)
@@ -122,9 +119,7 @@ def init_scene(path=PATH, *, bilateral_filter=None, blue_noise_path=BLUE_NOISE_P
 		materials=GpuBuffer(materials, BufferUsage.STORAGE | BufferUsage.COPY_DST),
 		base_textures=textures.view(dimension="2d-array"),
 		vertices=GpuBuffer(vertices, BufferUsage.STORAGE | BufferUsage.COPY_DST), blue_noise=blue_noise,
-		bilateral_filter=bilateral_filter, grazing_fade=grazing_fade, sample_count=sample_count, winner_count=winner_count,
-		winner_mix=winner_mix, noise_mode=noise_mode, reconstruction=reconstruction, reconstruction_passes=reconstruction_passes, winner_coupling=winner_coupling, confidence_filter=confidence_filter, exact_nearest=exact_nearest, tail_allocation=tail_allocation, kawase_passes=kawase_passes,
-		banded_proxy=banded_proxy, banded_subset=banded_subset, banded_tail_msaa=banded_tail_msaa)
+		**transparency_options)
 	hzb = HZB()
 	opaque_batches = GeometryBatches(primitives, materials, transparency, False)
 	transparent_batches = GeometryBatches(primitives, materials, transparency, True)

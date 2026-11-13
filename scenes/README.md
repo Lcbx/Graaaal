@@ -38,13 +38,13 @@ In `transparency_example.py`, the ImGui settings panel is visible at startup.
 `material_example.py` opens it with **F**. Both use
 `FilterSettings` in `transparency_settings.py`; its `handle_key` callback
 handles keyboard editing of visible controls.
+Both examples start with `TransparencyPass` defaults.
 
 The default **Banded + dual Kawase** mode captures the nearest transparent
 layer exactly and uses a complementary banded pair for the remaining tail.
 **Down/up pairs** controls the blur (0–8, default 1). **Proxy residual**
 subtracts a local albedo estimate before blurring to reduce color halos.
-It is **off in `transparency_example.py`** and **on by default in
-`MaterialRenderer`**, which powers `material_example.py`. **Shade one pixel
+It is **off by default**. **Shade one pixel
 per 2 x 2 block** is an optional lower-cost, noisier approximation. Tail
 estimation defaults to 1x even when the scene uses MSAA; exact nearest,
 transmittance and opaque/MASK geometry still use the selected native sample count.

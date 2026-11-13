@@ -58,7 +58,7 @@ renderer.set_kawase_passes(3)
 renderer.set_tail_allocation("stochastic")  # returns to fragment reconstruction
 ```
 
-The banded mode defaults to `banded_proxy=True`, `banded_subset=False`,
+The banded mode defaults to `banded_proxy=False`, `banded_subset=False`,
 `banded_tail_msaa=False`. The proxy uses the texture albedo already fetched for
 opacity. Its full-resolution contribution is restored after blurring signed
 residuals, reducing color halos where albedo approximates the shaded color.

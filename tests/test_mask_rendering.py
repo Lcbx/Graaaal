@@ -33,7 +33,7 @@ def test_default_is_banded_with_one_pair_and_single_sample_tail():
 	oit = renderer.transparency
 	assert oit.banded_tail and oit.exact_nearest and oit.reconstruction == "kawase"
 	assert oit.kawase_passes == 1 and oit.tail_sample_count == 1
-	assert oit.banded_proxy and not oit.banded_subset
+	assert not oit.banded_proxy and not oit.banded_subset
 	assert np.isfinite(render(renderer, (17, 19))).all()
 	assert [entry for entry, *_ in oit.kawase_stages] == ["down", "up", "finish"]
 

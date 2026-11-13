@@ -154,7 +154,7 @@ class TransparencyPass:
 		noise_anchor_pixels=24.0, noise_anchor_subdivisions=4,
 		opaque_color=None, opaque_depth=None, material_source=None, material_library=None, frame_fields=None, exact_nearest=False,
 		geometry_shader=None, shading_shader=None, compose_shader=None, tail_allocation="banded", kawase_passes=1,
-		banded_proxy=True, banded_subset=False, banded_tail_msaa=False):
+		banded_proxy=False, banded_subset=False, banded_tail_msaa=False):
 		if any(type(value) is not bool for value in (banded_proxy, banded_subset, banded_tail_msaa)): raise ValueError("Banded options must be boolean")
 		self.banded_proxy, self.banded_subset, self.banded_tail_msaa = banded_proxy, banded_subset, banded_tail_msaa
 		if tail_allocation not in ("stochastic", "banded"): raise ValueError("tail_allocation must be stochastic or banded")
