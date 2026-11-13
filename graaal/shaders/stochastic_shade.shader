@@ -137,6 +137,25 @@ fn store_winner(id: vec3u, color: vec4f) {
 #endif
 }
 
+#if PARAMS.get("keyed_tail", false)
+texture<1, 10> key_payload_a: texture_2d<u32>;
+texture<1, 11> key_payload_b: texture_2d<u32>;
+texture<1, 12> tail_coverage: texture_2d<f32>;
+
+@compute @workgroup_size(8, 8)
+fn shade_keyed(@builtin(global_invocation_id) id: vec3u) {
+	if any(id.xy >= textureDimensions(key_payload_a)) { return; }
+	let pixel = vec2i(id.xy);
+	let a = textureLoad(key_payload_a, pixel, 0);
+	let b = textureLoad(key_payload_b, pixel, 0);
+	let ca = shade_payload(a, pixel, 0u);
+	var cb = ca;
+	if any(a != b) { cb = shade_payload(b, pixel, 0u); }
+	let den = min(1.0, textureLoad(tail_coverage, pixel, 0).r);
+	store_winner(id, vec4f(den*0.5*(ca.rgb+cb.rgb), den));
+}
+#endif
+
 #if PARAMS.get("banded_tail", false)
 #include "banded_sampling.shaderlib"
 <BandCount> total: u32;
@@ -183,7 +202,7 @@ fn shade_bands(@builtin(global_invocation_id) id: vec3u) {
 #endif
 	store_winner(actual_id, vec4f(select(vec3f(0.0), residual, den > 0.0), den));
 }
-#else
+#elif not PARAMS.get("keyed_tail", false)
 #if not PARAMS.get("mix_only", false)
 @compute @workgroup_size(8, 8)
 fn shade_winner(@builtin(global_invocation_id) id: vec3u) {

@@ -35,6 +35,93 @@ fn band_index(pixel: vec2u, sample: u32) -> u32 {
 <BandTransmission> @location(1) proxy: vec4f;
 #endif
 #endif
+#if PARAMS.get("keyed_tail", false)
+<Optical> red: atomic<u32>;
+<Optical> green: atomic<u32>;
+<Optical> blue: atomic<u32>;
+<Optical> scalar: atomic<u32>;
+<Optical> coverage: atomic<u32>;
+storage<3, 10, read_write> optical: array<Optical>;
+<KeyOutput> @location(0) payload: vec4u;
+<KeyOutput> @builtin(frag_depth) depth: f32;
+
+fn keyed_u(input: VertexOutput, pixel: vec2u, front: bool) -> f32 {
+	let info = metadata[input.instance];
+	var seed = hash_u32(frame.key_frame ^ 0x9e3779b9u);
+	seed = hash_u32(seed ^ hash_u32(pixel.x ^ 0x85ebca6bu));
+	seed = hash_u32(seed ^ hash_u32(pixel.y ^ 0xc2b2ae35u));
+	seed = hash_u32(seed ^ hash_u32(input.instance ^ 0x27d4eb2fu));
+	seed = hash_u32(seed ^ hash_u32(info.x+input.triangle));
+	seed = hash_u32(seed ^ select(0xa511e9b3u, 0u, front));
+	return f32(clamp(seed >> 8u, 1u, 16777215u)) / 16777216.0;
+}
+
+fn keyed_depth(u: f32, p: f32) -> f32 {
+	let key = -log(u)/max(p, 1.0/16777216.0);
+	return clamp((log2(key)+32.0)/64.0, 0.0, 0.99999994);
+}
+
+@fragment
+fn tail_optical(input: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4f {
+	let lod = raster_lod(input.uv);
+	let material = get_material(input.instance);
+	let alpha = raster_opacity(input.instance, material, input.uv, lod, input.world);
+	if material.surface.z == 1.0 || (!front && material.flags.y == 0u) { discard; }
+	if is_exact_nearest(input, 0u) || input.position.z >= raster_opaque_depth(vec2i(input.position.xy), 0u) { discard; }
+	let p = max(alpha.x, max(alpha.y, alpha.z));
+	if p <= 0.0 { discard; }
+	let index = u32(input.position.y)*textureDimensions(opaque_depth).x+u32(input.position.x);
+	let value = -log(max(vec3f(1.0)-alpha, vec3f(1e-14)));
+	let amounts = vec4u(u32(round(min(value.x, 32.0)*1048576.0)), u32(round(min(value.y, 32.0)*1048576.0)),
+		u32(round(min(value.z, 32.0)*1048576.0)), u32(round(p*1048576.0)));
+	var red = atomicLoad(&optical[index].red);
+	loop {
+		let result = atomicCompareExchangeWeak(&optical[index].red, red, red+min(amounts.x, 0xffffffffu-red));
+		if result.exchanged { break; }
+		red = result.old_value;
+	}
+	var green = atomicLoad(&optical[index].green);
+	loop {
+		let result = atomicCompareExchangeWeak(&optical[index].green, green, green+min(amounts.y, 0xffffffffu-green));
+		if result.exchanged { break; }
+		green = result.old_value;
+	}
+	var blue = atomicLoad(&optical[index].blue);
+	loop {
+		let result = atomicCompareExchangeWeak(&optical[index].blue, blue, blue+min(amounts.z, 0xffffffffu-blue));
+		if result.exchanged { break; }
+		blue = result.old_value;
+	}
+	let scalar_amount = u32(round(min(-log(max(1.0-p, 1e-14)), 32.0)*1048576.0));
+	var scalar = atomicLoad(&optical[index].scalar);
+	loop {
+		let result = atomicCompareExchangeWeak(&optical[index].scalar, scalar, scalar+min(scalar_amount, 0xffffffffu-scalar));
+		if result.exchanged { break; }
+		scalar = result.old_value;
+	}
+	var coverage = atomicLoad(&optical[index].coverage);
+	loop {
+		let result = atomicCompareExchangeWeak(&optical[index].coverage, coverage, coverage+min(amounts.w, 0xffffffffu-coverage));
+		if result.exchanged { break; }
+		coverage = result.old_value;
+	}
+	return vec4f(0.0);
+}
+
+@fragment
+fn select_keyed(input: VertexOutput, @builtin(front_facing) front: bool) -> KeyOutput {
+	let lod = raster_lod(input.uv);
+	let material = get_material(input.instance);
+	let alpha = raster_opacity(input.instance, material, input.uv, lod, input.world);
+	if material.surface.z == 1.0 || (!front && material.flags.y == 0u) { discard; }
+	if is_exact_nearest(input, 0u) || input.position.z >= raster_opaque_depth(vec2i(input.position.xy), 0u) { discard; }
+	let p = max(alpha.x, max(alpha.y, alpha.z));
+	if p <= 0.0 { discard; }
+	let u = keyed_u(input, vec2u(input.position.xy), front);
+	let threshold = {{"1.0-u" if PARAMS.get("key_stream", 0) else "u"}};
+	return KeyOutput(visibility_payload(input, lod, front), keyed_depth(threshold, p));
+}
+#endif
 #if PARAMS.get("exact_nearest", false)
 #if GUIDE_SAMPLES > 1 and PARAMS.get("sample_count", 1) == 1
 texture<3, 8> nearest_ids: texture_multisampled_2d<u32>;

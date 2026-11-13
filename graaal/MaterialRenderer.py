@@ -216,7 +216,12 @@ class MaterialRenderer:
 			if name == "guide" and oit.bilateral_filter.kernel_size == 1: continue
 			with begin(commands) as render:
 				self.draws.draw(render, self.visibility, name)
-		if oit.banded_tail:
+		if oit.keyed_tail:
+			for stream in (0, 1):
+				with oit.selection_pass(commands, stream=stream) as render:
+					self.draws.draw(render, self.visibility, oit.selection_name(stream))
+			oit.shade_winner(commands, self.geometry[1])
+		elif oit.banded_tail:
 			if oit.mixed_tail:
 				with oit.tail_statistics_pass(commands) as render: self.draws.draw(render, self.visibility, "tail_statistics")
 			with oit.banded_pass(commands) as render:

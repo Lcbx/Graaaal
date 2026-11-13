@@ -9,6 +9,75 @@ from graaal.RenderContext import RenderContext, RenderPipeline, Shader, Texture,
 
 
 @pytest.mark.parametrize("samples", [1, 4])
+def test_min_key_tail_winners_and_optical_depth(factory, samples):
+	renderer = factory(sample_count=samples, layers=3, alpha=0.5, tail_allocation="min_key", winner_coupling="complement", kawase_passes=0)
+	image = render(renderer, (64, 64))
+	oit = renderer.transparency
+	assert np.isfinite(image).all()
+	assert oit.band_counts is None and oit.band_payloads is None
+	assert oit.key_payload_a.sample_count == oit.key_payload_b.sample_count == 1
+	assert oit.transmittance.format == "rgba32float" and oit.tail_coverage.format == "r32float"
+	assert oit.nearest_alpha.sample_count == samples
+	assert np.all(read(oit.key_payload_a, np.uint32)[..., 0] >= 2)
+	assert np.all(read(oit.key_payload_b, np.uint32)[..., 0] >= 2)
+	assert np.allclose(read(oit.transmittance, np.float32)[..., :3], 0.25, atol=0.0001)
+	assert np.allclose(read(oit.transmittance, np.float32)[..., 3], 0.25, atol=0.0001)
+
+
+def test_min_key_tail_weighted_winner_frequencies(factory):
+	renderer = factory(layers=4, alpha=0.5, tail_allocation="min_key", winner_coupling="complement", kawase_passes=0)
+	for item, alpha in zip(renderer.instances[1:], (0.5, 0.3, 0.2)):
+		item.material["base_color"] = (1, 1, 1, alpha)
+	counts = np.zeros((2, 3), dtype=np.int64)
+	first_ids = None
+	for _ in range(16):
+		render(renderer, (96, 96))
+		for stream, payload in enumerate((renderer.transparency.key_payload_a, renderer.transparency.key_payload_b)):
+			ids = read(payload, np.uint32)[0, ..., 0]
+			if stream == 0:
+				if first_ids is None: first_ids = ids.copy()
+				else: assert np.mean(first_ids != ids) > 0.1
+			counts[stream] += np.array([np.count_nonzero(ids == instance) for instance in (2, 3, 4)])
+	frequencies = counts / counts.sum(axis=1, keepdims=True)
+	np.testing.assert_allclose(frequencies, ((0.5, 0.3, 0.2), (0.5, 0.3, 0.2)), atol=0.008)
+
+
+def test_min_key_complement_selects_distinct_equal_weight_fragments(factory):
+	renderer = factory(layers=4, alpha=0.5, tail_allocation="min_key", winner_coupling="complement", kawase_passes=0)
+	render(renderer, (128, 128))
+	a = read(renderer.transparency.key_payload_a, np.uint32)[0, ..., 0]
+	b = read(renderer.transparency.key_payload_b, np.uint32)[0, ..., 0]
+	assert np.mean(a != b) > 0.999
+
+
+@pytest.mark.parametrize("samples", [1, 4])
+def test_min_key_single_layer_has_empty_tail(factory, samples):
+	renderer = factory(sample_count=samples, layers=1, alpha=0.3, tail_allocation="min_key", winner_coupling="complement", kawase_passes=2)
+	image = render(renderer, (31, 23))
+	oit = renderer.transparency
+	assert np.isfinite(image).all()
+	np.testing.assert_array_equal(read(oit.key_payload_a, np.uint32), 0)
+	np.testing.assert_array_equal(read(oit.key_payload_b, np.uint32), 0)
+	np.testing.assert_array_equal(read(oit.winner_color), 0)
+	coverage = RenderContext.device.queue.read_texture({"texture": oit.tail_coverage.handle},
+		{"bytes_per_row": 31*4, "rows_per_image": 23}, oit.tail_coverage.size)
+	np.testing.assert_array_equal(np.frombuffer(coverage, dtype=np.float32), 0)
+
+
+def test_min_key_tail_switches_and_resizes(factory):
+	renderer = factory(sample_count=4, layers=3, alpha=0.3, tail_allocation="banded", winner_coupling="complement")
+	for mode, size in (("banded", (32, 24)), ("min_key", (47, 39)), ("stochastic", (25, 19)), ("min_key", (31, 17))):
+		renderer.set_tail_allocation(mode)
+		assert np.isfinite(render(renderer, size)).all()
+		assert (renderer.transparency.key_payload_a is not None) == (mode == "min_key")
+		assert (renderer.transparency.band_counts is not None) == (mode == "banded")
+	for count in (1, 4):
+		renderer.set_sample_count(count)
+		assert np.isfinite(render(renderer, (33, 21))).all()
+		assert renderer.transparency.nearest_alpha.sample_count == count
+
+
+@pytest.mark.parametrize("samples", [1, 4])
 @pytest.mark.parametrize("passes", [0, 1, 3])
 def test_single_layer_stays_exact_without_any_tail(factory, samples, passes):
 	renderer = factory(sample_count=samples, alpha=0.1, tail_allocation="banded", winner_coupling="complement", kawase_passes=passes)

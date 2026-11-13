@@ -208,7 +208,12 @@ def render_frame(*, profiler=None):
 			transparent_batches.draw(render, "main", pass_override=transparent_batches.passes.guide)
 	with transparency.transmittance_pass(commands) as render:
 		transparent_batches.draw(render, "transmittance")
-	if transparency.banded_tail:
+	if transparency.keyed_tail:
+		for stream in (0, 1):
+			with transparency.selection_pass(commands, stream=stream) as render:
+				transparent_batches.draw(render, transparency.selection_name(stream))
+		transparency.shade_winner(commands, transparent_batches.passes)
+	elif transparency.banded_tail:
 		if transparency.mixed_tail:
 			with transparency.tail_statistics_pass(commands) as render: transparent_batches.draw(render, "tail_statistics")
 		with transparency.banded_pass(commands) as render:

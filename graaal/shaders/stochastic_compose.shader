@@ -29,7 +29,7 @@ fn present_linear(color: vec3f) -> vec4f {
 
 fn compose_sample(pixel: vec2i, sample: u32) -> vec3f {
 	let dimensions = vec2i(textureDimensions(transmittance));
-	let t = sample_texture_load(transmittance, pixel, sample);
+	let t = tail_t(pixel, sample);
 #if PARAMS.get("exact_nearest", false)
 	if bilateral.kernel.y == 11u { return vec3f(t.a); }
 	if bilateral.kernel.y == 10u { return vec3f(select(0.0, 1.0, sample_texture_load(nearest_alpha, pixel, sample).a > 0.0)); }

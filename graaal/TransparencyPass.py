@@ -136,6 +136,9 @@ class TransparencyTargets:
 	nearest_alpha: Texture | None = None
 	nearest_depth: Texture | None = None
 	nearest_color: Texture | None = None
+	key_payload_a: Texture | None = None
+	key_payload_b: Texture | None = None
+	tail_coverage: Texture | None = None
 
 
 class TransparencyPass:
@@ -157,7 +160,7 @@ class TransparencyPass:
 		banded_proxy=False, banded_subset=False, banded_tail_msaa=False):
 		if any(type(value) is not bool for value in (banded_proxy, banded_subset, banded_tail_msaa)): raise ValueError("Banded options must be boolean")
 		self.banded_proxy, self.banded_subset, self.banded_tail_msaa = banded_proxy, banded_subset, banded_tail_msaa
-		if tail_allocation not in ("stochastic", "banded"): raise ValueError("tail_allocation must be stochastic or banded")
+		if tail_allocation not in ("stochastic", "banded", "min_key"): raise ValueError("tail_allocation must be stochastic, banded or min_key")
 		if type(kawase_passes) is not int or not 0 <= kawase_passes <= 8: raise ValueError("kawase_passes must be an integer from 0 through 8")
 		self.tail_allocation, self.kawase_passes = tail_allocation, kawase_passes
 		self.band_counts = self.band_payloads = None
@@ -165,6 +168,8 @@ class TransparencyPass:
 		if self.banded_tail:
 			if force_single_contributor or early_b_rejection or winner_mix != "average" or winner_count != 2 or winner_coupling != "complement":
 				raise ValueError("Banded tail requires two complemented averaged winners without force acceptance or stencil rejection")
+			if self.keyed_tail and (banded_proxy or banded_subset or banded_tail_msaa):
+				raise ValueError("Min-key tail uses a full-resolution single-sample tail without banded options")
 			exact_nearest, reconstruction, reconstruction_passes = True, "kawase", 1
 		if (geometry_shader is None) != (shading_shader is None):
 			raise ValueError("Custom deformation requires matched geometry and shading shaders")
@@ -266,7 +271,7 @@ class TransparencyPass:
 		self.bilateral_uniforms = self.compose_shader.uniform_buffer("bilateral")
 		self.debug_view = "final"
 		self.set_bilateral_filter(bilateral_filter if bilateral_filter is not None else BilateralFilter())
-		entry = "shade_bands" if self.banded_tail else "shade_winner"
+		entry = "shade_keyed" if self.keyed_tail else "shade_bands" if self.banded_tail else "shade_winner"
 		self.shade_pipeline = ComputePipeline(self.shading_shader, entry=entry, layout=self._pipeline_layout(self.shading_shader, entry))
 		self.mix_pipeline = self._create_mix_pipeline()
 		self._create_nearest_pipeline()
@@ -285,14 +290,14 @@ class TransparencyPass:
 			self.set_opaque_inputs(opaque_color, opaque_depth)
 
 	def _geometry_shader(self, count):
-		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix, self.complemented_winners, self.exact_nearest, self.banded_tail, self._banded_flags)
+		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix, self.complemented_winners, self.exact_nearest, self.tail_allocation, self._banded_flags)
 		if key not in self._geometry_shaders:
 			self._geometry_shaders[key] = self._custom_shaders[0] or Shader(
 				filepath=str(SHADERS / "stochastic_geometry.shader"),
 				features=("NOISE_FOOTPRINT_BALANCE",) if self.noise_footprint_balancing else (),
 				params={**self._banded_params(count), "material_source": self._material_source, "sample_count": count,
 					"winner_count": min(self.winner_count, 2), "force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix,
-					"material_library": self._material_library, "frame_fields": self._frame_types, "exact_nearest": self.exact_nearest, "complemented_winners": self.complemented_winners, "banded_tail": self.banded_tail})
+					"material_library": self._material_library, "frame_fields": self._frame_types, "exact_nearest": self.exact_nearest, "complemented_winners": self.complemented_winners, "banded_tail": self.banded_tail and not self.keyed_tail, "keyed_tail": self.keyed_tail})
 		return self._geometry_shaders[key]
 
 	@property
@@ -318,11 +323,12 @@ class TransparencyPass:
 		if key not in self._pipeline_layouts:
 			from .material_layout import material_pipeline_layout
 			unfilterable = ("level_pair", "level_depth", "level_transmission", "parent_mu", "parent_depth", "parent_transmission", "cascade_pair", "cascade_result") if shader is getattr(self, "pyramid_shader", None) else ()
+			if self.keyed_tail: unfilterable += ("transmittance", "transmission", "tail_coverage")
 			self._pipeline_layouts[key] = material_pipeline_layout(shader, entries, self._layout_cache, unfilterable)
 		return self._pipeline_layouts[key]
 
 	def _shader_set(self, count):
-		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix, self.reconstruction, self.reconstruction_passes > 1, self.complemented_winners, self.exact_nearest, self.banded_tail, self._banded_flags)
+		key = (count, self.noise_footprint_balancing, min(self.winner_count, 2), self.force_single_contributor, self.winner_mix, self.reconstruction, self.reconstruction_passes > 1, self.complemented_winners, self.exact_nearest, self.tail_allocation, self._banded_flags)
 		if key not in self._shader_sets:
 			geometry, shading, compose = self._custom_shaders
 			params = {**self._banded_params(count), "material_source": self._material_source, "sample_count": count,
@@ -331,27 +337,32 @@ class TransparencyPass:
 				"force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix, "complemented_winners": self.complemented_winners}
 			self._shader_sets[key] = (
 				self._geometry_shader(count),
-				shading or Shader(filepath=str(SHADERS / "stochastic_shade.shader"), params=dict(params, sample_count=(count if self.banded_tail_msaa else 1) if self.banded_tail else count)),
+				shading or Shader(filepath=str(SHADERS / "stochastic_shade.shader"), params=dict(params, sample_count=(count if self.banded_tail_msaa else 1) if self.banded_tail else count, banded_tail=self.banded_tail and not self.keyed_tail, keyed_tail=self.keyed_tail)),
 				compose or Shader(filepath=str(SHADERS / "stochastic_compose.shader"),
 					params={**self._banded_params(count), "srgb_surface": self.target_format.endswith("-srgb"), "sample_count": count,
 						"winner_count": min(self.winner_count, 2), "force_single_contributor": self.force_single_contributor, "winner_mix": self.winner_mix,
 						"compute_reconstruction": self.reconstruction != "fragment", "filter_input": self.reconstruction_passes > 1 and self.reconstruction not in ("push_pull", "atrous"),
-						"frame_fields": self._frame_types, "exact_nearest": self.exact_nearest, "banded_tail": self.banded_tail}),
+						"frame_fields": self._frame_types, "exact_nearest": self.exact_nearest, "banded_tail": self.banded_tail, "keyed_tail": self.keyed_tail}),
 			)
 		return self._shader_sets[key]
 
 	def _activate_shaders(self, count):
 		self.shader, self.shading_shader, self.compose_shader = self._shader_set(count)
 		self.tail_shader = self.shader
+		self.tail_shader_b = None
 		if self.banded_tail and count > 1 and not self.banded_tail_msaa:
-			key = ("tail", count, self._banded_flags, self.noise_footprint_balancing)
+			key = ("tail", count, self.tail_allocation, self._banded_flags, self.noise_footprint_balancing)
 			if key not in self._geometry_shaders:
 				params = dict(self._banded_params(count), sample_count=1, guide_sample_count=count, banded_statistics=True,
 					material_source=self._material_source, material_library=self._material_library, frame_fields=self._frame_types,
-					exact_nearest=True, banded_tail=True, winner_count=2)
+					exact_nearest=True, banded_tail=not self.keyed_tail, keyed_tail=self.keyed_tail, winner_count=2)
 				self._geometry_shaders[key] = Shader(filepath=str(SHADERS / "stochastic_geometry.shader"), params=params,
 					features=("NOISE_FOOTPRINT_BALANCE",) if self.noise_footprint_balancing else ())
 			self.tail_shader = self._geometry_shaders[key]
+		if self.keyed_tail:
+			params = dict(self._banded_params(count), sample_count=1, guide_sample_count=count, material_source=self._material_source,
+				material_library=self._material_library, frame_fields=self._frame_types, exact_nearest=True, keyed_tail=True, key_stream=1)
+			self.tail_shader_b = Shader(filepath=str(SHADERS / "stochastic_geometry.shader"), params=params)
 		if self.winner_count > 1 or self.winner_mix == "fill":
 			self._winner_settings = [self.shader.uniform_buffer("winner_settings") for _ in range(self.winner_count)]
 			for stream, settings in enumerate(self._winner_settings):
@@ -486,7 +497,11 @@ class TransparencyPass:
 
 	@property
 	def banded_tail(self):
-		return self.tail_allocation == "banded"
+		return self.tail_allocation in ("banded", "min_key")
+
+	@property
+	def keyed_tail(self):
+		return self.tail_allocation == "min_key"
 
 	@property
 	def _banded_flags(self):
@@ -509,6 +524,7 @@ class TransparencyPass:
 		"""Configure proxy residuals, one selected pixel per 2x2 block, and tail MSAA."""
 		values = tuple(current if value is None else value for current, value in zip(self._banded_flags, (proxy, subset, tail_msaa)))
 		if any(type(value) is not bool for value in values): raise ValueError("Banded options must be boolean")
+		if self.keyed_tail and any(values): raise ValueError("Min-key tail does not use banded proxy, subset, or tail MSAA options")
 		if values == self._banded_flags: return False
 		if any(s is not None for s in self._custom_shaders): raise ValueError("Banded options require the default shader set")
 		self.banded_proxy, self.banded_subset, self.banded_tail_msaa = values
@@ -518,11 +534,12 @@ class TransparencyPass:
 		return True
 
 	def set_tail_allocation(self, mode):
-		"""Select stochastic winners or exact-nearest/banded-tail/Kawase rendering."""
-		if mode not in ("stochastic", "banded"): raise ValueError("tail_allocation must be stochastic or banded")
+		"""Select stochastic, banded, or min-key tail rendering."""
+		if mode not in ("stochastic", "banded", "min_key"): raise ValueError("tail_allocation must be stochastic, banded or min_key")
 		if mode == self.tail_allocation: return False
 		if any(s is not None for s in self._custom_shaders): raise ValueError("Banded tail requires the default shader set; material hooks remain supported")
 		self.tail_allocation = mode
+		if self.keyed_tail: self.banded_proxy = self.banded_subset = self.banded_tail_msaa = False
 		if self.banded_tail:
 			self.exact_nearest, self.reconstruction, self.reconstruction_passes = True, "kawase", 1
 			self.winner_count, self.winner_mix, self.winner_coupling = 2, "average", "complement"
@@ -537,7 +554,7 @@ class TransparencyPass:
 		return True
 
 	def set_kawase_passes(self, count):
-		"""Set 0-8 down/up pairs; zero divides the unblurred banded pair."""
+		"""Set 0-8 down/up pairs for banded or min-key tails."""
 		if type(count) is not int or not 0 <= count <= 8: raise ValueError("kawase_passes must be an integer from 0 through 8")
 		if count == self.kawase_passes: return False
 		self.kawase_passes = count
@@ -666,7 +683,7 @@ class TransparencyPass:
 			self._geometries[-1] = geometry
 			if geometry.creation_args["transparent"]:
 				self._transparent_geometries[-1] = geometry
-		entry = "shade_bands" if self.banded_tail else "shade_winner"
+		entry = "shade_keyed" if self.keyed_tail else "shade_bands" if self.banded_tail else "shade_winner"
 		self.shade_pipeline = ComputePipeline(self.shading_shader, entry=entry, layout=self._pipeline_layout(self.shading_shader, entry))
 		self.mix_pipeline = self._create_mix_pipeline()
 		self.compose_pipeline = RenderPipeline(self.compose_shader, vertex_entry="fullscreen",
@@ -728,8 +745,14 @@ class TransparencyPass:
 				geometry.render_shader.passes[self.selection_name(stream)] = ShaderPass(second, bindings)
 		if transparent and self.banded_tail:
 			tail_bindings = (self._frame_group(self.tail_shader), self.tail_shader.bind_group(2, **self.shared, metadata=metadata, **geometry_resources), *geometry_bindings)
-			geometry.render_shader.passes["bands"] = ShaderPass(RenderPipeline(self.tail_shader, vertex_entry="vertex", fragment_entry="select_bands", cull_mode="none", depth_write=False, depth_test=None if self.mixed_tail else "always", sample_count=self.tail_sample_count, targets=({"write_mask": 0},) if self.mixed_tail else None, label="banded_tail", layout=self._pipeline_layout(self.tail_shader, "vertex", "select_bands")), tail_bindings)
-			if self.mixed_tail:
+			if self.keyed_tail:
+				geometry.render_shader.passes["transmittance"] = ShaderPass(RenderPipeline(self.tail_shader, vertex_entry="vertex", fragment_entry="tail_optical", cull_mode="none", depth_write=False, depth_test=None, sample_count=1, targets=({"write_mask": 0},), label="tail_optical", layout=self._pipeline_layout(self.tail_shader, "vertex", "tail_optical")), tail_bindings)
+				geometry.render_shader.passes["main"] = ShaderPass(RenderPipeline(self.tail_shader, vertex_entry="vertex", fragment_entry="select_keyed", cull_mode="none", depth_test="less", depth_write=True, sample_count=1, label="key_winner_a", layout=self._pipeline_layout(self.tail_shader, "vertex", "select_keyed")), tail_bindings)
+				second_bindings = (self._frame_group(self.tail_shader_b), self.tail_shader_b.bind_group(2, **self.shared, metadata=metadata, **geometry_resources), *geometry_bindings)
+				geometry.render_shader.passes["second"] = ShaderPass(RenderPipeline(self.tail_shader_b, vertex_entry="vertex", fragment_entry="select_keyed", cull_mode="none", depth_test="less", depth_write=True, sample_count=1, label="key_winner_b", layout=self._pipeline_layout(self.tail_shader_b, "vertex", "select_keyed")), second_bindings)
+			else:
+				geometry.render_shader.passes["bands"] = ShaderPass(RenderPipeline(self.tail_shader, vertex_entry="vertex", fragment_entry="select_bands", cull_mode="none", depth_write=False, depth_test=None if self.mixed_tail else "always", sample_count=self.tail_sample_count, targets=({"write_mask": 0},) if self.mixed_tail else None, label="banded_tail", layout=self._pipeline_layout(self.tail_shader, "vertex", "select_bands")), tail_bindings)
+			if self.mixed_tail and not self.keyed_tail:
 				geometry.render_shader.passes["tail_statistics"] = ShaderPass(RenderPipeline(self.tail_shader, vertex_entry="vertex", fragment_entry="tail_statistics", cull_mode="none", depth_write=False, depth_test=None, sample_count=1, blend=add, label="tail_statistics", layout=self._pipeline_layout(self.tail_shader, "vertex", "tail_statistics")), tail_bindings)
 		geometry.creation_args = dict(metadata=metadata, transparent=transparent, instances=instances,
 			geometry_resources=geometry_resources, shading_resources=shading_resources,
@@ -754,6 +777,13 @@ class TransparencyPass:
 			geometry.render_shader['transmittance'].bindings = bindings + (self.shader.bind_group(3, **nearest),)
 			geometry.nearest.bindings = bindings + (self.shader.bind_group(3, opaque_depth=self.depth),)
 		if self.banded_tail:
+			if self.keyed_tail:
+				for name, shader in (("transmittance", self.tail_shader), ("main", self.tail_shader), ("second", self.tail_shader_b)):
+					base = tuple(b for b in geometry.render_shader[name].bindings if b.group != 3)
+					resources = dict(opaque_depth=self.depth, **nearest)
+					if name == "transmittance": resources["optical"] = self.optical
+					geometry.render_shader[name].bindings = base + (shader.bind_group(3, **resources),)
+				return
 			geometry.render_shader['transmittance'].bindings = bindings + (self.shader.bind_group(3, opaque_depth=self.depth, band_counts=self.band_counts, **nearest),)
 			tail_bindings = tuple(b for b in geometry.render_shader['bands'].bindings if b.group != 3)
 			geometry.render_shader['bands'].bindings = tail_bindings + (self.tail_shader.bind_group(3, opaque_depth=self.depth, blue_noise=self.noise, band_counts=self.band_counts, band_payloads=self.band_payloads.view(dimension="2d-array"), **nearest),)
@@ -919,7 +949,11 @@ class TransparencyPass:
 			"transparent_guide": "rgba16float",
 			"transmittance": "rgba16float", "selection_depth": "depth32float", "winner": "rgba32uint", "winner_color": "rgba16float"}
 		if self.banded_tail:
-			del formats["winner"], formats["selection_depth"]
+			del formats["winner"]
+			if not self.keyed_tail: del formats["selection_depth"]
+		if self.keyed_tail:
+			formats["transmittance"] = "rgba32float"
+			formats.update(key_payload_a="rgba32uint", key_payload_b="rgba32uint", tail_coverage="r32float")
 		if self.sample_count == 4 and not self.banded_tail:
 			formats["winner"] = "rgba16uint"
 			formats["winner_extra"] = "rgba16uint"
@@ -930,7 +964,7 @@ class TransparencyPass:
 		if self.reconstruction not in ("push_pull", "atrous") and self.reconstruction_passes > 1: formats["reconstruction_pair"] = "rgba16float"
 		if self.reconstruction not in ("push_pull", "atrous") and self.reconstruction_passes > 2: formats["reconstruction_pair_scratch"] = "rgba16float"
 		if self.early_b_rejection: formats["selection_depth"] = "depth32float-stencil8"
-		if self.complemented_winners: formats["winner_first_payload"] = "rgba32uint"
+		if self.complemented_winners and not self.banded_tail: formats["winner_first_payload"] = "rgba32uint"
 		if self.exact_nearest:
 			formats.update(nearest_depth="depth32float", nearest_alpha="rgba16float", nearest_payload="rgba16uint" if self.sample_count > 1 else "rgba32uint", nearest_color="rgba16float")
 			if self.sample_count > 1: formats["nearest_extra"] = "rgba16uint"
@@ -939,27 +973,30 @@ class TransparencyPass:
 				texture = getattr(targets, name)
 				shaded = name in ("winner_color", "nearest_color", "winner_first", "winner_source", "winner_first_payload", "reconstruction_color", "reconstruction_pair", "reconstruction_pair_scratch")
 				usage = TextureUsage.TEXTURE_BINDING | (TextureUsage.STORAGE_BINDING if shaded else TextureUsage.RENDER_ATTACHMENT)
+				if self.keyed_tail and name in ("transmittance", "tail_coverage"): usage |= TextureUsage.STORAGE_BINDING
 				if name.startswith("reconstruction_pair"): usage |= TextureUsage.RENDER_ATTACHMENT
-				count = 1 if shaded else self.sample_count
+				count = 1 if shaded or self.keyed_tail and name in ("transmittance", "selection_depth", "key_payload_a", "key_payload_b", "tail_coverage") else self.sample_count
 				layers = (self.tail_sample_count if self.banded_tail and name in ("winner_color", "reconstruction_color") else self.sample_count) if shaded else 1
 				if texture is None or texture.size != (*size, layers) or texture.format != format or texture.sample_count != count or texture.usage & usage != usage:
 					raise ValueError(f"Invalid transparency target {name}: expected {size}, {format}, {count} samples, {layers} layers, usage {usage}")
 		else:
-			values = dict(winner=None, selection_depth=None) if self.banded_tail else {}
+			values = dict(winner=None, selection_depth=None) if self.banded_tail and not self.keyed_tail else dict(winner=None) if self.keyed_tail else {}
 			for name, format in formats.items():
 				if inputs and name in ("main_color", "depth"):
 					values[name] = inputs[0 if name == "main_color" else 1]
 				else:
 					shaded = name in ("winner_color", "nearest_color", "winner_first", "winner_source", "winner_first_payload", "reconstruction_color", "reconstruction_pair", "reconstruction_pair_scratch")
 					usage = TextureUsage.TEXTURE_BINDING | (TextureUsage.STORAGE_BINDING if shaded else TextureUsage.RENDER_ATTACHMENT)
+					if self.keyed_tail and name in ("transmittance", "tail_coverage"): usage |= TextureUsage.STORAGE_BINDING
 					if name.startswith("reconstruction_pair"): usage |= TextureUsage.RENDER_ATTACHMENT
-					count = 1 if shaded else self.sample_count
+					count = 1 if shaded or self.keyed_tail and name in ("transmittance", "selection_depth", "key_payload_a", "key_payload_b", "tail_coverage") else self.sample_count
 					layers = self.tail_sample_count if self.banded_tail and name in ("winner_color", "reconstruction_color") else self.sample_count
 					texture_size = (*size, layers) if shaded else size
 					values[name] = Texture(texture_size, format=format, usage=usage, label=name, sample_count=count)
 			targets = TransparencyTargets(**values)
 		for name in formats: setattr(self, name, getattr(targets, name))
 		self.winner, self.selection_depth = targets.winner, targets.selection_depth
+		self.key_payload_a, self.key_payload_b, self.tail_coverage = targets.key_payload_a, targets.key_payload_b, targets.tail_coverage
 		self.winner_extra = targets.winner_extra
 		self.winner_first = targets.winner_first if self.winner_count == 2 and self.winner_mix == "average" else None
 		self.contributor_count = targets.contributor_count if self.force_single_contributor else None
@@ -977,12 +1014,13 @@ class TransparencyPass:
 			if self.sample_count > 1: resources["winners_extra"] = self.nearest_extra
 			self.nearest_shade_targets = self.nearest_shading_shader.bind_group(1, **resources)
 		if self.banded_tail:
-			self._setup_banded(size)
+			(self._setup_keyed if self.keyed_tail else self._setup_banded)(size)
 			self.size = size
 			for layout in self._layout_cache.values(): layout.clear_cache()
 			return True
 		self.band_counts = self.band_payloads = None
 		self.band_proxy = None
+		self.optical = self.key_resolve_targets = self.key_resolve_pipeline = None
 		self.kawase_stages = []
 		self.kawase_textures, self.band_clear_targets, self.kawase_dummy = [], None, None
 		for geometry in self._transparent_geometries:
@@ -1056,6 +1094,7 @@ class TransparencyPass:
 		return True
 
 	def _setup_banded(self, size):
+		self.optical = self.key_resolve_targets = self.key_resolve_pipeline = None
 		count = size[0]*size[1]*self.tail_sample_count*2
 		if count*4 > RenderContext.device.limits["max-storage-buffer-binding-size"]:
 			raise ValueError("Banded tail counters exceed max-storage-buffer-binding-size at this resolution/sample count")
@@ -1071,6 +1110,27 @@ class TransparencyPass:
 		resources = dict(band_counts=self.band_counts, band_payloads=self.band_payloads.view(dimension="2d-array"), winner_color=color)
 		if self.banded_proxy: resources["band_proxy"] = self.band_proxy
 		self.shade_targets = self.shading_shader.bind_group(1, **resources)
+		color = self.winner_color.view(dimension="2d-array") if self.sample_count > 1 else self.winner_color
+		self.compose_frame = self._frame_group(self.compose_shader)
+		self.compose_resources = self.compose_shader.bind_group(1, main_color=self.main_color, transmittance=self.transmittance,
+			winner_color=color, first_color=color, opaque_depth=self.depth, transparent_depth=self.transparent_depth,
+			transparent_guide=self.transparent_guide, bilateral=self.bilateral_uniforms, nearest_alpha=self.nearest_alpha,
+			nearest_color=self.nearest_color.view(dimension="2d-array") if self.sample_count > 1 else self.nearest_color,
+			reconstructed=self.reconstruction_color.view(dimension="2d-array") if self.sample_count > 1 else self.reconstruction_color)
+		self._setup_kawase()
+
+	def _setup_keyed(self, size):
+		self.band_counts = self.band_payloads = self.band_proxy = self.band_clear_targets = None
+		count = size[0]*size[1]*5
+		if count*4 > RenderContext.device.limits["max-storage-buffer-binding-size"]:
+			raise ValueError("Min-key optical sums exceed max-storage-buffer-binding-size")
+		self.optical = GpuBuffer(None, BufferUsage.STORAGE | BufferUsage.COPY_DST | BufferUsage.COPY_SRC, dtype=np.uint32, count=count, label="tail_optical")
+		self.key_resolve_shader = Shader(filepath=str(SHADERS / "stochastic_key_resolve.shader"))
+		self.key_resolve_pipeline = ComputePipeline(self.key_resolve_shader, entry="resolve", layout=self._pipeline_layout(self.key_resolve_shader, "resolve"))
+		self.key_resolve_targets = self.key_resolve_shader.bind_group(1, optical=self.optical, transmission=self.transmittance, coverage=self.tail_coverage)
+		for geometry in self._transparent_geometries: self._bind_targets(geometry)
+		self.shade_targets = self.shading_shader.bind_group(1, key_payload_a=self.key_payload_a, key_payload_b=self.key_payload_b,
+			tail_coverage=self.tail_coverage, winner_color=self.winner_color)
 		color = self.winner_color.view(dimension="2d-array") if self.sample_count > 1 else self.winner_color
 		self.compose_frame = self._frame_group(self.compose_shader)
 		self.compose_resources = self.compose_shader.bind_group(1, main_color=self.main_color, transmittance=self.transmittance,
@@ -1281,6 +1341,19 @@ class TransparencyPass:
 
 	def transmittance_pass(self, commands):
 		self._require_targets()
+		if self.keyed_tail:
+			commands.clear_buffer(self.optical)
+			self.uniforms.content["key_frame"] = (int(self.uniforms.content["key_frame"].flat[0])+1) & 0xffffffff
+			self.uniforms.upload_changed()
+			@contextmanager
+			def optical_scope():
+				with commands.render_pass(color=self.transmittance.color_attachment(clear=(0, 0, 0, 0)), label="3_tail_optical") as render:
+					yield render
+				with commands.compute_pass(label="3_resolve_tail_optical") as compute:
+					compute.set_pipeline(self.key_resolve_pipeline)
+					compute.set_bind_group(self.key_resolve_targets)
+					compute.dispatch((self.size[0]+7)//8, (self.size[1]+7)//8)
+			return optical_scope()
 		if self.banded_tail:
 			commands.clear_buffer(self.band_counts)
 			width, height = self.band_payloads.size[:2]
@@ -1296,6 +1369,11 @@ class TransparencyPass:
 
 	def selection_pass(self, commands, *, stream=0):
 		self._require_targets()
+		if self.keyed_tail:
+			if stream not in (0, 1): raise ValueError("Min-key tail has two winner streams")
+			payload = self.key_payload_a if stream == 0 else self.key_payload_b
+			return commands.render_pass(color=payload.color_attachment(clear=(0, 0, 0, 0)),
+				depth=self.selection_depth.depth_attachment(clear=1), label=f"4_select_key_{stream}")
 		if self.banded_tail: raise RuntimeError("Use banded_pass once instead of selection_pass")
 		if type(stream) is not int or not 0 <= stream < self.winner_count: raise ValueError("Invalid selection stream")
 		colors = [self.winner.color_attachment(clear=(0, 0, 0, 0))]
@@ -1314,6 +1392,7 @@ class TransparencyPass:
 	def banded_pass(self, commands):
 		"""Allocate both banded payloads after recording transmittance once."""
 		self._require_targets()
+		if self.keyed_tail: raise RuntimeError("Use selection_pass for min-key tail")
 		if not self.banded_tail: raise RuntimeError("Enable banded tail before recording its pass")
 		if self.mixed_tail: return commands.render_pass(color=self.band_proxy.color_attachment(), label="3_banded_tail")
 		return commands.render_pass(depth=self.depth.depth_attachment(read_only=True), label="3_banded_tail")

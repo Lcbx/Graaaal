@@ -54,9 +54,9 @@ def test_time_is_read_from_frame_without_material_or_instance_slots():
 @pytest.mark.parametrize("count", [1, 4])
 @pytest.mark.parametrize("winner_count", [1, 2])
 @pytest.mark.parametrize("exact_nearest", [False, True])
-@pytest.mark.parametrize("tail_allocation", ["stochastic", "banded"])
+@pytest.mark.parametrize("tail_allocation", ["stochastic", "banded", "min_key"])
 def test_deformed_raster_and_deferred_shading_match_at_fixed_times(count, winner_count, exact_nearest, tail_allocation):
-	if tail_allocation == "banded" and (not exact_nearest or winner_count != 2): pytest.skip("Banded tail always uses exact nearest and two winners")
+	if tail_allocation != "stochastic" and (not exact_nearest or winner_count != 2): pytest.skip("Kawase tails always use exact nearest and two winners")
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	vertices = np.zeros(12, dtype=VERTEX_DTYPE)
 	rows = []

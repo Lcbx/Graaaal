@@ -214,10 +214,11 @@ class FilterSettings:
 				"There is no smoothing across frames, so some noise can remain during camera movement.")
 
 	def draw_rendering_options(self, imgui):
-		changed, index = imgui.combo("Tail allocation", int(getattr(self.renderer, "banded_tail", False)), ("Stochastic nearest wins", "Banded + dual Kawase (experimental)"))
-		_item_tooltip("Banded captures the exact nearest layer, selects a complementary pair with shared screen noise, then blurs the tail. WebGPU atomic ordering can change between frames; thick tails use an approximate opacity-weighted color mix.")
+		modes = ("stochastic", "banded", "min_key")
+		changed, index = imgui.combo("Tail allocation", modes.index(self.renderer.tail_allocation), ("Stochastic nearest wins", "Banded + dual Kawase", "Min-key + dual Kawase"))
+		_item_tooltip("The min-key mode captures an exact nearest layer and selects two tail winners with independent per-fragment hashes and depth tests.")
 		if changed:
-			self.controls.set_tail_allocation(("stochastic", "banded")[index])
+			self.controls.set_tail_allocation(modes[index])
 			self.sync_debug_view(self.renderer)
 		banded = getattr(self.renderer, "banded_tail", False)
 		views = self.sync_debug_view(self.renderer)
@@ -237,27 +238,30 @@ class FilterSettings:
 		_item_tooltip(help_text)
 		if changed: self.renderer.set_debug_view(views[index])
 		changed, index = imgui.combo("MSAA (M)", int(self.renderer.sample_count == 4), ("Off (1x)", "4x"))
-		_item_tooltip("4x samples opaque/MASK geometry, transmission and the exact nearest layer. Banded tail estimation stays at 1x. Linear HDR is resolved before tone mapping."
+		_item_tooltip("4x samples opaque/MASK geometry and the exact nearest layer; optical transmission and both tail winners stay at 1x."
+			if self.renderer.keyed_tail else "4x samples opaque/MASK geometry, transmission and the exact nearest layer. Banded tail estimation stays at 1x. Linear HDR is resolved before tone mapping."
 			if banded else "4x samples geometry, opacity and winner selection at four positions per pixel. Reconstruction resolves linear HDR before tone mapping; no temporal accumulation.")
 		if changed: self.controls.set_sample_count((1, 4)[index])
 		return banded
 
 	def draw_banded_tail_options(self, imgui):
-		imgui.separator_text("Tail estimation")
-		changed, enabled = imgui.checkbox("Proxy residual", self.renderer.banded_proxy)
-		_item_tooltip("Accumulate opacity-weighted texture albedo at full resolution and blur only the signed shading residual. The proxy is restored locally; thick-tail mixing remains approximate.")
-		if changed: self.controls.set_banded_options(proxy=enabled)
-		changed, enabled = imgui.checkbox("Shade one pixel per 2 x 2 block", self.renderer.banded_subset)
-		_item_tooltip("Fixed spatial mask, compact payloads, and one lighting invocation per block. Increases noise; compare one additional blur pair. Alpha derivatives still run before the allocation discard.")
-		if changed: self.controls.set_banded_options(subset=enabled)
+		if not self.renderer.keyed_tail:
+			imgui.separator_text("Tail estimation")
+			changed, enabled = imgui.checkbox("Proxy residual", self.renderer.banded_proxy)
+			_item_tooltip("Accumulate opacity-weighted texture albedo at full resolution and blur only the signed shading residual. The proxy is restored locally; thick-tail mixing remains approximate.")
+			if changed: self.controls.set_banded_options(proxy=enabled)
+			changed, enabled = imgui.checkbox("Shade one pixel per 2 x 2 block", self.renderer.banded_subset)
+			_item_tooltip("Fixed spatial mask, compact payloads, and one lighting invocation per block. Increases noise; compare one additional blur pair. Alpha derivatives still run before the allocation discard.")
+			if changed: self.controls.set_banded_options(subset=enabled)
 		imgui.separator_text("Dual Kawase tail blur")
 		changed, passes = imgui.slider_int("Down/up pairs", self.renderer.kawase_passes, 0, 8)
 		_item_tooltip("Each pair adds one half-resolution downsample and one upsample. Zero shows the unblurred tail. Color and allocation confidence are blurred together; the nearest layer stays sharp. Blur is not depth-guided and can bleed across tail edges.")
 		if changed: self.controls.set_kawase_passes(passes)
-		changed, value = imgui.drag_float("Screen noise cell size (px at 1x)", self.renderer.noise_scale, 0.05, 0.25, 4.0, "%.3g")
-		if changed and np.isfinite(value): self.renderer.set_noise_scale(max(0.25, min(4.0, value)))
+		if not self.renderer.keyed_tail:
+			changed, value = imgui.drag_float("Screen noise cell size (px at 1x)", self.renderer.noise_scale, 0.05, 0.25, 4.0, "%.3g")
+			if changed and np.isfinite(value): self.renderer.set_noise_scale(max(0.25, min(4.0, value)))
 		self.draw_grazing()
-		imgui.text_wrapped("Left/Right changes blur pairs. F hides/shows settings. Tail noise is shared in screen space; per-surface noise controls do not apply.")
+		imgui.text_wrapped("Left/Right changes blur pairs. F hides/shows settings. Tail winners use per-fragment hashes." if self.renderer.keyed_tail else "Left/Right changes blur pairs. F hides/shows settings. Tail noise is shared in screen space; per-surface noise controls do not apply.")
 
 	def draw_winner_options(self, imgui):
 		changed, count = imgui.input_int("Winner draws", self.renderer.winner_count)

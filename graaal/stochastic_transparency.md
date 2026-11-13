@@ -20,6 +20,10 @@ complemented averaged winners and one 3x3 fragment bilateral pass.
 Low-level custom shader sets require `tail_allocation="stochastic", winner_count=1,
 reconstruction="fragment"`.
 
+Choose `tail_allocation="min_key"` for exact nearest plus two independently
+hashed, complemented tail winners selected by depth tests. It uses a 1x tail,
+full-resolution optical-depth transmission and the same Kawase blur controls.
+
 ## Useful APIs
 
 Import from `graaal.TransparencyPass`. This overview is non-exhaustive; initialize
@@ -38,6 +42,7 @@ RenderContext before constructing GPU resources.
 | `set_sample_count`, `set_noise_mode`, `set_noise_scale`, `set_debug_view` | Update live sampling and diagnostic settings. |
 | `set_winner_count(N)`, `set_winner_mix(mode)` | Positive uint32 draw count and `"average"`/`"fill"` mode; averaging supports 1 or 2. Default: 2 in average mode. |
 | `set_winner_coupling("complement" or "independent")` | Pair two averaged selections with one complemented tile (default), or independent sources. Fill always uses independent retries. |
+| `set_tail_allocation("stochastic", "banded" or "min_key")` | Switch the tail selector. `"min_key"` uses two depth-test winners and requires exact nearest. |
 | `set_reconstruction("atrous", "push_pull", "fragment" or "compute")` | Select reconstruction after choosing stochastic allocation; banded uses Kawase. |
 | `ConfidenceFilter`, `set_confidence_filter` | Set budget (default 4), cascade passes (1–4, default 4), and pyramid levels (2 or 3, default 3). |
 | `set_reconstruction_passes(N)` | Stack a positive uint32 number of bilateral passes; default 1. A 1x1 kernel bypasses all passes. |
@@ -45,6 +50,26 @@ RenderContext before constructing GPU resources.
 | `BilateralFilter`, `set_bilateral_filter` | Configure reconstruction footprint and tolerances. |
 | `GrazingFade`, `set_grazing_fade` | Configure angular opacity fade; default enabled from 83 to 86 degrees. |
 | `TransparencyTargets` | Describes caller-owned color, depth, guide, transmittance and winner textures. |
+
+## Min-key tail
+
+The alternative `"min_key"` selector uses the same nearest and composition
+calls. Record its two selection passes after the transmission scope:
+
+```python
+renderer.set_tail_allocation("min_key")
+renderer.set_kawase_passes(2)
+
+with transparency.transmittance_pass(commands) as render:
+	batches.draw(render, visibility, "transmittance")
+for stream in (0, 1):
+	with transparency.selection_pass(commands, stream=stream) as render:
+		batches.draw(render, visibility, transparency.selection_name(stream))
+transparency.shade_winner(commands, geometry)
+```
+
+The nearest pass still runs before these calls. `MaterialRenderer.record()`
+records the full sequence automatically.
 
 ## Exact nearest with banded tail and dual Kawase
 

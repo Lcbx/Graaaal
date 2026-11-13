@@ -10,6 +10,7 @@
 <Frame> noise_footprint_balance: f32;
 // Anchored blue: coarse target in pixels, fine shift subdivisions, reserved.
 <Frame> noise_anchor: vec4f;
+<Frame> key_frame: u32;
 #for name, type_name in PARAMS.get("frame_fields", {}).items()
 {{ field("Frame", name, type_name) }}
 #endfor
