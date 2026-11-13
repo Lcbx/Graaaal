@@ -204,11 +204,12 @@ fn transmittance(input: VertexOutput, @builtin(front_facing) front: bool, @built
 	// Side effects are not protected by WebGPU early depth tests.
 	if input.position.z >= raster_opaque_depth(vec2i(input.position.xy), sample) { discard; }
 #if PARAMS.get("banded_statistics", true)
-	atomicAdd(&band_counts[band_index(vec2u(input.position.xy), sample)].total, u32(round(p*65536.0)));
+	let quantized_weight = band_weight(p, input, sample, front);
+	atomicAdd(&band_counts[band_index(vec2u(input.position.xy), sample)].total, quantized_weight);
 #endif
 #endif
 #if PARAMS.get("banded_tail", false) and PARAMS.get("banded_proxy", false) and PARAMS.get("banded_statistics", true)
-	let pq = f32(u32(round(p*65536.0)))/65536.0;
+	let pq = f32(quantized_weight)/65536.0;
 	return BandTransmission(transmission, vec4f(pq*base.rgb, pq));
 #elif PARAMS.get("force_single_contributor", false)
 	return TransmittanceOutput(transmission, select(0.0, 1.0, p > 0.0));
@@ -255,6 +256,17 @@ fn visibility_payload(input: VertexOutput, lod: f32, front: bool) -> vec4u {
 }
 
 #if PARAMS.get("banded_tail", false)
+fn band_weight(p: f32, input: VertexOutput, sample: u32, front: bool) -> u32 {
+	let pixel = vec2u(input.position.xy);
+	var seed = hash_u32(metadata[input.instance].z ^ 0x9e3779b9u);
+	seed = hash_u32(seed ^ hash_u32(input.triangle ^ 0x85ebca6bu));
+	seed = hash_u32(seed ^ hash_u32(pixel.x) ^ hash_u32(pixel.y ^ 0xc2b2ae35u));
+	seed = hash_u32(seed ^ hash_u32(sample ^ select(0xa511e9b3u, 0u, front)));
+	let scaled = p * 65536.0;
+	let random = f32(seed >> 8u) * (1.0 / 16777216.0);
+	return u32(floor(scaled)) + select(0u, 1u, random < fract(scaled));
+}
+
 @fragment
 fn tail_statistics(input: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4f {
 	let lod = raster_lod(input.uv);
@@ -266,7 +278,7 @@ fn tail_statistics(input: VertexOutput, @builtin(front_facing) front: bool) -> @
 	// Transmission and composition retain their actual per-hardware-sample IDs.
 	if is_exact_nearest(input, 0u) || (!front && material.flags.y == 0u) { discard; }
 	if input.position.z >= raster_opaque_depth(vec2i(input.position.xy), 0u) { discard; }
-	let pq = u32(round(max(alpha.x, max(alpha.y, alpha.z))*65536.0));
+	let pq = band_weight(max(alpha.x, max(alpha.y, alpha.z)), input, 0u, front);
 	atomicAdd(&band_counts[band_index(vec2u(input.position.xy), 0u)].total, pq);
 #if PARAMS.get("banded_proxy", false)
 	return vec4f(f32(pq)/65536.0*base.rgb, f32(pq)/65536.0);
@@ -288,7 +300,7 @@ fn select_bands(input: VertexOutput, @builtin(front_facing) front: bool, @builti
 	if is_exact_nearest(input, sample) || (!front && material.flags.y == 0u) { discard; }
 	let pixel = vec2i(input.position.xy);
 	if input.position.z >= raster_opaque_depth(pixel, sample) { discard; }
-	let pq = u32(round(max(alpha.x, max(alpha.y, alpha.z))*65536.0));
+	let pq = band_weight(max(alpha.x, max(alpha.y, alpha.z)), input, sample, front);
 	if pq == 0u { discard; }
 	let index = band_index(vec2u(pixel), sample);
 	let start = atomicAdd(&band_counts[index].running, pq);

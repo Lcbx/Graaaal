@@ -134,8 +134,8 @@ is enabled; zero residual displays as neutral grey),
 Banded allocation uses an unordered WebGPU atomic path. Its band assignment may
 change between frames in overlap regions. Tail colors approach a p-weighted
 mixture, which differs from depth-ordered over for thick tails. Probabilities
-use 1/65536 fixed-point quantization; extremely faint tail fragments can round
-to zero width. Totals must remain below 2^32 units (65536 full-opacity tail
+use stochastic rounding to 1/65536 fixed-point units; individual faint tail
+fragments can still round to zero width. Totals must remain below 2^32 units (65536 full-opacity tail
 fragments per sample), and target dimensions must fit the device's storage
 buffer binding limit. Exact nearest capture retains every nonzero opacity.
 

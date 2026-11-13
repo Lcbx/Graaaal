@@ -1088,7 +1088,7 @@ class TransparencyPass:
 		def stage(entry, source, destination):
 			resources = dict(source_pair=source.view(dimension="2d-array"))
 			if not self.mixed_tail: resources["transmission"] = self.transmittance
-			if self.banded_proxy: resources.update(band_proxy=self.band_proxy, band_counts=self.band_counts)
+			if self.banded_proxy: resources.update(band_proxy=self.band_proxy, band_counts=self.band_counts, local_pair=self.winner_color.view(dimension="2d-array"))
 			inputs = self.kawase_shader.bind_group(0, **resources)
 			pair = self.kawase_dummy if entry == "finish" else destination
 			color = destination if entry == "finish" else self.kawase_dummy

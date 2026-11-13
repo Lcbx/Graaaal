@@ -29,9 +29,11 @@ def test_band_totals_payload_marginals_and_denominator(factory, samples, alpha):
 	oit = renderer.transparency
 	payloads = read(oit.band_payloads, np.uint32)
 	counts = np.frombuffer(RenderContext.device.queue.read_buffer(oit.band_counts.handle), dtype=np.uint32).reshape(128, 128, samples, 2)
-	pq = int(np.rint(np.float32(alpha)*65536))
-	np.testing.assert_array_equal(counts, 3*pq)
-	den = min(1.0, 3*pq/65536)
+	weight = np.float32(alpha)*65536
+	minimum, maximum = 3*int(np.floor(weight)), 3*int(np.ceil(weight))
+	assert np.all((counts >= minimum) & (counts <= maximum))
+	np.testing.assert_allclose(counts.mean(), 3*alpha*65536, atol=0.03, rtol=0)
+	den = min(1.0, 3*alpha)
 	np.testing.assert_allclose(read(oit.winner_color)[..., 3], den, atol=0.0005)
 	for stream in range(2):
 		# MSAA sample positions together cover the four parities of the half-pixel
@@ -39,7 +41,7 @@ def test_band_totals_payload_marginals_and_denominator(factory, samples, alpha):
 		ids = payloads[stream::2, ..., 0]
 		assert not np.any(ids == 1)  # Exact nearest is never allocated a tail band.
 		for instance in (2, 3, 4):
-			assert abs(np.mean(ids == instance)-pq/max(65536, 3*pq)) < 0.004
+			assert abs(np.mean(ids == instance)-alpha/max(1.0, 3*alpha)) < 0.005
 		assert abs(np.mean(ids != 0)-den) < 0.004
 		if den == 1: assert np.all(ids != 0)
 	assert oit.winner is None and oit.selection_depth is None
